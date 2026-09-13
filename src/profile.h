@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #ifndef PROTEUS_PROFILE_H
 #define PROTEUS_PROFILE_H
 

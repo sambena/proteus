@@ -109,6 +109,12 @@ lose some effects; mute fewer channels for those games.
 | `test/` | a fake game core and a headless frontend that checks the mixed audio |
 | `deps/` | `libretro.h` (MIT), dr_wav and dr_mp3 (public domain / MIT-0), stb_vorbis (public domain / MIT) |
 
+## License
+
+Proteus Retune is licensed under the GNU Lesser General Public License v2.1 or later
+(`LGPL-2.1-or-later`); see [LICENSE](LICENSE). The bundled libraries in `deps/` keep
+their own licenses, listed above.
+
 ## Roadmap
 
 - Emulated music sources through libgme: `.spc`, `.nsf`, `.vgm`, `.gbs`, so one game can

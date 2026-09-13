@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* WAV, MP3 and Ogg Vorbis sources built on dr_wav, dr_mp3 and stb_vorbis. */
 #include <stdlib.h>
 #include <string.h>

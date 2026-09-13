@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 #ifndef PROTEUS_MUSIC_H
 #define PROTEUS_MUSIC_H
 

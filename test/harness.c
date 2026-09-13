@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* Headless libretro frontend that drives Proteus around the test core and checks
  * which tones come out of the mixed audio.
  *

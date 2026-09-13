@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
 <#
 .SYNOPSIS
   Installs Proteus Retune as a wrapper around an existing RetroArch core.

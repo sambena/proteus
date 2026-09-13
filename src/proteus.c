@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /* Proteus Retune: a libretro core that wraps another core and swaps its music.
  *
  * The wrapper is installed as proteus_<core>_libretro.<ext> next to
