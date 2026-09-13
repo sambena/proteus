@@ -28,16 +28,17 @@ play exactly as they would without Proteus.
 
 ## Build
 
-From an MSYS2 **UCRT64** shell (`pacman -S make mingw-w64-ucrt-x86_64-gcc`):
+From an MSYS2 **UCRT64** shell (`pacman -S make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-SDL2`):
 
 ```sh
 make          # build/proteus_dsp.dll (plugin) and build/proteus_libretro.dll (wrapper core)
+make studio   # build/ProteusStudio.exe (song discovery and profile mapping GUI)
 make test     # runs the headless test suite (needs sox for the test assets)
 make ZLIB=0   # without compressed .vgz support
 ```
 
-Both DLLs link their C++ runtime and zlib statically, so they only need Windows' own
-runtime libraries.
+`ProteusStudio.exe` and both DLLs link their C++ runtime, zlib, and dependencies statically,
+so they only need Windows' own runtime libraries.
 
 ## Install
 
@@ -77,6 +78,34 @@ multi-song files such as NSF appear once per song (`dungeon.nsf #3`).
 Changes apply immediately. Use RetroArch's **Manage Core Options → Save Game Options**
 to keep them for one game only.
 
+## Proteus Studio
+
+Proteus Studio (`make studio`) is a companion GUI tool (SDL2 + Dear ImGui) for creating
+and testing game profiles interactively:
+
+1. **Setup**: Select your RetroArch folder, choose an installed core, and open a ROM
+   or zip archive.
+2. **Find address**: Play the game directly in Studio. Press **M** right after the music
+   changes; press **N** periodically while walking around with unchanged music. The candidate
+   list quickly narrows down the RAM addresses holding the song value or command register.
+3. **Songs**: Discovered songs collect automatically with a screenshot thumbnail and a
+   12-second clip of the original music. Assign replacement files, silence, or original music,
+   and test them live inside the game with **Hear replacements in the game**.
+4. **Channels**: Toggle emulator channels live to discover which voices carry music vs sound
+   effects. Checked channels are automatically saved into the profile's `[mute]` section.
+5. **Analyze**: If the game uses a command register, automatically sweep song numbers from a
+   save state to audition and catalog every song in the game without playing through it.
+6. **Profile**: Adjust mix volume and crossfades, save the profile (`.proteus.ini` next to the ROM
+   or in RetroArch's `system/proteus/`), and optionally export channel mutes as RetroArch per-game
+   core options for the DSP plugin.
+
+Controls:
+- **D-pad**: Arrow keys (or left stick / D-pad on controller)
+- **Face buttons**: `Z` (B), `X` (A), `A` (Y), `S` (X)
+- **Shoulders**: `Q` (L), `W` (R)
+- **Menu**: `Enter` (Start), `Right Shift` (Select)
+- **Shortcuts**: `P` (pause), `Tab` (fast forward), `F2`/`F4` (save/load state), `M` (mark music changed), `N` (mark music same)
+
 ## Game profiles
 
 Proteus looks for a profile in this order:
@@ -93,6 +122,7 @@ address  = 0x1234       ; offset of the "current song" value
 size     = 1            ; 1, 2 or 4 bytes, little endian
 mask     = 0xFF         ; optional
 debounce = 2            ; frames a new value must hold before it counts
+latch    = 1            ; optional: address is a command register (ignores 0, keeps playing last song)
 unmapped = original     ; what unlisted values do: original | silence | keep
 
 [mute]
@@ -138,7 +168,11 @@ resampling.
 
 ### Finding the song address
 
-Use a RAM search tool (RetroArch's cheat search, or the memory viewer in Mesen,
+The easiest method is using **Proteus Studio** (`make studio`), which narrows down
+candidates automatically as you mark song changes while playing, or sweeps command
+registers across a save state.
+
+Alternatively, use a RAM search tool (RetroArch's cheat search, or the memory viewer in Mesen,
 bsnes-plus or RetroAchievements' RAIntegration): note values in one music area,
 move to an area with different music, and keep the addresses that changed. Then put
 the candidate in `[song] address`, turn on **Song change notifications**, and watch
@@ -171,6 +205,8 @@ lose some effects; mute fewer channels for those games.
 | `src/profile.c` | profile parser |
 | `src/music.c` | resampling mixer with crossfades and loops |
 | `src/decoders.c` | WAV / MP3 / Ogg decoders and libgme sources |
+| `studio/` | Proteus Studio: Dear ImGui + SDL2 frontend for finding songs and creating profiles |
+| `deps/imgui/` | Dear ImGui bundled library |
 | `test/` | a fake game core and a headless frontend that checks the mixed audio and the options |
 | `tools/install-core.ps1` | installs the plugin and wrapper cores into a RetroArch folder |
 
@@ -183,6 +219,7 @@ own licenses:
 | Library | License |
 | --- | --- |
 | `deps/gme` — libgme 0.6.5 | LGPL-2.1-or-later (`deps/gme/LICENSE`); `ext/emu2413` is MIT |
+| `deps/imgui` — Dear ImGui 1.91.x | MIT (`deps/imgui/LICENSE.txt`) |
 | `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
@@ -190,4 +227,3 @@ own licenses:
 ## Roadmap
 
 - Muting music by patching the game's play-song routine instead of muting channels
-- A discovery mode that helps find the song address
