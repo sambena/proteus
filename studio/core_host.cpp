@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 
 #include <zlib.h>
 
@@ -41,35 +42,97 @@ struct CoreHost::Api
    size_t (*get_memory_size)(unsigned);
 };
 
-static CoreHost *g_host = nullptr;
+// libretro callbacks carry no context, so every host gets a slot with its own set
+// of trampolines. Hosts in different slots may run on different threads.
+enum { kSlots = 4 };
+static CoreHost *g_hosts[kSlots];
+static std::mutex g_slots_mutex;
 
-static bool RETRO_CALLCONV env_tramp(unsigned cmd, void *data) { return g_host && g_host->environment(cmd, data); }
-static void RETRO_CALLCONV video_tramp(const void *d, unsigned w, unsigned h, size_t p) { if (g_host) g_host->video(d, w, h, p); }
-static size_t RETRO_CALLCONV audio_batch_tramp(const int16_t *d, size_t f) { return g_host ? g_host->audio_batch(d, f) : f; }
-static void RETRO_CALLCONV audio_sample_tramp(int16_t l, int16_t r) { int16_t s[2] = { l, r }; if (g_host) g_host->audio_batch(s, 1); }
-static void RETRO_CALLCONV input_poll_tramp(void) {}
-static int16_t RETRO_CALLCONV input_state_tramp(unsigned p, unsigned d, unsigned i, unsigned id) { return g_host ? g_host->input_state(p, d, i, id) : 0; }
-
-static void RETRO_CALLCONV log_tramp(enum retro_log_level level, const char *fmt, ...)
+template <int N> struct Tramp
 {
-   char msg[1024];
-   va_list ap;
-   (void)level;
-   va_start(ap, fmt);
-   vsnprintf(msg, sizeof(msg), fmt, ap);
-   va_end(ap);
-   size_t len = strlen(msg);
-   while (len && (msg[len - 1] == '\n' || msg[len - 1] == '\r'))
-      msg[--len] = '\0';
-   if (g_host)
-      g_host->log().push_back(msg);
-}
+   static bool RETRO_CALLCONV env(unsigned cmd, void *data) { return g_hosts[N] && g_hosts[N]->environment(cmd, data); }
+   static void RETRO_CALLCONV video(const void *d, unsigned w, unsigned h, size_t p) { if (g_hosts[N]) g_hosts[N]->video(d, w, h, p); }
+   static size_t RETRO_CALLCONV audio_batch(const int16_t *d, size_t f) { return g_hosts[N] ? g_hosts[N]->audio_batch(d, f) : f; }
+   static void RETRO_CALLCONV audio_sample(int16_t l, int16_t r) { int16_t s[2] = { l, r }; if (g_hosts[N]) g_hosts[N]->audio_batch(s, 1); }
+   static void RETRO_CALLCONV input_poll(void) {}
+   static int16_t RETRO_CALLCONV input_state(unsigned p, unsigned d, unsigned i, unsigned id) { return g_hosts[N] ? g_hosts[N]->input_state(p, d, i, id) : 0; }
+   static void RETRO_CALLCONV log(enum retro_log_level level, const char *fmt, ...)
+   {
+      char msg[1024];
+      va_list ap;
+      (void)level;
+      va_start(ap, fmt);
+      vsnprintf(msg, sizeof(msg), fmt, ap);
+      va_end(ap);
+      size_t len = strlen(msg);
+      while (len && (msg[len - 1] == '\n' || msg[len - 1] == '\r'))
+         msg[--len] = '\0';
+      if (g_hosts[N])
+         g_hosts[N]->log().push_back(msg);
+   }
+};
 
-CoreHost::CoreHost() {}
+struct TrampSet
+{
+   retro_environment_t env;
+   retro_video_refresh_t video;
+   retro_audio_sample_batch_t audio_batch;
+   retro_audio_sample_t audio_sample;
+   retro_input_poll_t input_poll;
+   retro_input_state_t input_state;
+   retro_log_printf_t log;
+};
+
+#define TRAMPS(N) { Tramp<N>::env, Tramp<N>::video, Tramp<N>::audio_batch, Tramp<N>::audio_sample, \
+                    Tramp<N>::input_poll, Tramp<N>::input_state, Tramp<N>::log }
+static const TrampSet kTramps[kSlots] = { TRAMPS(0), TRAMPS(1), TRAMPS(2), TRAMPS(3) };
+#undef TRAMPS
+
+CoreHost::CoreHost()
+{
+   std::lock_guard<std::mutex> lock(g_slots_mutex);
+   for (int i = 0; i < kSlots; i++)
+      if (!g_hosts[i])
+      {
+         g_hosts[i] = this;
+         slot_ = i;
+         break;
+      }
+}
 
 CoreHost::~CoreHost()
 {
    unload();
+   std::lock_guard<std::mutex> lock(g_slots_mutex);
+   if (slot_ >= 0)
+      g_hosts[slot_] = nullptr;
+}
+
+static bool read_file(const std::string &path, std::vector<uint8_t> &out);
+
+// A DLL loaded twice shares its globals, so every slot but the first loads its
+// own copy of the core (proteus_slot1_snes9x_libretro.dll next to the settings).
+static std::string core_copy_for_slot(const std::string &core_path, int slot, const std::string &copies_dir)
+{
+   if (slot <= 0 || copies_dir.empty())
+      return core_path;
+   size_t sep = core_path.find_last_of("/\\");
+   std::string name = sep == std::string::npos ? core_path : core_path.substr(sep + 1);
+   std::string copy = copies_dir + "/slot" + std::to_string(slot) + "_" + name;
+
+   std::vector<uint8_t> src, dst;
+   if (!read_file(core_path, src))
+      return core_path;
+   if (!read_file(copy, dst) || dst != src)
+   {
+      FILE *f = px_fopen(copy.c_str(), "wb");
+      if (!f)
+         return core_path;
+      bool ok = fwrite(src.data(), 1, src.size(), f) == src.size();
+      if (fclose(f) != 0 || !ok)
+         return core_path;
+   }
+   return copy;
 }
 
 void CoreHost::add_log(const std::string &line)
@@ -203,14 +266,20 @@ bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
    unload();
    system_dir_ = system_dir;
    save_dir_   = save_dir;
+   if (slot_ < 0)
+   {
+      error = "too many cores open at once";
+      return false;
+   }
+   std::string lib_path = core_copy_for_slot(core_path, slot_, save_dir);
 
 #ifdef _WIN32
-   wchar_t *w = px_utf8_to_wide(core_path.c_str());
+   wchar_t *w = px_utf8_to_wide(lib_path.c_str());
    lib_ = w ? (void*)LoadLibraryExW(w, nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) : nullptr;
    free(w);
    auto sym = [&](const char *n) { return (void*)GetProcAddress((HMODULE)lib_, n); };
 #else
-   lib_ = dlopen(core_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+   lib_ = dlopen(lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
    auto sym = [&](const char *n) { return dlsym(lib_, n); };
 #endif
    if (!lib_)
@@ -249,15 +318,15 @@ bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
       return false;
    }
 
-   g_host = this;
+   const TrampSet &t = kTramps[slot_];
    options_.clear();
    overrides_.clear();
-   api_->set_environment(env_tramp);
-   api_->set_video_refresh(video_tramp);
-   api_->set_audio_sample(audio_sample_tramp);
-   api_->set_audio_sample_batch(audio_batch_tramp);
-   api_->set_input_poll(input_poll_tramp);
-   api_->set_input_state(input_state_tramp);
+   api_->set_environment(t.env);
+   api_->set_video_refresh(t.video);
+   api_->set_audio_sample(t.audio_sample);
+   api_->set_audio_sample_batch(t.audio_batch);
+   api_->set_input_poll(t.input_poll);
+   api_->set_input_state(t.input_state);
    api_->init();
 
    retro_system_info info{};
@@ -326,7 +395,6 @@ void CoreHost::unload()
 {
    if (api_)
    {
-      g_host = this;
       if (game_loaded_)
          api_->unload_game();
       if (api_->deinit)
@@ -349,15 +417,12 @@ void CoreHost::unload()
    audio_.clear();
    content_data_.clear();
    skip_video_ = false;
-   if (g_host == this)
-      g_host = nullptr;
 }
 
 void CoreHost::run_frame(uint16_t buttons)
 {
    if (!game_loaded_)
       return;
-   g_host   = this;
    buttons_ = buttons;
    api_->run();
 }
@@ -520,7 +585,7 @@ bool CoreHost::environment(unsigned cmd, void *data)
    switch (cmd)
    {
       case RETRO_ENVIRONMENT_GET_LOG_INTERFACE:
-         ((retro_log_callback*)data)->log = log_tramp;
+         ((retro_log_callback*)data)->log = kTramps[slot_].log;
          return true;
       case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
          *(const char**)data = system_dir_.c_str();

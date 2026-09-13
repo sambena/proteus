@@ -80,33 +80,44 @@ to keep them for one game only.
 
 ## Proteus Studio
 
-Proteus Studio (`make studio`) is a companion GUI tool (SDL2 + Dear ImGui) for finding,
-auditioning, and replacing game soundtracks without modifying ROMs:
+Proteus Studio (`make studio`, SDL2 + Dear ImGui) builds a profile from two SNES ROMs: the
+game to change and a game to take music from. It needs RetroArch's snes9x core.
 
-1. **Mix & Match** (Default Workspace):
-   - **Target Game (Primary ROM)**: Load your game ROM and retrieve its song list instantly via presets, auto-probe, or existing profiles.
-   - **Compare Source**: Load a Compare ROM, a music folder / OST directory (WAV, MP3, Ogg, FLAC, SPC, NSF, VGM, etc.), or pick from the built-in Preset Library.
-   - **Audition Directly in the Tool**: Click **Play** / **Stop** next to every track on both sides to listen to the original game music or compare/replacement tracks directly in Proteus Studio.
-   - **Flexible Mapping**: Click **<- Use** or **<- Match** to pair songs, or click **Auto-Match by Name/Track #** or **Match All 1:1 in Order** for automatic assignment.
-   - **Swap Emulation**: Click **Swap Target <-> Compare ROM** to switch active core emulation between ROMs with 1 click.
-   - **1-Click Export to RetroArch**: Click **Export to RetroArch (INI & Music)** to generate `system/proteus/{Game}.ini` and place all replacement music into `system/proteus/music/{Game}/` (e.g. `D:\RetroArch\system\proteus\music\{Game}\`). The original ROM remains completely untouched.
-2. **Setup**: Select your RetroArch folder (defaults to `D:\RetroArch`), choose an installed core, and open a ROM.
-3. **Find address**:
-   - **ROM Presets**: Built-in ROM header detection (SNES, Genesis, Game Boy, GBA, NES) identifies games like Super Mario World, Super Metroid, A Link to the Past, Sonic the Hedgehog, Chrono Trigger, and more, offering instant 1-click address, latch, and track setup.
-   - **Auto-Probe RAM**: Automatically sweeps memory from a save state to detect which addresses trigger music or sound effects, ranking candidate registers by audio divergence in seconds.
-   - **Test Poke**: Click **Poke**, **+1**, or **0** on any candidate to inject test values into RAM live and hear if the soundtrack changes immediately.
-   - **Manual Marking**: Play the game in Studio; press **M** right after the music changes and **N** when it stays the same to narrow down candidates.
-4. **Songs**: Discovered songs collect automatically with a screenshot thumbnail and a recorded audio clip. Audition with **Play** / **Stop**, choose replacements, and test them live inside the game with **Hear replacements in the game**.
-5. **Channels**: Toggle emulator channels live to discover which voices carry music vs sound effects. Checked channels are automatically saved into the profile's `[mute]` section.
-6. **Analyze**: If the game uses a command register, automatically sweep song numbers from a save state to audition and catalog every song in the game without playing through it.
-7. **Profile**: Adjust mix volume and crossfades, preview raw profile INI text, and export directly to RetroArch.
+1. Open the game to change on the left and the music source on the right (or drop ROMs on
+   either side).
+2. **Scan songs** on each side. Studio starts the game, writes every song number to the game's
+   music command register from that moment, and rips whatever the sound chip plays to an
+   `.spc` file. Values that change nothing, repeat an earlier song, or stay silent are dropped;
+   short songs are marked as jingles. Rips are kept in `%APPDATA%\ProteusStudio\library`, so a
+   ROM opens with its songs next time.
+3. Click play on any song, from either game, to listen. Rips play from the sound chip state,
+   with their own loops.
+4. For each song of the game to change, pick a replacement (or drag one from the right), or
+   Silence, or any music file.
+5. **Generate INI** writes the profile to the game's existing profile or
+   `system/proteus/<game>.ini`, and copies the chosen songs to `system/proteus/music/<game>/`.
+   A profile that Studio did not write is first saved as `<game>.ini.bak`.
 
-Controls:
-- **D-pad**: Arrow keys (or left stick / D-pad on controller)
-- **Face buttons**: `Z` (B), `X` (A), `A` (Y), `S` (X)
-- **Shoulders**: `Q` (L), `W` (R)
-- **Menu**: `Enter` (Start), `Right Shift` (Select)
-- **Shortcuts**: `P` (pause), `Tab` (fast forward), `F2`/`F4` (save/load state), `M` (mark music changed), `N` (mark music same)
+Songs are numbered by the **song address** Proteus follows while the game runs. Scans write to
+the **scan address**, the music command register; in some games they are different bytes
+(Super Mario World: song address `$0DDA`, command register `$1DFB`). Both come from the game's
+profile or the built-in presets, and can be set under **Advanced**:
+
+| Advanced tab | Use |
+| --- | --- |
+| Play & rip | Play either game. New song numbers are ripped as they start; **Rip current song** (`R`) rips whatever plays, for games without a known address. **Scan from this moment** makes later scans start there, for games that load music per world or level. |
+| Find song address | Press **Music changed** (`M`) right after the music changes and **Same music** (`N`) when it does not; the song and command bytes remain. |
+| Song address | Song address, scan address, size, latch, scan range, and how long songs get to start before ripping. |
+| Channels & mix | The channels muted while replacements play, and the mix volumes. |
+| INI preview | The profile Generate INI will write. |
+
+Game controls in Advanced: arrow keys or a controller; `Z`/`X` B/A, `A`/`S` Y/X, `Q`/`W` L/R,
+`Enter` Start, `Right Shift` Select; `P` pause, `Tab` fast forward, `F2`/`F4` save/load state.
+
+Scanning only finds songs that start from a single byte written to the command register, and
+only songs whose music data is loaded at the scan's starting moment. Games that send
+multi-byte commands (Chrono Trigger) need Play & rip. The preset song addresses and titles
+are unverified; A Link to the Past and Chrono Trigger's presets start no songs.
 
 ## Game profiles
 
@@ -207,7 +218,12 @@ lose some effects; mute fewer channels for those games.
 | `src/profile.c` | profile parser |
 | `src/music.c` | resampling mixer with crossfades and loops |
 | `src/decoders.c` | WAV / MP3 / Ogg decoders and libgme sources |
-| `studio/` | Proteus Studio: Dear ImGui + SDL2 frontend for finding songs and creating profiles |
+| `studio/main.cpp` | Proteus Studio's window: the two song lists, replacements, Advanced tabs |
+| `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, live ripping, song library |
+| `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |
+| `studio/profile_export.cpp` | writes the profile and copies the music |
+| `studio/core_host.cpp` | minimal libretro frontend; runs up to four cores at once |
+| `studio/audio_out.cpp` | plays songs and game audio |
 | `deps/imgui/` | Dear ImGui bundled library |
 | `test/` | a fake game core and a headless frontend that checks the mixed audio and the options |
 | `tools/install-core.ps1` | installs the plugin and wrapper cores into a RetroArch folder |

@@ -84,7 +84,7 @@ STUDIO_OBJ := $(STUDIO_SRC:%.cpp=$(OBJ)/%.o) $(IMGUI_SRC:%.cpp=$(OBJ)/%.o) \
               $(filter-out $(OBJ)/src/proteus.o $(OBJ)/src/options.o,$(OBJECTS))
 SDL_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null || sdl2-config --cflags 2>/dev/null)
 SDL_LIBS   := $(shell pkg-config --static --libs sdl2 2>/dev/null || sdl2-config --static-libs 2>/dev/null)
-STUDIO_FLAGS := -std=gnu++17 -O2 -Wall -Wextra -Ideps -Ideps/imgui -Isrc -Istudio $(SDL_CFLAGS)
+STUDIO_FLAGS := -std=gnu++17 -O2 -Wall -Wextra -Ideps -Ideps/imgui -Ideps/gme -Isrc -Istudio $(SDL_CFLAGS)
 
 studio: $(STUDIO)
 
