@@ -37,7 +37,10 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
    t += "; Proteus Retune profile for " + target.game_name() + "\n; Made with Proteus Studio\n\n[song]\n";
    t += std::string("memory   = ") + kMemoryNames[a.memory] + "\n";
    t += "address  = " + hex(a.address, 4) + "\n";
-   t += "size     = " + std::to_string(a.size) + "\n";
+   if (!a.bytes.empty())
+      t += "bytes    = " + format_song_pattern(a) + "\n";
+   else
+      t += "size     = " + std::to_string(a.size) + "\n";
    t += "debounce = " + std::to_string(a.debounce) + "\n";
    if (a.latch)
       t += "latch    = 1\n";

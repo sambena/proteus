@@ -800,6 +800,20 @@ int main(int argc, char **argv)
    expect("latch: song 2 stopped", 186, 300, 220, false);
    end_session();
 
+   /* 7. Command block pattern matching: matches 10 <song> FF <any> at 0x50, ignores sound effects. */
+   printf("\nscenario: command block pattern matching\n");
+   snprintf(content, sizeof(content), "%s/pattern.tst", argv[3]);
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 300);
+   expect("pattern: song 1 original", 6, 60, 440, true);
+   expect("pattern: song 2 wav replacement", 66, 180, 220, true);
+   expect("pattern: song 2 original muted", 66, 180, 440, false);
+   expect("pattern: song 3 ogg replacement", 186, 300, 330, true);
+   expect("pattern: song 3 original muted", 186, 300, 440, false);
+   expect("pattern: song 2 stopped", 186, 300, 220, false);
+   end_session();
+
    printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");
    return failures ? 1 : 0;
 }

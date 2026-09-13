@@ -10,8 +10,10 @@
 #include <thread>
 #include <vector>
 
+#include "apu_analyzer.h"
 #include "core_host.h"
 #include "game_db.h"
+#include "ra_client.h"
 #include "snes_rom.h"
 
 enum SongKind { SONG_MUSIC, SONG_JINGLE };
@@ -53,6 +55,7 @@ public:
    const std::string &display_name() const { return display_name_; }
    const std::string &profile_path() const { return profile_path_; }   // existing profile, if any
    uint32_t rom_crc32() const { return rom_.crc32; }
+   const std::string &rom_md5() const { return rom_.md5; }
 
    // Where the song number is kept and how songs are started, with where each came from
    // ("game database", "profile", "scan", "song finder", "manual entry").
@@ -63,12 +66,23 @@ public:
    // Records `address` and `start` in the game database (UI thread).
    void save_to_game_db(const std::string &note);
 
+   // RetroAchievements code notes lookup
+   std::mutex ra_mutex;
+   RaLookupResult ra_result;
+   void query_retroachievements();
+   bool querying_retroachievements() const { return querying_ra_; }
+
+   // Static 65816 APU analysis
+   ApuAnalysisResult apu_analysis;
+   void run_static_analysis();
+
    // Songs, in value order. Lock songs_mutex while reading from another thread.
    std::mutex songs_mutex;
    std::vector<FoundSong> songs;
    FoundSong *find_song(uint32_t value);
    void rename_song(size_t index, const std::string &title);
    void remove_song(size_t index);
+   void clear_library();
 
    // Scanning: from the scan start state, starts each song number and rips what plays.
    // Without a working way to start songs, the scan first watches the game boot to find
@@ -104,6 +118,8 @@ private:
    bool read_song_value(const SongAddress &a, uint32_t &value);
    void set_scan_message(const std::string &message);
    void run_frames(int frames);
+   void run_until_heard(int frames, std::vector<uint8_t> &onset);
+   bool choose_song_address(const SongStart &s, bool &by_address);
    int start_score(const SongStart &s, const SongPrint *baseline);
    bool find_song_start(const SongPrint *baseline);
    bool choose_stub_area(const std::vector<uint8_t> &before);
@@ -119,6 +135,8 @@ private:
 
    std::vector<uint8_t> scan_state_;
    uint32_t stub_ram_ = 0x1FF00;          // spare RAM for the code that calls music routines
+   // Song addresses to check first, and where each came from (game database, RetroAchievements, static analysis).
+   std::vector<std::pair<SongAddress, std::string>> address_hints_;
    SongAddress scan_address_;             // the scan thread's copies
    SongStart scan_start_;
    std::string scan_address_source_, scan_start_source_;
@@ -128,6 +146,9 @@ private:
    std::atomic<int> scan_done_{0}, scan_total_{0}, scan_found_{0};
    std::mutex message_mutex_;
    std::string scan_message_;
+
+   std::atomic<bool> querying_ra_{false};
+   std::thread ra_thread_;
 
    // Live song tracking while playing.
    uint32_t candidate_ = 0, last_value_ = 0;

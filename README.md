@@ -110,9 +110,16 @@ game to change and a game to take music from. It needs RetroArch's snes9x core.
    `system/proteus/<game>.ini`, and copies the chosen songs to `system/proteus/music/<game>/`.
    A profile that Studio did not write is first saved as `<game>.ini.bak`.
 
-Songs are numbered by the **song address** Proteus follows while the game runs. When a scan
-starts songs through a RAM command that the song address does not follow, the command itself
-becomes the song address (Super Mario World: `$1DFB`, not `$0DDA`).
+Songs are numbered by the **song address** Proteus follows while the game runs. Before ripping,
+a scan starts a few songs and reads all of work RAM back: a byte that holds exactly the song
+started, and keeps it, is where the game records it (A Link to the Past: `$0130`). Addresses
+from the game database, RetroAchievements notes and static analysis are preferred when they pass
+this check; one that fails is not used. When no byte keeps the song number, the command itself
+becomes the song address (Super Mario World: `$1DFB`; Chrono Trigger: `$1E00 = 10 song .. ..`,
+where `..` matches the bytes that change from song to song).
+
+Rips are taken at a song's first notes when the game goes quiet while it loads the song, so they
+play from the start.
 
 ### Game database
 
@@ -122,6 +129,7 @@ ROM CRC32 (without a copier header), so each game is worked out once:
 ```ini
 [2D206BF7]
 name = Chrono Trigger
+song_address = system_ram 0x1E00 bytes=10 xx .. .. latch=1 debounce=1
 start = routine jsl 0xC70004 block=0x1E00 bytes=10 xx FF 05 settle=300
 note = confirmed by a scan 2026-09-13
 
@@ -135,7 +143,8 @@ start = ram 0x1DFB bytes=xx settle=150
 sends itself; `routine <jsl|jsr> <address> [block=<address> bytes=<command>] [a=song]` calls the
 game's music routine. `xx` marks the song number; `settle` is how many frames a song gets before
 it is ripped. Scans and the song finder write the file; it can also be edited by hand or under
-**Advanced > Game info**. Super Mario World, A Link to the Past and Chrono Trigger are built in.
+**Advanced > Game info** (which also includes **RetroAchievements lookup** to query documented BGM
+addresses by ROM hash). Super Mario World, A Link to the Past and Chrono Trigger are built in.
 
 The **Advanced** tabs:
 
@@ -168,7 +177,8 @@ Paths are relative to the profile.
 [song]
 memory   = system_ram   ; system_ram | save_ram | video_ram | rtc
 address  = 0x1234       ; offset of the "current song" value
-size     = 1            ; 1, 2 or 4 bytes, little endian
+size     = 1            ; 1, 2 or 4 bytes, little endian (ignored when bytes is set)
+bytes    = 10 xx .. ..  ; optional: multi-byte command block pattern; xx is the song, .. any value
 mask     = 0xFF         ; optional
 debounce = 2            ; frames a new value must hold before it counts
 latch    = 1            ; optional: address is a command register (ignores 0, keeps playing last song)

@@ -17,12 +17,13 @@ note = built in: scanning $1DFB starts songs; $0DDA does not follow it
 
 [777AAC2F]
 name = The Legend of Zelda: A Link to the Past
-song_address = system_ram 0x012C size=1 latch=1 debounce=1
+song_address = system_ram 0x0130 size=1 latch=0 debounce=2
 start = ram 0x012C bytes=xx settle=150
-note = built in: found by music command detection
+note = built in: $012C starts songs; $0130 keeps the song number (RetroAchievements note, confirmed by a scan)
 
 [2D206BF7]
 name = Chrono Trigger
+song_address = system_ram 0x1E00 bytes=10 xx .. .. latch=1 debounce=1
 start = routine jsl 0xC70004 block=0x1E00 bytes=10 xx FF 05 settle=300
 note = built in: the music routine takes its command from $1E00
 )";
@@ -64,6 +65,47 @@ std::string describe_song_start(const SongStart &s)
    }
 }
 
+static bool is_any(const SongAddress &a, size_t i)
+{
+   return i < a.any.size() && a.any[i];
+}
+
+bool read_song_address(const SongAddress &a, const uint8_t *ram, size_t ram_size, uint32_t &value)
+{
+   if (!a.known || !ram)
+      return false;
+   if (!a.bytes.empty())
+   {
+      if ((uint64_t)a.address + a.bytes.size() > ram_size)
+         return false;
+      for (size_t i = 0; i < a.bytes.size(); i++)
+         if ((int)i != a.offset && !is_any(a, i) && ram[a.address + i] != a.bytes[i])
+            return false;
+      value = ram[a.address + a.offset];
+      return true;
+   }
+   if ((uint64_t)a.address + a.size > ram_size)
+      return false;
+   value = 0;
+   for (int i = 0; i < a.size; i++)
+      value |= (uint32_t)ram[a.address + i] << (8 * i);
+   return true;
+}
+
+std::string describe_song_address(const SongAddress &a)
+{
+   if (!a.known)
+      return "not known";
+   std::string out = "$" + hex(a.address, 4).substr(2);
+   if (!a.bytes.empty())
+   {
+      out += " =";
+      for (size_t i = 0; i < a.bytes.size(); i++)
+         out += (int)i == a.offset ? " song" : is_any(a, i) ? " .." : " " + hex(a.bytes[i], 2).substr(2);
+   }
+   return out;
+}
+
 static std::vector<std::string> split(const std::string &s)
 {
    std::vector<std::string> out;
@@ -74,23 +116,60 @@ static std::vector<std::string> split(const std::string &s)
    return out;
 }
 
-// "10 xx FF 05" -> bytes and the song position
-static void parse_bytes(const std::vector<std::string> &words, size_t from, SongStart &s)
+// "10 xx .. 05" -> bytes, the song position and (for song addresses) the bytes that may be anything
+static void parse_bytes(const std::vector<std::string> &words, size_t from,
+      std::vector<uint8_t> &bytes, int &offset, std::vector<bool> *any = nullptr)
 {
-   s.bytes.clear();
-   s.offset = 0;
+   bytes.clear();
+   offset = 0;
+   if (any)
+      any->clear();
    for (size_t i = from; i < words.size() && words[i].find('=') == std::string::npos; i++)
    {
+      bool wild = words[i] == ".." || words[i] == "??";
       if (words[i] == "xx" || words[i] == "XX")
       {
-         s.offset = (int)s.bytes.size();
-         s.bytes.push_back(0);
+         offset = (int)bytes.size();
+         bytes.push_back(0);
       }
       else
-         s.bytes.push_back((uint8_t)strtoul(words[i].c_str(), nullptr, 16));
+         bytes.push_back(wild ? 0 : (uint8_t)strtoul(words[i].c_str(), nullptr, 16));
+      if (any)
+         any->push_back(wild);
    }
-   if (s.bytes.size() == 1)
-      s.bytes.clear();   // the song number alone
+   if (bytes.size() == 1)
+   {
+      bytes.clear();   // the song number alone
+      if (any)
+         any->clear();
+   }
+}
+
+std::string format_song_pattern(const SongAddress &a)
+{
+   if (a.bytes.empty())
+      return "";
+   std::string bytes;
+   for (size_t i = 0; i < a.bytes.size(); i++)
+      bytes += ((int)i == a.offset ? std::string("xx") : is_any(a, i) ? std::string("..") : hex(a.bytes[i], 2).substr(2)) +
+               (i + 1 < a.bytes.size() ? " " : "");
+   return bytes;
+}
+
+bool parse_song_pattern(const std::string &text, SongAddress &a)
+{
+   std::vector<std::string> w = split(text);
+   if (w.empty())
+   {
+      a.bytes.clear();
+      a.any.clear();
+      a.offset = 0;
+      a.size = 1;
+      return true;
+   }
+   parse_bytes(w, 0, a.bytes, a.offset, &a.any);
+   a.size = a.bytes.empty() ? 1 : (int)a.bytes.size();
+   return true;
 }
 
 static void parse(const std::string &text, std::map<uint32_t, GameInfo> &games)
@@ -149,9 +228,17 @@ static void parse(const std::string &text, std::map<uint32_t, GameInfo> &games)
          g->song.size = atoi(opt("size", "1").c_str());
          g->song.latch = opt("latch", "0") == "1";
          g->song.debounce = atoi(opt("debounce", "2").c_str());
+         for (size_t i = 0; i < w.size(); i++)
+            if (w[i].compare(0, 6, "bytes=") == 0)
+            {
+               w[i] = w[i].substr(6);
+               parse_bytes(w, i, g->song.bytes, g->song.offset, &g->song.any);
+               g->song.size = g->song.bytes.empty() ? 1 : (int)g->song.bytes.size();
+               break;
+            }
       }
       else if (key == "start")
-         parse_song_start(value, g->start);
+          parse_song_start(value, g->start);
    }
 }
 
@@ -188,7 +275,7 @@ bool parse_song_start(const std::string &text, SongStart &s)
       if (w[i].compare(0, 6, "bytes=") == 0)
       {
          w[i] = w[i].substr(6);
-         parse_bytes(w, i, out);
+         parse_bytes(w, i, out.bytes, out.offset);
          break;
       }
    s = out;
@@ -245,6 +332,7 @@ void GameDb::save_locked()
                    "; scans confirm something; edits made here are used the next time a ROM opens.\n"
                    ";\n"
                    "; song_address = <memory> <address> size=<bytes> latch=<0|1> debounce=<frames>\n"
+                   "; song_address = <memory> <address> bytes=<pattern, xx = song number, .. = any> latch=1 debounce=1\n"
                    "; start = ram <address> bytes=<command, xx = song number> settle=<frames>\n"
                    "; start = routine <jsl|jsr> <address> [block=<address>] [bytes=...] [a=song] settle=<frames>\n";
    for (auto &e : games_)
@@ -256,9 +344,15 @@ void GameDb::save_locked()
       if (!g.name.empty())
          t += "name = " + g.name + "\n";
       if (g.song.known)
-         t += std::string("song_address = ") + kMemoryNames[g.song.memory] + " " + hex(g.song.address, 4) +
-              " size=" + std::to_string(g.song.size) + " latch=" + (g.song.latch ? "1" : "0") +
+      {
+         t += std::string("song_address = ") + kMemoryNames[g.song.memory] + " " + hex(g.song.address, 4);
+         if (!g.song.bytes.empty())
+            t += " bytes=" + format_song_pattern(g.song);
+         else
+            t += " size=" + std::to_string(g.song.size);
+         t += " latch=" + std::string(g.song.latch ? "1" : "0") +
               " debounce=" + std::to_string(g.song.debounce) + "\n";
+      }
       if (g.start.kind != SongStart::NONE)
          t += "start = " + format_song_start(g.start) + "\n";
       if (!g.note.empty())

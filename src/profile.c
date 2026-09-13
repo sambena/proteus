@@ -194,6 +194,58 @@ bad_value:
    return true;
 }
 
+static bool parse_pattern(const char *s, uint8_t *pattern, uint8_t *mask,
+      unsigned *length, unsigned *offset)
+{
+   char buf[128];
+   char *token, *save = NULL;
+   unsigned count = 0;
+   int song_pos = -1;
+
+   snprintf(buf, sizeof(buf), "%s", s);
+   for (token = strtok_r(buf, " \t", &save); token; token = strtok_r(NULL, " \t", &save))
+   {
+      if (count >= PX_MAX_PATTERN)
+         return false;
+      if ((token[0] == 'x' || token[0] == 'X') &&
+          (token[1] == 'x' || token[1] == 'X') && token[2] == '\0')
+      {
+         pattern[count] = 0;
+         mask[count]    = 0x00;
+         song_pos       = (int)count;
+      }
+      else if (!strcmp(token, "..") || !strcmp(token, "??"))
+      {
+         /* any value: bytes a command block varies from song to song */
+         pattern[count] = 0;
+         mask[count]    = 0x00;
+      }
+      else
+      {
+         char *end;
+         unsigned long b = strtoul(token, &end, 16);
+         if (*end != '\0' || b > 0xFF)
+            return false;
+         pattern[count] = (uint8_t)b;
+         mask[count]    = 0xFF;
+      }
+      count++;
+   }
+   if (count == 0 || song_pos < 0)
+      return false;
+   if (count == 1)
+   {
+      *length = 0;
+      *offset = 0;
+   }
+   else
+   {
+      *length = count;
+      *offset = (unsigned)song_pos;
+   }
+   return true;
+}
+
 static bool handle_entry(px_profile *p, const char *dir, const char *section,
       char *key, char *val, char *err, size_t errlen)
 {
@@ -239,6 +291,12 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
       {
          if (!parse_bool(val, &p->latch))
             goto bad_value;
+      }
+      else if (!strcmp(key, "bytes"))
+      {
+         if (!parse_pattern(val, p->pattern, p->pattern_mask, &p->pattern_length, &p->pattern_offset))
+            goto bad_value;
+         p->size = p->pattern_length ? p->pattern_length : 1;
       }
       else
          goto bad_key;

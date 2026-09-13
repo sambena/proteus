@@ -89,7 +89,7 @@ STUDIO_FLAGS := -std=gnu++17 -O2 -Wall -Wextra -Ideps -Ideps/imgui -Ideps/gme -I
 studio: $(STUDIO)
 
 $(STUDIO): $(STUDIO_OBJ)
-	$(CXX) -static -o $@ $(STUDIO_OBJ) $(SDL_LIBS) -lz -lcomdlg32 -lole32 -lshell32
+	$(CXX) -static -o $@ $(STUDIO_OBJ) $(SDL_LIBS) -lz -lcomdlg32 -lole32 -lshell32 -lwininet
 
 $(OBJ)/studio/%.o: studio/%.cpp $(wildcard studio/*.h) $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -112,18 +112,26 @@ $(TESTDIR)/harness$(EXE): test/harness.c | $(TESTDIR)
 $(TESTDIR)/proteus_testcore_libretro.$(EXT): $(CORE) | $(TESTDIR)
 	cp $< $@
 
-$(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini test/latch.proteus.ini
+$(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini
 	$(TESTDIR)/harness$(EXE) gen $(TESTDIR)
 	sox $(TESTDIR)/tone_330.wav $(TESTDIR)/tone_330.ogg
 	sox $(TESTDIR)/tone_550.wav $(TESTDIR)/tone_550.mp3
 	rm $(TESTDIR)/tone_330.wav $(TESTDIR)/tone_550.wav
 	gzip -9 -n -f $(TESTDIR)/tone_500.vgm
 	mv $(TESTDIR)/tone_500.vgm.gz $(TESTDIR)/tone_500.vgz
-	cp test/game.proteus.ini test/latch.proteus.ini $(TESTDIR)/
-	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $(TESTDIR)/latch.tst $@
+	cp test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini $(TESTDIR)/
+	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $(TESTDIR)/latch.tst $(TESTDIR)/pattern.tst $@
+
+$(TESTDIR)/test_ra$(EXE): test/test_ra.cpp studio/md5.cpp studio/ra_client.cpp | $(TESTDIR)
+	$(CXX) -static -std=gnu++17 -O2 -Istudio -o $@ $^ -lwininet
+
+$(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes_rom.cpp studio/md5.cpp studio/game_db.cpp studio/platform.cpp src/util.c | $(TESTDIR)
+	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32
 
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
-      $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP)
+      $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE)
+	$(TESTDIR)/test_ra$(EXE)
+	$(TESTDIR)/test_apu$(EXE)
 	$(TESTDIR)/harness$(EXE) run $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR) $(TESTDIR)/mixed.wav
 	$(TESTDIR)/harness$(EXE) dsp $(DSP) $(TESTDIR)/testcore_libretro.$(EXT) $(TESTDIR)
 

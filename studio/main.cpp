@@ -388,7 +388,8 @@ static void draw_panel_header(App &a, int side)
 
    if (s.address.known)
    {
-      std::string addr = "Song address $" + hex(s.address.address, 4) + (s.address.latch ? " (command)" : "");
+      std::string addr = "Song address " + describe_song_address(s.address) +
+            (s.address.latch && s.address.bytes.empty() ? " (command)" : "");
       chip(addr.c_str(), P.ok);
       if (ImGui::IsItemHovered())
          ImGui::SetTooltip("Proteus follows the music through this address. From: %s.\nChange it in Advanced > Game info.",
@@ -513,6 +514,18 @@ static void draw_scan_bar(App &a, int side)
          std::string path = open_rom_dialog(a, side);
          if (!path.empty())
             open_rom(a, side, path);
+      }
+      if (!s.songs.empty())
+      {
+         ImGui::SameLine();
+         if (ImGui::Button("Clear songs"))
+         {
+            a.audio.stop();
+            s.clear_library();
+            set_status(a, "Cleared scanned songs for " + s.display_name());
+         }
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Delete all scanned songs and cached rips for this game.");
       }
       ImGui::SameLine();
       ImGui::SetNextItemWidth(-1);
@@ -1076,7 +1089,23 @@ static void tab_address(App &a)
          ImGui::SetNextItemWidth(140);
          changed |= ImGui::Combo("Memory", &ad.memory, "system_ram\0save_ram\0video_ram\0");
          ImGui::SetNextItemWidth(140);
-         changed |= ImGui::SliderInt("Size (bytes)", &ad.size, 1, 2);
+         changed |= ImGui::SliderInt("Size (bytes)", &ad.size, 1, 4);
+         static char pattern_text[2][64];
+         static std::string pattern_shown[2];
+         std::string current_pat = format_song_pattern(ad);
+         if (pattern_shown[side] != current_pat)
+         {
+            snprintf(pattern_text[side], sizeof(pattern_text[side]), "%s", current_pat.c_str());
+            pattern_shown[side] = current_pat;
+         }
+         ImGui::SetNextItemWidth(140);
+         if (ImGui::InputTextWithHint("Pattern", "e.g. 10 xx FF 05", pattern_text[side], sizeof(pattern_text[side]),
+                  ImGuiInputTextFlags_EnterReturnsTrue))
+         {
+            parse_song_pattern(pattern_text[side], ad);
+            changed = true;
+         }
+         help_marker("For command blocks like Chrono Trigger's $1E00: 10 xx .. .. \nxx marks the song number; .. matches any value.\nPress Enter to apply.");
          changed |= ImGui::Checkbox("Command register", &ad.latch);
          help_marker("The address only holds a song number for a moment when music starts, then returns to 0.");
          ImGui::SetNextItemWidth(140);
@@ -1084,6 +1113,99 @@ static void tab_address(App &a)
          if (changed)
             s.address_source = "manual entry";
          ImGui::TextColored(col(P.dim), "From: %s", ad.known ? s.address_source.c_str() : "not known");
+
+         // RetroAchievements code notes lookup
+         ImGui::Spacing();
+         bool querying_ra = s.querying_retroachievements();
+         ImGui::BeginDisabled(querying_ra);
+         if (ImGui::Button("Query RetroAchievements"))
+            s.query_retroachievements();
+         ImGui::EndDisabled();
+         help_marker("Queries the RetroAchievements API using the ROM's MD5 hash to discover documented music/BGM RAM addresses.\nScan songs checks the notes found against the songs it starts and uses one that holds the song number.");
+
+         RaLookupResult ra_res;
+         {
+            std::lock_guard<std::mutex> lock(s.ra_mutex);
+            ra_res = s.ra_result;
+         }
+
+         if (querying_ra || ra_res.status == RaLookupStatus::SEARCHING)
+         {
+            ImGui::TextColored(col(P.accent), "Querying RetroAchievements for MD5 %s...", s.rom_md5().substr(0, 8).c_str());
+         }
+         else if (ra_res.status == RaLookupStatus::SUCCESS)
+         {
+            ImGui::TextColored(col(P.ok), "%s (Game ID %d):", ra_res.message.c_str(), ra_res.game_id);
+            for (size_t ni = 0; ni < ra_res.notes.size(); ni++)
+            {
+               const auto &cn = ra_res.notes[ni];
+               ImGui::PushID((int)ni);
+               if (ImGui::SmallButton("Use"))
+               {
+                  ad.address = cn.address;
+                  ad.known = true;
+                  ad.memory = cn.memory;
+                  ad.size = cn.size;
+                  ad.bytes.clear();
+                  ad.any.clear();
+                  ad.offset = 0;
+                  s.address_source = "RetroAchievements: " + cn.note;
+               }
+               ImGui::SameLine();
+               ImGui::Text("%s", cn.address_hex.c_str());
+               ImGui::SameLine();
+               ImGui::TextColored(col(P.text), "%s", cn.note.c_str());
+               if (!cn.author.empty())
+               {
+                  ImGui::SameLine();
+                  ImGui::TextColored(col(P.dim), "(%s)", cn.author.c_str());
+               }
+               ImGui::PopID();
+            }
+         }
+         else if (ra_res.status == RaLookupStatus::NO_GAME)
+         {
+            ImGui::TextColored(col(P.dim), "ROM hash not found on RetroAchievements.");
+         }
+         else if (ra_res.status == RaLookupStatus::NO_NOTES)
+         {
+            ImGui::TextColored(col(P.dim), "Game found (ID %d), but no music notes documented.", ra_res.game_id);
+         }
+         else if (ra_res.status == RaLookupStatus::ERROR_NET)
+         {
+            ImGui::TextColored(col(P.danger), "RetroAchievements lookup failed: %s", ra_res.message.c_str());
+         }
+
+         // Static 65816 APU analysis
+         ImGui::Spacing();
+         if (ImGui::Button("Run Static 65816 Analysis"))
+            s.run_static_analysis();
+         help_marker("Statically scans the ROM binary for 65816 writes to APU ports $2140-$2143 for RAM that may hold the song number.\nThese are suggestions: Scan songs checks them against the songs it starts.");
+
+         if (s.apu_analysis.found)
+         {
+            ImGui::TextColored(col(P.ok), "Static APU Analysis (%d candidate%s):",
+                  (int)s.apu_analysis.candidates.size(),
+                  s.apu_analysis.candidates.size() == 1 ? "" : "s");
+            for (size_t ci = 0; ci < s.apu_analysis.candidates.size(); ci++)
+            {
+               const auto &cand = s.apu_analysis.candidates[ci];
+               ImGui::PushID((int)(2000 + ci));
+               if (ImGui::SmallButton("Use"))
+               {
+                  ad = cand.address;
+                  s.address_source = "static analysis: " + cand.source_desc;
+                  set_status(a, "Using " + describe_song_address(ad) + " (unchecked). Scan songs checks it.");
+               }
+               ImGui::SameLine();
+               ImGui::Text("$%s", hex(cand.address.address, 4).substr(2).c_str());
+               ImGui::SameLine();
+               ImGui::TextColored(col(P.text), "%s", cand.source_desc.c_str());
+               ImGui::SameLine();
+               ImGui::TextColored(col(P.dim), "[Score %d, %s]", cand.score, cand.routine_desc.c_str());
+               ImGui::PopID();
+            }
+         }
 
          ImGui::SeparatorText("How songs start");
          static char start_text[2][160];

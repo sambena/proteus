@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "snes_rom.h"
+#include "md5.h"
 
 #include <algorithm>
 
@@ -57,6 +58,7 @@ bool SnesRom::load(const std::vector<uint8_t> &content)
    while (!title.empty() && (title.back() == ' ' || title.back() == 0))
       title.pop_back();
    crc32 = (uint32_t)::crc32(0, data.data(), (uInt)data.size());
+   md5 = md5_hex(data.data(), data.size());
    return true;
 }
 

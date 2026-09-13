@@ -17,6 +17,7 @@
 #define RAM_SIZE 0x100
 #define SONG_ADDR 0x42
 #define CMD_ADDR  0x43
+#define BLOCK_ADDR 0x50
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -131,9 +132,21 @@ RETRO_API void retro_run(void)
    s.ram[SONG_ADDR] = curr;
    /* Command register pulses the new song ID for 2 frames when it changes, then resets to 0. */
    if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2))
+   {
       s.ram[CMD_ADDR] = curr;
+      s.ram[BLOCK_ADDR + 0] = 0x10;
+      s.ram[BLOCK_ADDR + 1] = curr;
+      s.ram[BLOCK_ADDR + 2] = 0xFF;
+      s.ram[BLOCK_ADDR + 3] = 0x04 + curr;   /* varies per song, like Chrono Trigger's */
+   }
    else
+   {
       s.ram[CMD_ADDR] = 0;
+      s.ram[BLOCK_ADDR + 0] = 0x02; /* sound effect; different first byte */
+      s.ram[BLOCK_ADDR + 1] = 0x77;
+      s.ram[BLOCK_ADDR + 2] = 0x00;
+      s.ram[BLOCK_ADDR + 3] = 0x00;
+   }
 
    s.sample_debt += RATE / FPS;
    frames = (size_t)s.sample_debt;

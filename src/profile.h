@@ -15,6 +15,7 @@ extern "C" {
 #define PX_MAX_TRACKS 256
 #define PX_MAX_MUTE   64
 #define PX_MAX_LIBRARY 8
+#define PX_MAX_PATTERN 16
 
 typedef enum
 {
@@ -54,6 +55,10 @@ typedef struct
    unsigned debounce;   /* frames a value must be stable before it counts */
    bool latch;          /* the address is a one-shot command: ignore zero, keep the last song */
    px_action unmapped;
+   uint8_t pattern[PX_MAX_PATTERN];
+   uint8_t pattern_mask[PX_MAX_PATTERN];
+   unsigned pattern_length;
+   unsigned pattern_offset;
 
    /* [mute] core options forced while the original music is muted */
    px_option mute[PX_MAX_MUTE];

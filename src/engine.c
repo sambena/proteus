@@ -345,6 +345,17 @@ static bool read_song_value(px_engine *e, uint32_t *out)
       return false;
    }
 
+   if (p->pattern_length > 0)
+   {
+      for (unsigned i = 0; i < p->pattern_length; i++)
+      {
+         if ((data[p->address + i] & p->pattern_mask[i]) != (p->pattern[i] & p->pattern_mask[i]))
+            return false;
+      }
+      *out = (uint32_t)data[p->address + p->pattern_offset];
+      return true;
+   }
+
    for (unsigned i = 0; i < p->size; i++)
       v |= (uint32_t)data[p->address + i] << (8 * i);
    *out = v & p->mask;
@@ -357,8 +368,9 @@ void px_engine_frame(px_engine *e)
 
    if (!e->profile.loaded || !e->cfg.enabled || !read_song_value(e, &v))
       return;
-   /* A command register reads zero between commands; the last song keeps playing. */
-   if (e->profile.latch && v == 0)
+   /* A command register reads zero between commands; the last song keeps playing.
+    * Pattern matches return false when idle, so a zero song value is valid. */
+   if (e->profile.latch && e->profile.pattern_length == 0 && v == 0)
       return;
 
    if (!e->have_candidate || v != e->candidate)

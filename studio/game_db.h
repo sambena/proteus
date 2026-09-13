@@ -19,7 +19,18 @@ struct SongAddress
    int size = 1;
    bool latch = false;          // a command register: holds a song number briefly, then 0
    int debounce = 2;
+   std::vector<uint8_t> bytes;  // pattern for command blocks (e.g. 10 xx .. ..)
+   std::vector<bool> any;       // per byte of `bytes`: matches any value (written "..")
+   int offset = 0;              // offset of xx in bytes
 };
+
+// Reads the song number at `a` from `ram`; false when a pattern does not match.
+bool read_song_address(const SongAddress &a, const uint8_t *ram, size_t ram_size, uint32_t &value);
+
+// "$1DFB", "$1E00 = 10 song .. .."
+std::string describe_song_address(const SongAddress &a);
+std::string format_song_pattern(const SongAddress &a);
+bool parse_song_pattern(const std::string &text, SongAddress &a);
 
 // How to start a song from outside the game.
 struct SongStart
