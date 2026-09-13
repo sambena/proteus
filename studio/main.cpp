@@ -144,6 +144,7 @@ struct App
    bool show_settings = false;
    bool show_advanced = false;
    int advanced_tab = TAB_PLAY;
+   int select_tab = -1;        // tab to bring forward on the next frame
    int live = TARGET;          // which game the Advanced view plays
    bool live_running = false;
    SDL_Texture *game_tex = nullptr;
@@ -266,6 +267,28 @@ static void play_song(App &a, const std::string &id, const std::string &path, un
    std::string err;
    if (!a.audio.play(path, track ? track - 1 : 0, id, err))
       set_status(a, "Cannot play " + file_name(path) + ": " + err, true);
+}
+
+// Chooses which game the Advanced view plays; the other one pauses.
+static void select_live(App &a, int side)
+{
+   a.live = side;
+   a.live_running = false;
+   a.audio.clear_game();
+   size_t size = 0;
+   a.sessions[side].core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
+   a.finder.reset(size);
+}
+
+// Opens Advanced on Play & rip with this game running.
+static void play_live(App &a, int side)
+{
+   if (a.live != side)
+      select_live(a, side);
+   a.show_advanced = true;
+   a.select_tab = TAB_PLAY;
+   a.audio.stop();
+   a.live_running = true;
 }
 
 static void assign(App &a, uint32_t value, const FoundSong &song, const std::string &game)
@@ -459,6 +482,17 @@ static void draw_scan_bar(App &a, int side)
             ImGui::SetTooltip("Plays song numbers %d-%d through the music command %s\nand keeps the ones that make music.",
                   a.scan_first[side], a.scan_last[side], describe_scan_command(s.address).c_str());
       }
+      ImGui::SameLine();
+      bool live_here = a.show_advanced && a.live == side && a.live_running;
+      if (ImGui::Button(live_here ? "Pause game" : "Play & rip"))
+      {
+         if (live_here)
+            a.live_running = false;
+         else
+            play_live(a, side);
+      }
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("Play this game in Advanced. Each new song is ripped into this list a few seconds after it starts.");
       ImGui::SameLine();
       if (ImGui::Button("Open ROM..."))
       {
@@ -854,20 +888,21 @@ static void live_rip(App &a)
 
 static void tab_play(App &a)
 {
+   ImGui::AlignTextToFramePadding();
    ImGui::TextUnformatted("Play");
-   ImGui::SameLine();
    for (int side = 0; side < 2; side++)
    {
+      RomSession &g = a.sessions[side];
       ImGui::SameLine();
-      ImGui::BeginDisabled(!a.sessions[side].is_open());
-      if (ImGui::RadioButton(side == TARGET ? "Game to change" : "Music source", a.live == side) && a.live != side)
-      {
-         a.live = side;
-         a.live_running = false;
-         size_t size = 0;
-         a.sessions[side].core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
-         a.finder.reset(size);
-      }
+      ImGui::BeginDisabled(!g.is_open());
+      std::string label = (g.is_open() ? g.display_name() : std::string(side == TARGET ? "Game to change" : "Music source")) +
+            (side == TARGET ? "  (game to change)" : "  (music source)");
+      ImGui::PushStyleColor(ImGuiCol_CheckMark, col(P.side[side]));
+      ImGui::PushID(side);
+      if (ImGui::RadioButton(label.c_str(), a.live == side) && a.live != side)
+         select_live(a, side);
+      ImGui::PopID();
+      ImGui::PopStyleColor();
       ImGui::EndDisabled();
    }
    RomSession &s = a.sessions[a.live];
@@ -1201,8 +1236,10 @@ static void draw_advanced(App &a, float height)
          { "Log", TAB_LOG, tab_log },
       };
       for (auto &t : tabs)
-         if (ImGui::BeginTabItem(t.name))
+         if (ImGui::BeginTabItem(t.name, nullptr, a.select_tab == t.tab ? ImGuiTabItemFlags_SetSelected : 0))
          {
+            if (a.select_tab == t.tab)
+               a.select_tab = -1;
             a.advanced_tab = t.tab;
             t.draw(a);
             ImGui::EndTabItem();
