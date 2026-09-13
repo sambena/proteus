@@ -4,6 +4,7 @@
  *
  *   harness gen <dir>                           write the test music files
  *   harness run <core> <test dir> <out.wav>     run the scenarios
+ *   harness dsp <plugin> <core> <test dir>      run the DSP plugin with an unwrapped core
  *   harness probe <core> <rom> <system dir> <frames> <out.wav> [ram offsets...]
  *                                               run a real game, list options, watch RAM
  */
@@ -16,6 +17,7 @@
 #include <string.h>
 
 #include "libretro.h"
+#include "libretro_dspfilter.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -189,6 +191,10 @@ static void RETRO_CALLCONV audio_cb(int16_t l, int16_t r) { (void)l; (void)r; }
 static void RETRO_CALLCONV poll_cb(void) {}
 static int16_t RETRO_CALLCONV input_cb(unsigned a, unsigned b, unsigned c, unsigned d) { (void)a; (void)b; (void)c; (void)d; return 0; }
 
+/* A DSP plugin to run the core's audio through, as RetroArch would. */
+static const struct dspfilter_implementation *dsp_impl;
+static void *dsp_data;
+
 static size_t RETRO_CALLCONV batch_cb(const int16_t *data, size_t frames)
 {
    if (audio_frames + frames > audio_cap)
@@ -196,6 +202,28 @@ static size_t RETRO_CALLCONV batch_cb(const int16_t *data, size_t frames)
       audio_cap = (audio_frames + frames) * 2;
       audio     = realloc(audio, audio_cap * 2 * sizeof(int16_t));
    }
+
+   if (dsp_data)
+   {
+      static float buf[8192 * 2];
+      struct dspfilter_input in;
+      struct dspfilter_output out;
+      if (frames > 8192)
+         frames = 8192;
+      for (size_t i = 0; i < frames * 2; i++)
+         buf[i] = data[i] / 32768.0f;
+      in.samples = buf;
+      in.frames  = (unsigned)frames;
+      dsp_impl->process(dsp_data, &out, &in);
+      for (size_t i = 0; i < out.frames * 2; i++)
+      {
+         float v = out.samples[i] * 32768.0f;
+         audio[audio_frames * 2 + i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+      }
+      audio_frames += out.frames;
+      return frames;
+   }
+
    memcpy(audio + audio_frames * 2, data, frames * 2 * sizeof(int16_t));
    audio_frames += frames;
    return frames;
@@ -458,6 +486,94 @@ static int gen(const char *dir)
 
 #define VGM_HZ (3579545.0 / (32.0 * 224.0))
 
+/* The .dsp settings the plugin sees: its folders point into the test directory. */
+static char dsp_system[512], dsp_history[512], dsp_log[512];
+
+static int RETRO_CALLCONV cfg_float(void *u, const char *k, float *v, float d) { (void)u; (void)k; *v = d; return 0; }
+static int RETRO_CALLCONV cfg_int(void *u, const char *k, int *v, int d) { (void)u; (void)k; *v = d; return 0; }
+static int RETRO_CALLCONV cfg_float_array(void *u, const char *k, float **v, unsigned *n, const float *d, unsigned dn)
+{ (void)u; (void)k; (void)d; (void)dn; *v = NULL; *n = 0; return 0; }
+static int RETRO_CALLCONV cfg_int_array(void *u, const char *k, int **v, unsigned *n, const int *d, unsigned dn)
+{ (void)u; (void)k; (void)d; (void)dn; *v = NULL; *n = 0; return 0; }
+
+static int RETRO_CALLCONV cfg_string(void *u, const char *key, char **out, const char *def)
+{
+   const char *v = !strcmp(key, "system_dir") ? dsp_system
+         : !strcmp(key, "history") ? dsp_history : !strcmp(key, "log") ? dsp_log : def;
+   (void)u;
+   *out = strdup(v ? v : "");
+   return v != def;
+}
+
+static int dsp_scenario(const char *plugin, const char *core_path, const char *dir)
+{
+   static const struct dspfilter_config config = {
+      cfg_float, cfg_int, cfg_float_array, cfg_int_array, cfg_string, free
+   };
+   const struct dspfilter_implementation *(*get_impl)(dspfilter_simd_mask_t);
+   struct dspfilter_info info = { (float)RATE };
+   char content[512], wrapper[512];
+   void *lib = LOAD(plugin);
+   FILE *f;
+
+   printf("\nscenario: DSP plugin with an unwrapped core\n");
+   if (!lib || !(get_impl = SYM(lib, "dspfilter_get_implementation")))
+   {
+      printf("  FAIL: cannot load %s\n", plugin);
+      return 1;
+   }
+   dsp_impl = get_impl(0);
+   check("plugin API version 1 (RetroArch 1.22)", dsp_impl->api_version == 1, "");
+   check("plugin short ident", !strcmp(dsp_impl->short_ident, "proteus"), dsp_impl->short_ident);
+
+   /* RetroArch records the running game in its history when content starts. */
+   snprintf(content, sizeof(content), "%s/game.tst", dir);
+   snprintf(dsp_system, sizeof(dsp_system), "%s", dir);
+   snprintf(dsp_history, sizeof(dsp_history), "%s/history.lpl", dir);
+   snprintf(dsp_log, sizeof(dsp_log), "%s/proteus.log", dir);
+   if ((f = fopen(dsp_history, "wb")))
+   {
+      fprintf(f, "{\n  \"version\": \"1.5\",\n  \"default_core_path\": \"\",\n  \"items\": [\n"
+            "    {\n      \"path\": \"%s\",\n      \"label\": \"game\",\n      \"core_path\": \"%s\"\n    }\n  ]\n}\n",
+            content, core_path);
+      fclose(f);
+   }
+
+   system_dir = dir;
+   if (!open_core(core_path) || !start_session(content, 2))
+      return 1;
+   dsp_data = dsp_impl->init(&info, &config, NULL);
+   check("plugin init", dsp_data != NULL, "");
+   if (!dsp_data)
+      return 1;
+   /* The plugin can't mute; per-game core options do it. */
+   set_option("testcore_music", "disabled");
+
+   run_frames(0, 420);
+   expect("song 1: nothing replaced", 6, 60, 220, false);
+   expect("song 1: sound effects", 6, 60, 1000, true);
+   expect("song 2: wav replacement", 66, 180, 220, true);
+   expect("song 2: sound effects kept", 66, 180, 1000, true);
+   expect("song 3: ogg replacement", 186, 300, 330, true);
+   expect("song 3: previous track gone", 186, 300, 220, false);
+   expect("song 4: silence", 306, 360, 330, false);
+   expect("song 5: mp3 replacement", 366, 420, 550, true);
+   expect("game options mute the core's music", 6, 420, 440, false);
+
+   /* The wrapper core does the work when it is running; the plugin steps aside. */
+   snprintf(wrapper, sizeof(wrapper), "%s/proteus_testcore_libretro.dll", dir);
+   check("load wrapper module", LOAD(wrapper) != NULL, "");
+   run_frames(420, 60);
+   expect("wrapper loaded: plugin stands by", 456, 480, 550, false);
+   expect("wrapper loaded: sound effects", 456, 480, 1000, true);
+
+   dsp_impl->free(dsp_data);
+   dsp_data = NULL;
+   end_session();
+   printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");
+   return failures ? 1 : 0;
+}
+
 static int probe(int argc, char **argv)
 {
    unsigned frames = (unsigned)strtoul(argv[5], NULL, 0);
@@ -539,6 +655,8 @@ int main(int argc, char **argv)
       return gen(argv[2]);
    if (argc >= 7 && !strcmp(argv[1], "probe"))
       return probe(argc, argv);
+   if (argc == 5 && !strcmp(argv[1], "dsp"))
+      return dsp_scenario(argv[2], argv[3], argv[4]);
    if (argc != 5 || strcmp(argv[1], "run"))
    {
       fprintf(stderr, "usage: harness gen <dir> | harness run <core> <test dir> <out.wav>\n");

@@ -1,49 +1,63 @@
 # Proteus Retune
 
-A libretro core for RetroArch that swaps a game's soundtrack while keeping its
-sound effects.
+A RetroArch audio plugin and libretro core that swap a game's soundtrack while keeping
+its sound effects.
 
-Proteus wraps an existing core (snes9x, Genesis Plus GX, Mesen, ...). Per game it:
+Proteus works alongside an existing core (Snes9x, Genesis Plus GX, Mesen, ...). Per game it:
 
 1. watches a RAM address to learn which song the game is playing,
-2. mutes the original music by forcing the core's per-channel volume options,
+2. mutes the original music through the core's per-channel volume options,
 3. mixes in replacement music, with crossfades and loop points. The replacement can be
    - a recording: WAV, MP3 or Ogg Vorbis, or
    - another game's music on its original sound chip, emulated by libgme: SNES `.spc`,
      NES `.nsf`/`.nsfe`, Genesis/Master System `.vgm`/`.vgz`/`.gym`, Game Boy `.gbs`,
      PC Engine `.hes`, MSX `.kss`, ZX Spectrum `.ay` and Atari `.sap`.
 
-Settings and per-song choices are available in RetroArch under
-**Quick Menu → Core Options → Proteus Retune**. Save states, rewind and run-ahead
-keep the replacement music in step with the game. Games without a profile play
-exactly as they would on the wrapped core.
+Proteus comes in two forms that share profiles and music files:
+
+| | DSP plugin | Wrapper core |
+| --- | --- | --- |
+| Use with | any core, unchanged — keep choosing Snes9x | a separate core entry, e.g. "Proteus Retune + Snes9x" |
+| Turn on | Settings → Audio → DSP Plugin → `Proteus.dsp` (or a per-core/per-game override) | load the game with the wrapper core |
+| Muting the original music | for the whole game, via the core's channel volumes saved as game options | song by song, automatically |
+| Settings | the profile; song changes are logged to `logs/proteus.log` | Quick Menu → Core Options → Proteus Retune, with per-song pickers and on-screen song values |
+| Save states | music follows the song detected after loading | music position is saved in the state |
+
+When the wrapper core is running, the plugin stands aside. Games without a profile
+play exactly as they would without Proteus.
 
 ## Build
 
 From an MSYS2 **UCRT64** shell (`pacman -S make mingw-w64-ucrt-x86_64-gcc`):
 
 ```sh
-make          # build/proteus_libretro.dll
+make          # build/proteus_dsp.dll (plugin) and build/proteus_libretro.dll (wrapper core)
 make test     # runs the headless test suite (needs sox for the test assets)
 make ZLIB=0   # without compressed .vgz support
 ```
 
-The DLL links its C++ runtime and zlib statically, so it only needs Windows' own
+Both DLLs link their C++ runtime and zlib statically, so they only need Windows' own
 runtime libraries.
 
 ## Install
 
-Proteus chooses the core to wrap from its own file name:
-`proteus_snes9x_libretro.dll` wraps `snes9x_libretro.dll` in the same folder.
-
 ```powershell
-.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core snes9x
+.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Dsp            # plugin
+.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core snes9x    # wrapper core
 ```
 
-This copies the DLL and creates a `.info` file, so RetroArch lists
-**Proteus Retune (Snes9x)**. Load a game with that core instead of snes9x itself.
+**Plugin:** copies `proteus_dsp.dll` and a `Proteus.dsp` preset to `filters\audio`.
+Select it under Settings → Audio → DSP Plugin. It finds the running core inside
+RetroArch and the running game from RetroArch's content history, so history must be
+enabled (the default).
 
-## Core options
+**Wrapper core:** Proteus chooses the core to wrap from its own file name:
+`proteus_snes9x_libretro.dll` wraps `snes9x_libretro.dll` in the same folder. The
+script also creates a `.info` file, so RetroArch lists
+**Nintendo - SNES / SFC (Proteus Retune + Snes9x)**. Load a game with that core
+instead of Snes9x itself.
+
+## Core options (wrapper core)
 
 Proteus adds a **Proteus Retune** category next to the wrapped core's own options:
 
@@ -150,13 +164,15 @@ lose some effects; mute fewer channels for those games.
 
 | Path | Purpose |
 | --- | --- |
-| `src/proteus.c` | libretro API passthrough, song detection, option overrides, save states |
+| `src/engine.c` | song detection, choosing what plays, mixing, save state data (shared) |
+| `src/proteus.c` | the wrapper core: libretro API passthrough, option overrides, save states |
+| `src/dsp.c` | the DSP plugin: finds the running core and game inside RetroArch |
 | `src/options.c` | merges Proteus's core options with the wrapped core's, for every libretro option API |
 | `src/profile.c` | profile parser |
 | `src/music.c` | resampling mixer with crossfades and loops |
 | `src/decoders.c` | WAV / MP3 / Ogg decoders and libgme sources |
 | `test/` | a fake game core and a headless frontend that checks the mixed audio and the options |
-| `tools/install-core.ps1` | installs a wrapper into a RetroArch folder |
+| `tools/install-core.ps1` | installs the plugin and wrapper cores into a RetroArch folder |
 
 ## License
 
@@ -167,7 +183,7 @@ own licenses:
 | Library | License |
 | --- | --- |
 | `deps/gme` — libgme 0.6.5 | LGPL-2.1-or-later (`deps/gme/LICENSE`); `ext/emu2413` is MIT |
-| `deps/libretro.h` | MIT |
+| `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
 

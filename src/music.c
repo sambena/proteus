@@ -154,30 +154,53 @@ static int16_t clamp16(float x)
    return (int16_t)lrintf(x);
 }
 
+/* Adds the next output frame of both voices, in int16 scale, to *l and *r. */
+static void render_frame(px_mixer *m, double cur_step, double fade_step, float music_gain,
+      float *l, float *r)
+{
+   if (m->current.src && !voice_render(&m->current, cur_step, music_gain, l, r))
+      voice_close(&m->current);
+   if (m->fading.src && !voice_render(&m->fading, fade_step, music_gain, l, r))
+      voice_close(&m->fading);
+}
+
+static bool voice_steps(const px_mixer *m, double *cur_step, double *fade_step)
+{
+   if (m->out_rate <= 0.0)
+      return false;
+   *cur_step  = m->current.src ? px_source_rate(m->current.src) / m->out_rate : 0.0;
+   *fade_step = m->fading.src ? px_source_rate(m->fading.src) / m->out_rate : 0.0;
+   return true;
+}
+
 void px_mixer_mix(px_mixer *m, int16_t *frames, size_t count, float game_gain, float music_gain)
 {
-   double cur_step  = 0.0;
-   double fade_step = 0.0;
+   double cur_step, fade_step;
 
-   if (m->out_rate <= 0.0)
+   if (!voice_steps(m, &cur_step, &fade_step))
       return;
-   if (m->current.src)
-      cur_step = px_source_rate(m->current.src) / m->out_rate;
-   if (m->fading.src)
-      fade_step = px_source_rate(m->fading.src) / m->out_rate;
-
    for (size_t i = 0; i < count; i++)
    {
       float l = frames[i * 2] * game_gain;
       float r = frames[i * 2 + 1] * game_gain;
-
-      if (m->current.src && !voice_render(&m->current, cur_step, music_gain, &l, &r))
-         voice_close(&m->current);
-      if (m->fading.src && !voice_render(&m->fading, fade_step, music_gain, &l, &r))
-         voice_close(&m->fading);
-
+      render_frame(m, cur_step, fade_step, music_gain, &l, &r);
       frames[i * 2]     = clamp16(l);
       frames[i * 2 + 1] = clamp16(r);
+   }
+}
+
+void px_mixer_mix_float(px_mixer *m, float *frames, size_t count, float game_gain, float music_gain)
+{
+   double cur_step, fade_step;
+
+   if (!voice_steps(m, &cur_step, &fade_step))
+      return;
+   for (size_t i = 0; i < count; i++)
+   {
+      float l = 0.0f, r = 0.0f;
+      render_frame(m, cur_step, fade_step, music_gain, &l, &r);
+      frames[i * 2]     = frames[i * 2] * game_gain + l / 32768.0f;
+      frames[i * 2 + 1] = frames[i * 2 + 1] * game_gain + r / 32768.0f;
    }
 }
 

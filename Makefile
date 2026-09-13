@@ -15,6 +15,7 @@ ifeq ($(OS),Windows_NT)
   EXT     := dll
   EXE     := .exe
   LDLIBS  :=
+  DSP_LIBS := -lpsapi
   # Link the C++ runtime and zlib statically so the DLL has no MinGW dependencies.
   SHARED  := -shared -static -Wl,--no-undefined
 else
@@ -26,7 +27,7 @@ else
 endif
 
 WARN     := -Wall -Wextra
-CFLAGS   += -std=gnu11 -O2 $(WARN) $(PIC) -Ideps -Ideps/gme -Isrc
+CFLAGS   += -std=gnu11 -O2 $(WARN) $(PIC) -Ideps -Ideps/compat -Ideps/gme -Isrc
 CXXFLAGS += -std=gnu++11 -O2 -w $(PIC) -Ideps/gme -DVGM_YM2612_NUKED
 LDLIBS   += -lm
 
@@ -44,15 +45,22 @@ ifeq ($(ZLIB),1)
 endif
 
 CORE     := $(BUILD)/proteus_libretro.$(EXT)
-SOURCES  := src/proteus.c src/profile.c src/music.c src/decoders.c src/options.c src/util.c
+DSP      := $(BUILD)/proteus_dsp.$(EXT)
+SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/options.c src/util.c
+DSP_SRC  := src/dsp.c src/engine.c src/profile.c src/music.c src/decoders.c src/util.c
 GME_SRC  := $(wildcard deps/gme/*.cpp)
-OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_SRC:%.cpp=$(OBJ)/%.o) $(OBJ)/deps/gme/ext/emu2413.o
+GME_OBJ  := $(GME_SRC:%.cpp=$(OBJ)/%.o) $(OBJ)/deps/gme/ext/emu2413.o
+OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ)
+DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ)
 HEADERS  := $(wildcard src/*.h)
 
-all: $(CORE)
+all: $(CORE) $(DSP)
 
 $(CORE): $(OBJECTS)
 	$(CXX) $(SHARED) -o $@ $(OBJECTS) $(LDLIBS)
+
+$(DSP): $(DSP_OBJ)
+	$(CXX) $(SHARED) -o $@ $(DSP_OBJ) $(LDLIBS) $(DSP_LIBS)
 
 $(OBJ)/src/%.o: src/%.c $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -90,8 +98,9 @@ $(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini
 	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $@
 
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
-      $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp
+      $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP)
 	$(TESTDIR)/harness$(EXE) run $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR) $(TESTDIR)/mixed.wav
+	$(TESTDIR)/harness$(EXE) dsp $(DSP) $(TESTDIR)/testcore_libretro.$(EXT) $(TESTDIR)
 
 clean:
 	rm -rf $(BUILD)

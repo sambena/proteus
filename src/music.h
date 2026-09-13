@@ -66,6 +66,8 @@ bool px_mixer_play(px_mixer *m, const char *path, unsigned subtrack, bool loop,
 void px_mixer_stop(px_mixer *m, unsigned fade_frames);
 /* Adds music to `frames` (interleaved stereo) after scaling the game audio. */
 void px_mixer_mix(px_mixer *m, int16_t *frames, size_t count, float game_gain, float music_gain);
+/* Same, for float audio in the -1..1 range. */
+void px_mixer_mix_float(px_mixer *m, float *frames, size_t count, float game_gain, float music_gain);
 bool px_mixer_is_playing(const px_mixer *m, const char *path, unsigned subtrack);
 uint64_t px_mixer_position(const px_mixer *m);
 unsigned px_mixer_source_rate(const px_mixer *m);
