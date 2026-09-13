@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <map>
 #include <sstream>
 
@@ -19,11 +20,14 @@ extern "C" {
 }
 
 static const unsigned kMemoryIds[] = { RETRO_MEMORY_SYSTEM_RAM, RETRO_MEMORY_SAVE_RAM, RETRO_MEMORY_VIDEO_RAM };
-static const int kBootFrames   = 720;   // where scans start when no moment was chosen
-static const int kPrintRate    = 32000;
-static const int kPrintSeconds = 10;
-static const int kWindowMs     = 100;
+static const int kBootFrames     = 720;   // where scans start when no moment was chosen
+static const int kWatchFrames    = 2400;  // how long a scan watches the game boot for its music code
+static const int kRoutineSettle  = 300;   // music routines may upload a song before it starts
+static const int kPrintRate      = 32000;
+static const int kPrintSeconds   = 10;
+static const int kWindowMs       = 100;
 static const char kLibraryHeader[] = "# proteus-studio library 2";
+static const uint32_t kTrials[]  = { 1, 2, 3, 5, 8, 13 };
 
 static std::string hex2(uint32_t v)
 {
@@ -36,6 +40,14 @@ static std::string hex4(uint32_t v)
 {
    char buf[16];
    snprintf(buf, sizeof(buf), "%04X", (unsigned)v);
+   return buf;
+}
+
+static std::string today()
+{
+   char buf[16];
+   time_t now = time(nullptr);
+   strftime(buf, sizeof(buf), "%Y-%m-%d", localtime(&now));
    return buf;
 }
 
@@ -140,6 +152,11 @@ static bool classify(const SongPrint &p, SongKind &kind)
    return false;
 }
 
+static std::string default_title(uint32_t value, SongKind kind)
+{
+   return (kind == SONG_JINGLE ? "Jingle " : "Song ") + hex2(value);
+}
+
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
@@ -155,15 +172,6 @@ void RomSession::log(const std::string &line)
 {
    std::lock_guard<std::mutex> lock(log_mutex_);
    log_.push_back((display_name_.empty() ? "" : display_name_ + ": ") + line);
-}
-
-void RomSession::apply_scan_results()
-{
-   if (!scanning_ && scan_addr_changed_)
-   {
-      address = scan_addr_;
-      scan_addr_changed_ = false;
-   }
 }
 
 std::vector<std::string> RomSession::take_log()
@@ -210,16 +218,28 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    const std::string &content = core.content_path();
    size_t hash = content.find('#');
    game_name_ = stem_of(hash == std::string::npos ? content : content.substr(hash + 1));
-
-   const auto &data = core.content_data();
-   std::string header_title = detect_rom_header_title(data.data(), data.size(), system_);
-   preset_ = detect_preset(data.data(), data.size(), rom_path);
-   display_name_ = preset_ ? preset_->name : game_name_;
-   if (system_.empty())
-      system_ = preset_ ? preset_->system : "SNES";
-   (void)header_title;
+   rom_ = SnesRom();
+   rom_.load(core.content_data());
 
    address = SongAddress();
+   start = SongStart();
+   address_source.clear();
+   start_source.clear();
+
+   GameInfo info;
+   bool in_db = GameDb::get().find(rom_.crc32, info);
+   display_name_ = in_db && !info.name.empty() ? info.name : game_name_;
+   if (in_db && info.song.known)
+   {
+      address = info.song;
+      address_source = "game database";
+   }
+   if (in_db && info.start.kind != SongStart::NONE)
+   {
+      start = info.start;
+      start_source = "game database";
+   }
+
    profile_path_.clear();
    char found[2048];
    if (px_engine_find_profile(content.c_str(), system_dir.c_str(), found, sizeof(found)))
@@ -229,38 +249,33 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
       if (px_profile_load(&p, found, err, sizeof(err)))
       {
          profile_path_ = found;
-         address.known = true;
-         address.source = "profile";
+         SongAddress from_profile;
+         from_profile.known = true;
          for (int i = 0; i < 3; i++)
             if (kMemoryIds[i] == p.memory_id)
-               address.memory = i;
-         address.address = p.address;
-         address.size = (int)p.size;
-         address.latch = p.latch;
-         address.debounce = (int)p.debounce;
+               from_profile.memory = i;
+         from_profile.address = p.address;
+         from_profile.size = (int)p.size;
+         from_profile.latch = p.latch;
+         from_profile.debounce = (int)p.debounce;
+         if (!address.known)
+         {
+            address = from_profile;
+            address_source = "profile";
+         }
+         else if (from_profile.address != address.address)
+            log("the profile follows $" + hex4(from_profile.address) + "; the game database says $" +
+                hex4(address.address) + ", which Generate INI will use");
       }
       else
          log(std::string("profile ") + found + ": " + err);
    }
-   if (!address.known && preset_ && preset_->verified)
+   // A command register that is also the song address starts songs when written.
+   if (start.kind == SongStart::NONE && address.known && address.latch)
    {
-      address.known = true;
-      address.source = "preset";
-      address.memory = preset_->memory;
-      address.address = preset_->address;
-      address.size = preset_->size;
-      address.latch = preset_->latch;
-      address.debounce = std::max(1, preset_->debounce);
-   }
-   if (address.known && address.latch)
-   {
-      address.scan_known = true;
-      address.scan_address = address.address;
-   }
-   else if (preset_ && preset_->verified && preset_->latch && preset_->memory == address.memory)
-   {
-      address.scan_known = true;
-      address.scan_address = preset_->address;
+      start.kind = SongStart::RAM;
+      start.address = address.address;
+      start_source = address_source;
    }
 
    scan_state_.clear();
@@ -268,7 +283,7 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    pending_rip_frames_ = -1;
    open_ = true;
    load_library();
-   log("opened " + rom_path + (address.known ? " (song address " + hex2(address.address) + " from " + address.source + ")" : ""));
+   log("opened " + rom_path + " (ROM " + hex4(rom_.crc32 >> 16) + hex4(rom_.crc32 & 0xFFFF) + ")");
    return true;
 }
 
@@ -282,6 +297,21 @@ void RomSession::close()
    std::lock_guard<std::mutex> songs_lock(songs_mutex);
    songs.clear();
    open_ = false;
+}
+
+void RomSession::save_to_game_db(const std::string &note)
+{
+   if (!open_ || !rom_.crc32)
+      return;
+   GameInfo info;
+   GameDb::get().find(rom_.crc32, info);
+   info.crc32 = rom_.crc32;
+   if (info.name.empty())
+      info.name = display_name_;
+   info.song = address;
+   info.start = start;
+   info.note = note + " " + today();
+   GameDb::get().put(info);
 }
 
 FoundSong *RomSession::find_song(uint32_t value)
@@ -323,37 +353,12 @@ std::string RomSession::library_dir() const
    return app_data_dir() + "\\library\\" + sanitize_filename(game_name_);
 }
 
-// The song numbers belong to one song address; the library records which, so a
-// game reopened later is followed by the address its songs were numbered by.
-static const char kNumberingPrefix[] = "# numbering ";
-
-void RomSession::save_library(const SongAddress *numbering)
+void RomSession::save_library()
 {
    std::string dir = library_dir();
    make_dirs(dir);
-   std::string numbering_line;
-   if (!numbering && !scanning_)
-      numbering = &address;
-   if (numbering && numbering->known)
-   {
-      char buf[128];
-      snprintf(buf, sizeof(buf), "%s%d %u %d %d %d", kNumberingPrefix, numbering->memory,
-            (unsigned)numbering->address, numbering->size, numbering->latch ? 1 : 0, numbering->debounce);
-      numbering_line = buf;
-   }
-   else
-   {
-      // Keep what the file says (a scan is running and owns the numbering).
-      std::string old = read_text(dir + "\\songs.txt");
-      size_t at = old.find(kNumberingPrefix);
-      if (at != std::string::npos)
-         numbering_line = old.substr(at, old.find('\n', at) - at);
-   }
    std::ostringstream out;
-   out << kLibraryHeader << "\n";
-   if (!numbering_line.empty())
-      out << numbering_line << "\n";
-   out << "# value\thas_value\tkind\tfile\ttitle\tloudness tail count envelope... brightness...\n";
+   out << kLibraryHeader << "\n# value\thas_value\tkind\tfile\ttitle\tloudness tail count envelope... brightness...\n";
    std::lock_guard<std::mutex> lock(songs_mutex);
    for (const auto &s : songs)
    {
@@ -381,38 +386,19 @@ void RomSession::load_library()
    songs.clear();
    while (std::getline(in, line))
    {
-      if (line.compare(0, strlen(kNumberingPrefix), kNumberingPrefix) == 0)
-      {
-         int memory = 0, size = 1, latch = 0, debounce = 2;
-         unsigned addr = 0;
-         if (sscanf(line.c_str() + strlen(kNumberingPrefix), "%d %u %d %d %d", &memory, &addr, &size, &latch, &debounce) == 5 &&
-               memory >= 0 && memory < 3 && (!address.known || address.address != addr || address.memory != memory))
-         {
-            log("songs were numbered by $" + hex4(addr) + (address.known ? ", not the profile's $" + hex4(address.address) : "") +
-                  "; following $" + hex4(addr));
-            address.known = true;
-            address.source = "song library";
-            address.memory = memory;
-            address.address = addr;
-            address.size = size;
-            address.latch = latch != 0;
-            address.debounce = debounce;
-         }
-         continue;
-      }
       if (line.empty() || line[0] == '#')
          continue;
       if (line.back() == '\r')
          line.pop_back();
       std::vector<std::string> f;
-      size_t start = 0;
+      size_t pos = 0;
       for (int i = 0; i < 5; i++)
       {
-         size_t tab = line.find('\t', start);
+         size_t tab = line.find('\t', pos);
          if (tab == std::string::npos)
             break;
-         f.push_back(line.substr(start, tab - start));
-         start = tab + 1;
+         f.push_back(line.substr(pos, tab - pos));
+         pos = tab + 1;
       }
       if (f.size() < 5)
          continue;
@@ -424,7 +410,7 @@ void RomSession::load_library()
       s.title = f[4];
       if (!file_exists(s.spc_path))
          continue;
-      std::istringstream nums(line.substr(start));
+      std::istringstream nums(line.substr(pos));
       size_t count = 0;
       nums >> s.print.loudness >> s.print.tail >> count;
       float e;
@@ -450,46 +436,6 @@ void RomSession::load_library()
 // Ripping
 // ---------------------------------------------------------------------------
 
-ScanCommand scan_command(const SongAddress &a)
-{
-   ScanCommand cmd;
-   cmd.address = a.scan_address;
-   cmd.bytes = a.scan_bytes;
-   cmd.offset = a.scan_offset;
-   cmd.size = a.size;
-   cmd.memory = a.memory;
-   return cmd;
-}
-
-std::string describe_scan_command(const SongAddress &a)
-{
-   std::string s = "$" + hex4(a.scan_address);
-   if (a.scan_bytes.empty())
-      return s + " = song";
-   s += " =";
-   for (size_t i = 0; i < a.scan_bytes.size(); i++)
-      s += (int)i == a.scan_offset ? " song" : " " + hex2(a.scan_bytes[i]).substr(2);
-   return s;
-}
-
-bool RomSession::write_command(const ScanCommand &cmd, uint32_t value)
-{
-   size_t size = 0;
-   uint8_t *ram = core.memory_mut(kMemoryIds[cmd.memory], &size);
-   size_t length = cmd.bytes.empty() ? (size_t)cmd.size : cmd.bytes.size();
-   if (!ram || (uint64_t)cmd.address + length > size)
-      return false;
-   if (cmd.bytes.empty())
-   {
-      for (int i = 0; i < cmd.size; i++)
-         ram[cmd.address + i] = (uint8_t)(value >> (8 * i));
-      return true;
-   }
-   memcpy(ram + cmd.address, cmd.bytes.data(), cmd.bytes.size());
-   ram[cmd.address + cmd.offset] = (uint8_t)value;
-   return true;
-}
-
 bool RomSession::read_song_value(const SongAddress &a, uint32_t &value)
 {
    size_t size = 0;
@@ -503,13 +449,12 @@ bool RomSession::read_song_value(const SongAddress &a, uint32_t &value)
 }
 
 // Builds a song from the game's state; the core must be at `state` (core_mutex held).
-bool RomSession::rip_state(const std::vector<uint8_t> &state, const std::string &title, uint32_t value,
-      bool has_value, FoundSong &out, std::string &error)
+bool RomSession::rip_state(const std::vector<uint8_t> &state, uint32_t value, bool has_value,
+      FoundSong &out, std::string &error)
 {
    std::vector<uint8_t> current = state, spc;
    SpcState info{};
    SpcTags tags;
-   tags.song = title;
    tags.game = display_name_;
    for (int tries = 0;; tries++)
    {
@@ -525,7 +470,6 @@ bool RomSession::rip_state(const std::vector<uint8_t> &state, const std::string 
    out = FoundSong();
    out.value = value;
    out.has_value = has_value;
-   out.title = title;
    if (!analyze_spc(spc, out.print, error))
       return false;
    if (!classify(out.print, out.kind))
@@ -537,7 +481,6 @@ bool RomSession::rip_state(const std::vector<uint8_t> &state, const std::string 
    out.spc_path.assign((const char*)spc.data(), spc.size());
    return true;
 }
-
 
 void RomSession::add_song_locked(FoundSong song)
 {
@@ -576,13 +519,378 @@ void RomSession::add_song_locked(FoundSong song)
    });
 }
 
-static std::string default_title(const RomPreset *preset, uint32_t value, SongKind kind)
+// ---------------------------------------------------------------------------
+// Starting songs
+// ---------------------------------------------------------------------------
+
+// Where a block starts inside a snes9x snapshot, after its "TAG:LLLLLL:" header.
+static size_t snapshot_block(const std::vector<uint8_t> &st, const char *tag)
 {
-   if (preset)
-      for (const auto &ps : preset->songs)
-         if (ps.value == value)
-            return ps.title;
-   return (kind == SONG_JINGLE ? "Jingle " : "Song ") + hex2(value);
+   size_t pos = 14;
+   while (pos + 11 <= st.size() && st[pos + 3] == ':')
+   {
+      size_t n = strtoul(std::string((const char*)&st[pos + 4], 6).c_str(), nullptr, 10);
+      if (!memcmp(&st[pos], tag, 3))
+         return pos + 11;
+      pos += 11 + n;
+   }
+   return 0;
+}
+
+// The CPU address of a work RAM offset ($7E:0000-$7F:FFFF).
+static uint32_t ram_cpu_address(uint32_t offset)
+{
+   return 0x7E0000 + offset;
+}
+
+// Loads the scan start state and starts song `value` (core_mutex held).
+bool RomSession::start_song(const SongStart &s, uint32_t value)
+{
+   size_t ram_size = 0;
+   if (s.kind == SongStart::RAM)
+   {
+      core.load_state(scan_state_);
+      uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+      size_t length = s.bytes.empty() ? 1 : s.bytes.size();
+      if (!ram || (uint64_t)s.address + length > ram_size)
+         return false;
+      if (s.bytes.empty())
+         ram[s.address] = (uint8_t)value;
+      else
+      {
+         memcpy(ram + s.address, s.bytes.data(), s.bytes.size());
+         ram[s.address + s.offset] = (uint8_t)value;
+      }
+      return true;
+   }
+   if (s.kind != SongStart::ROUTINE)
+      return false;
+
+   // Code in spare RAM that sets up the call like the game does, calls the routine,
+   // and then waits forever while the song plays:
+   //    SEP #$30 / LDA #b : STA $7Exxxx ... / [LDA #song] / JSL routine / BRA *
+   // A routine ending in RTS is entered with JML after pushing a return through an RTL
+   // byte in its own bank:  PHK / PEA wait-1 / PEA rtl-1 / JML routine.
+   uint32_t stub = ram_cpu_address(stub_ram_);
+   uint32_t rtl = 0;
+   if (s.jsr)
+   {
+      uint8_t bank = s.address >> 16;
+      for (uint32_t a = 0x8000; a <= 0xFFFF && !rtl; a++)
+      {
+         const uint8_t *b = rom_.at((uint32_t)bank << 16 | a);
+         if (b && *b == 0x6B)
+            rtl = (uint32_t)bank << 16 | a;
+      }
+      if (!rtl)
+         return false;
+   }
+   std::vector<uint8_t> code;
+   for (int pass = 0; pass < 2; pass++)
+   {
+      uint32_t wait = stub + (uint32_t)code.size() - 2;   // known on the second pass
+      code.clear();
+      code.insert(code.end(), { 0xE2, 0x30 });
+      if (s.fill_block)
+         for (size_t i = 0; i < s.bytes.size(); i++)
+         {
+            uint32_t at = ram_cpu_address(s.block + (uint32_t)i);
+            uint8_t b = (int)i == s.offset ? (uint8_t)value : s.bytes[i];
+            code.insert(code.end(), { 0xA9, b, 0x8F, (uint8_t)at, (uint8_t)(at >> 8), (uint8_t)(at >> 16) });
+         }
+      if (s.jsr)
+         code.insert(code.end(), { 0x4B, 0xF4, (uint8_t)(wait - 1), (uint8_t)((wait - 1) >> 8),
+                                   0xF4, (uint8_t)(rtl - 1), (uint8_t)((rtl - 1) >> 8) });
+      if (s.song_in_a)
+         code.insert(code.end(), { 0xA9, (uint8_t)value });
+      code.insert(code.end(), { (uint8_t)(s.jsr ? 0x5C : 0x22), (uint8_t)s.address, (uint8_t)(s.address >> 8), (uint8_t)(s.address >> 16) });
+      code.insert(code.end(), { 0x80, 0xFE });
+   }
+
+   std::vector<uint8_t> st = scan_state_;
+   size_t reg = snapshot_block(st, "REG");
+   if (!reg || reg + 16 > st.size())
+      return false;
+   // REG: PB DB P(2) A(2) D(2) S(2) X(2) Y(2) PC(2), big-endian. The emulation flag in
+   // P's high byte is kept; M, X and I are set.
+   st[reg + 0] = (uint8_t)(stub >> 16);
+   st[reg + 3] = 0x34;
+   st[reg + 14] = (uint8_t)(stub >> 8);
+   st[reg + 15] = (uint8_t)stub;
+   core.load_state(st);
+   uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+   if (!ram || stub_ram_ + code.size() > ram_size)
+      return false;
+   memcpy(ram + stub_ram_, code.data(), code.size());
+   return true;
+}
+
+// Picks RAM the game left alone between the scan start state and now for the call code.
+bool RomSession::choose_stub_area(const std::vector<uint8_t> &before)
+{
+   size_t size = 0;
+   const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
+   if (!ram || before.size() != size || size < 0x20000)
+      return false;
+   const size_t kNeed = 96;
+   size_t run = 0;
+   for (size_t i = size; i-- > 0x10000;)
+   {
+      bool untouched = ram[i] == before[i] && (i + 1 >= size || ram[i] == ram[i + 1]);
+      run = untouched ? run + 1 : 0;
+      if (run >= kNeed)
+      {
+         stub_ram_ = (uint32_t)i + 8;
+         return true;
+      }
+   }
+   return false;
+}
+
+void RomSession::run_frames(int frames)
+{
+   for (int f = 0; f < frames; f++)
+   {
+      core.run_frame(0);
+      core.audio().clear();
+   }
+}
+
+// Starts each trial song and counts the different songs heard (music 2, jingles 1).
+int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
+{
+   std::vector<SongPrint> heard;
+   int score = 0;
+   std::string err;
+   for (uint32_t v : kTrials)
+   {
+      if (cancel_ || !start_song(s, v))
+         break;
+      run_frames(s.settle_frames);
+      FoundSong song;
+      if (!rip_state(core.save_state(), v, true, song, err))
+         continue;
+      if (baseline && same_song(song.print, *baseline))
+         continue;
+      bool dup = false;
+      for (const auto &p : heard)
+         dup = dup || same_song(p, song.print);
+      if (dup)
+         continue;
+      heard.push_back(song.print);
+      score += song.kind == SONG_MUSIC ? 2 : 1;
+   }
+   return score;
+}
+
+// Watches the game start up and finds how it starts songs: first a RAM block it copies
+// to the sound CPU (a command it polls), then the music routine it calls, found from
+// the return addresses on the stack whenever a command goes out.
+bool RomSession::find_song_start(const SongPrint *baseline)
+{
+   set_scan_message("Watching how the game starts its music...");
+   std::vector<uint8_t> resume = core.save_state();
+   core.reset();
+
+   struct Block
+   {
+      int votes = 0;
+      std::map<uint32_t, int> commands;   // the 4 port bytes, and how often they were sent
+   };
+   std::map<uint32_t, Block> blocks;
+   std::map<uint64_t, int> routines;      // bit 32 set: JSR
+   size_t ram_size = 0;
+   core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+   const size_t search = std::min<size_t>(ram_size, 0x2000);
+   std::vector<uint8_t> prev_ram;
+   uint8_t prev_ports[4] = { 0 };
+   int quiet = 0;
+
+   scan_total_ = kWatchFrames;
+   scan_done_ = 0;
+   for (int f = 0; f < kWatchFrames && !cancel_; f++, scan_done_++)
+   {
+      // Tap Start now and then to get past title screens to more music.
+      uint16_t buttons = (f > 900 && f % 300 < 6) ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
+      core.run_frame(buttons);
+      core.audio().clear();
+      std::vector<uint8_t> st = core.save_state();
+      uint8_t ports[4];
+      if (!spc_snes9x_ports(st, ports))
+         break;
+      size_t size = 0;
+      const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
+      if (!ram)
+         break;
+      bool changed = memcmp(ports, prev_ports, 4) != 0;
+      bool nonzero = ports[0] | ports[1] | ports[2] | ports[3];
+      bool matched = false;
+      if (changed && nonzero && prev_ram.size() >= search)
+      {
+         uint32_t cmd = ports[0] | ports[1] << 8 | ports[2] << 16 | (uint32_t)ports[3] << 24;
+         for (uint32_t x = 0; x + 4 <= search; x++)
+            if (!memcmp(&prev_ram[x], ports, 4) || !memcmp(&ram[x], ports, 4))
+            {
+               Block &b = blocks[x];
+               b.votes++;
+               b.commands[cmd]++;
+               matched = true;
+            }
+      }
+      // A command from a block, or the first port change after a quiet spell: the
+      // routine that sent it left its return address on the stack.
+      if (changed && nonzero && (matched || quiet >= 30))
+      {
+         size_t reg = snapshot_block(st, "REG");
+         uint16_t sp = reg ? (uint16_t)(st[reg + 8] << 8 | st[reg + 9]) : 0;
+         uint32_t lo = sp > 0x80 ? sp - 0x80 : 0, hi = std::min<uint32_t>(sp + 0x40, (uint32_t)search - 3);
+         for (uint32_t a = lo; reg && a < hi; a++)
+         {
+            // JSL pushes the address of its last byte: opcode 22 sits 3 bytes before.
+            uint32_t pushed = ram[a + 2] << 16 | ram[a + 1] << 8 | ram[a];
+            const uint8_t *op = rom_.at(pushed - 3, 4);
+            if (op && op[0] == 0x22)
+            {
+               uint32_t target = op[3] << 16 | op[2] << 8 | op[1];
+               if (rom_.at(target))
+                  routines[target]++;
+            }
+            // JSR pushes the 16-bit address of its last byte, within the caller's bank.
+            uint16_t pushed16 = ram[a + 1] << 8 | ram[a];
+            for (uint8_t bank : { st[reg], (uint8_t)0x00, (uint8_t)0x80, (uint8_t)0xC0 })
+            {
+               const uint8_t *jsr = rom_.at(((uint32_t)bank << 16 | pushed16) - 2, 3);
+               if (jsr && jsr[0] == 0x20)
+               {
+                  uint32_t target = (uint32_t)bank << 16 | jsr[2] << 8 | jsr[1];
+                  if (rom_.at(target))
+                     routines[(1ull << 32) | target]++;
+               }
+            }
+         }
+      }
+      quiet = changed ? 0 : quiet + 1;
+      memcpy(prev_ports, ports, 4);
+      prev_ram.assign(ram, ram + search);
+   }
+   core.load_state(resume);
+   if (cancel_)
+      return false;
+
+   // Command blocks carry many different commands; bytes that merely hold the same
+   // value as a port for a moment do not.
+   std::vector<std::pair<int, uint32_t>> ranked_blocks;
+   for (auto &b : blocks)
+      ranked_blocks.push_back({ (int)b.second.commands.size() * 100 + b.second.votes, b.first });
+   std::sort(ranked_blocks.rbegin(), ranked_blocks.rend());
+   if (ranked_blocks.size() > 4)
+      ranked_blocks.resize(4);
+
+   auto commands_of = [&](uint32_t block, size_t max) {
+      std::vector<std::pair<int, uint32_t>> cmds;
+      for (auto &c : blocks[block].commands)
+         cmds.push_back({ c.second, c.first });
+      std::sort(cmds.rbegin(), cmds.rend());
+      if (cmds.size() > max)
+         cmds.resize(max);
+      return cmds;
+   };
+   auto with_bytes = [](SongStart s, uint32_t cmd, int offset) {
+      s.bytes.clear();
+      for (int b = 0; b < 4; b++)
+         s.bytes.push_back((uint8_t)(cmd >> (8 * b)));
+      s.offset = offset;
+      return s;
+   };
+
+   SongStart best;
+   int best_score = 0;
+   auto try_all = [&](const std::vector<SongStart> &trials) {
+      scan_total_ = (int)trials.size();
+      scan_done_ = 0;
+      for (const auto &s : trials)
+      {
+         if (cancel_ || best_score >= 8)
+            break;
+         set_scan_message("Trying " + describe_song_start(s) + "...");
+         int score = start_score(s, baseline);
+         if (score > best_score)
+         {
+            best_score = score;
+            best = s;
+         }
+         scan_done_++;
+      }
+   };
+
+   // 1. A RAM command the game polls.
+   std::vector<SongStart> trials;
+   for (auto &r : ranked_blocks)
+      for (auto &c : commands_of(r.second, 3))
+         for (int offset = 0; offset < 4; offset++)
+         {
+            SongStart s;
+            s.kind = SongStart::RAM;
+            s.address = r.second;
+            s.settle_frames = 150;
+            trials.push_back(with_bytes(s, c.second, offset));
+         }
+   try_all(trials);
+
+   // 2. The music routine, with its parameters in a command block or in A.
+   if (best_score < 3 && !routines.empty())
+   {
+      // JSL return addresses are three bytes that must decode to a long call, so they
+      // are rarely coincidence; two-byte JSR ones often are. Try JSL targets first.
+      std::vector<std::pair<int, uint64_t>> jsl, jsr;
+      for (auto &r : routines)
+         ((r.first >> 32) ? jsr : jsl).push_back({ r.second, r.first });
+      std::sort(jsl.rbegin(), jsl.rend());
+      std::sort(jsr.rbegin(), jsr.rend());
+      jsl.resize(std::min<size_t>(jsl.size(), 4));
+      jsr.resize(std::min<size_t>(jsr.size(), 3));
+      std::vector<std::pair<int, uint64_t>> ranked = jsl;
+      ranked.insert(ranked.end(), jsr.begin(), jsr.end());
+      log("music routine candidates:" + [&] {
+         std::string s;
+         for (auto &r : ranked)
+            s += std::string(" ") + ((r.second >> 32) ? "JSR $" : "JSL $") + hex4((uint32_t)(r.second >> 16) & 0xFF).substr(2) + hex4((uint32_t)r.second & 0xFFFF);
+         return s;
+      }());
+      trials.clear();
+      for (auto &r : ranked)
+      {
+         SongStart base;
+         base.kind = SongStart::ROUTINE;
+         base.address = (uint32_t)r.second & 0xFFFFFF;
+         base.jsr = (r.second >> 32) != 0;
+         base.settle_frames = kRoutineSettle;
+         for (size_t b = 0; b < ranked_blocks.size() && b < 2; b++)
+            for (auto &c : commands_of(ranked_blocks[b].second, 2))
+               for (int offset = 0; offset < 4; offset++)
+               {
+                  SongStart s = with_bytes(base, c.second, offset);
+                  s.fill_block = true;
+                  s.block = ranked_blocks[b].second;
+                  trials.push_back(s);
+               }
+         SongStart in_a = base;
+         in_a.song_in_a = true;
+         trials.push_back(in_a);
+      }
+      try_all(trials);
+   }
+
+   if (best_score < 3)
+   {
+      log("found no way to start songs from outside the game");
+      return false;
+   }
+   scan_start_ = best;
+   scan_start_source_ = "scan";
+   scan_changed_ = true;
+   log("songs start with " + describe_song_start(best));
+   return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -599,9 +907,11 @@ void RomSession::start_scan(int first, int last)
    scanning_ = true;
    scan_done_ = 0;
    scan_found_ = 0;
-   scan_addr_ = address;
-   scan_addr_changed_ = false;
-   scan_total_ = std::max(1, last - first + 1);
+   scan_address_ = address;
+   scan_start_ = start;
+   scan_address_source_ = address_source;
+   scan_start_source_ = start_source;
+   scan_changed_ = false;
    worker_ = std::thread(&RomSession::scan_thread, this, first, last);
 }
 
@@ -621,193 +931,29 @@ std::string RomSession::scan_message()
    return scan_message_;
 }
 
-void RomSession::use_current_moment_for_scans()
-{
-   scan_state_ = core.save_state();
-   log(scan_state_.empty() ? "this core cannot save states" : "scans now start from this moment");
-}
-
 void RomSession::set_scan_message(const std::string &message)
 {
    std::lock_guard<std::mutex> lock(message_mutex_);
    scan_message_ = message;
 }
 
-void RomSession::run_settle()
+void RomSession::apply_scan_results()
 {
-   for (int f = 0; f < settle_frames; f++)
-   {
-      core.run_frame(0);
-      core.audio().clear();
-   }
+   if (scanning_ || !scan_changed_)
+      return;
+   scan_changed_ = false;
+   address = scan_address_;
+   start = scan_start_;
+   address_source = scan_address_source_;
+   start_source = scan_start_source_;
+   save_to_game_db("confirmed by a scan");
+   log("saved to the game database (" + GameDb::get().path() + ")");
 }
 
-// Plays each trial value through a command and counts the different songs it starts.
-int RomSession::command_score(const ScanCommand &cmd, const SongPrint *baseline, int *music_out)
+void RomSession::use_current_moment_for_scans()
 {
-   static const uint32_t kTrials[] = { 1, 2, 3, 5, 8, 13 };
-   std::vector<SongPrint> heard;
-   int score = 0, music = 0;
-   std::string err;
-   for (uint32_t v : kTrials)
-   {
-      if (cancel_)
-         break;
-      core.load_state(scan_state_);
-      if (!write_command(cmd, v))
-         return 0;
-      run_settle();
-      FoundSong song;
-      if (!rip_state(core.save_state(), "", v, true, song, err))
-         continue;
-      if (baseline && same_song(song.print, *baseline))
-         continue;
-      bool dup = false;
-      for (const auto &p : heard)
-         dup = dup || same_song(p, song.print);
-      if (dup)
-         continue;
-      heard.push_back(song.print);
-      score += song.kind == SONG_MUSIC ? 2 : 1;
-      music += song.kind == SONG_MUSIC;
-   }
-   if (music_out)
-      *music_out = music;
-   return score;
-}
-
-// Watches the game start up for commands sent to the sound CPU, finds the RAM
-// bytes they came from, and picks the command and byte that start the most songs.
-bool RomSession::find_command(const SongPrint *baseline)
-{
-   set_scan_message("Watching how the game starts its music...");
-   std::vector<uint8_t> resume = core.save_state();
-   core.reset();
-
-   struct Candidate
-   {
-      int votes = 0;
-      std::map<uint32_t, int> commands;   // the 4 port bytes, and how often they were sent
-   };
-   std::map<uint32_t, Candidate> candidates;
-   size_t ram_size = 0;
-   core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
-   const size_t search = std::min<size_t>(ram_size, 0x2000);
-   std::vector<uint8_t> prev_ram;
-   uint8_t prev_ports[4] = { 0 };
-
-   const int kWatchFrames = 2400;
-   scan_total_ = kWatchFrames;
-   scan_done_ = 0;
-   for (int f = 0; f < kWatchFrames && !cancel_; f++, scan_done_++)
-   {
-      // Tap Start now and then to get past title screens to more music.
-      uint16_t buttons = (f > 900 && f % 300 < 6) ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
-      core.run_frame(buttons);
-      core.audio().clear();
-      uint8_t ports[4];
-      if (!spc_snes9x_ports(core.save_state(), ports))
-         break;
-      size_t size = 0;
-      const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
-      if (!ram)
-         break;
-      bool changed = memcmp(ports, prev_ports, 4) != 0;
-      bool nonzero = ports[0] | ports[1] | ports[2] | ports[3];
-      if (changed && nonzero && prev_ram.size() >= search)
-      {
-         uint32_t cmd = ports[0] | ports[1] << 8 | ports[2] << 16 | (uint32_t)ports[3] << 24;
-         for (uint32_t x = 0; x + 4 <= search; x++)
-            if (!memcmp(&prev_ram[x], ports, 4) || !memcmp(&ram[x], ports, 4))
-            {
-               Candidate &c = candidates[x];
-               c.votes++;
-               c.commands[cmd]++;
-            }
-      }
-      memcpy(prev_ports, ports, 4);
-      prev_ram.assign(ram, ram + search);
-   }
-   core.load_state(resume);
-   if (cancel_)
-      return false;
-
-   // Command blocks carry many different commands; bytes that merely hold the same
-   // value as a port for a moment do not.
-   std::vector<std::pair<int, uint32_t>> ranked;
-   for (auto &c : candidates)
-      ranked.push_back({ (int)c.second.commands.size() * 100 + c.second.votes, c.first });
-   std::sort(ranked.rbegin(), ranked.rend());
-   if (ranked.size() > 4)
-      ranked.resize(4);
-   if (ranked.empty())
-   {
-      log("no RAM block copied to the sound CPU was seen while the game started");
-      return false;
-   }
-
-   std::vector<ScanCommand> trials;
-   for (auto &r : ranked)
-   {
-      std::vector<std::pair<int, uint32_t>> cmds;
-      for (auto &c : candidates[r.second].commands)
-         cmds.push_back({ c.second, c.first });
-      std::sort(cmds.rbegin(), cmds.rend());
-      for (size_t i = 0; i < cmds.size() && i < 3; i++)
-         for (int offset = 0; offset < 4; offset++)
-         {
-            ScanCommand cmd;
-            cmd.address = r.second;
-            cmd.offset = offset;
-            for (int b = 0; b < 4; b++)
-               cmd.bytes.push_back((uint8_t)(cmds[i].second >> (8 * b)));
-            trials.push_back(cmd);
-         }
-   }
-
-   ScanCommand best;
-   int best_score = 0;
-   scan_total_ = (int)trials.size();
-   scan_done_ = 0;
-   for (const auto &cmd : trials)
-   {
-      if (cancel_)
-         break;
-      set_scan_message("Trying command at $" + hex4(cmd.address) + "...");
-      int score = command_score(cmd, baseline, nullptr);
-      if (score > best_score)
-      {
-         best_score = score;
-         best = cmd;
-      }
-      scan_done_++;
-   }
-   if (best_score < 3)
-   {
-      log("no command started more than one song");
-      return false;
-   }
-   scan_addr_.scan_known = true;
-   scan_addr_.scan_address = best.address;
-   scan_addr_.scan_bytes = best.bytes;
-   scan_addr_.scan_offset = best.offset;
-   scan_addr_changed_ = true;
-   log("found the music command: " + describe_scan_command(scan_addr_));
-
-   // Without a trustworthy song address, follow the song byte of the command:
-   // it holds each song number for a moment when music starts.
-   if (!scan_addr_.known || scan_addr_.source == "preset")
-   {
-      scan_addr_.known = true;
-      scan_addr_.source = "detected music command";
-      scan_addr_.memory = 0;
-      scan_addr_.address = best.address + best.offset;
-      scan_addr_.size = 1;
-      scan_addr_.latch = true;
-      scan_addr_.debounce = 1;
-      log("song address set to $" + hex4(scan_addr_.address) + " (command register)");
-   }
-   return true;
+   scan_state_ = core.save_state();
+   log(scan_state_.empty() ? "this core cannot save states" : "scans now start from this moment");
 }
 
 void RomSession::scan_thread(int first, int last)
@@ -819,11 +965,7 @@ void RomSession::scan_thread(int first, int last)
    {
       set_scan_message("Starting the game...");
       core.reset();
-      for (int f = 0; f < kBootFrames && !cancel_; f++)
-      {
-         core.run_frame(0);
-         core.audio().clear();
-      }
+      run_frames(kBootFrames);
       scan_state_ = core.save_state();
    }
    if (scan_state_.empty())
@@ -834,58 +976,62 @@ void RomSession::scan_thread(int first, int last)
       return;
    }
 
-   // What plays without writing anything: values the game ignores sound like this.
+   // What plays without starting anything: values the game ignores sound like this.
+   // The same run shows which RAM the game leaves alone, for the routine call code.
    std::string err;
    FoundSong baseline;
    core.load_state(scan_state_);
-   run_settle();
-   uint32_t baseline_value = 0;
-   bool have_baseline = rip_state(core.save_state(), "", 0, false, baseline, err);
+   size_t ram_size = 0;
+   const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+   std::vector<uint8_t> ram_before(ram, ram + ram_size);
+   run_frames(kRoutineSettle);
+   choose_stub_area(ram_before);
+   bool have_baseline = rip_state(core.save_state(), 0, false, baseline, err);
    const SongPrint *base_print = have_baseline ? &baseline.print : nullptr;
 
-   // Check the command we have starts songs; otherwise look for the game's own.
+   // Check the known way to start songs works; otherwise look for the game's own.
    bool usable = false;
-   if (scan_addr_.scan_known)
+   if (scan_start_.kind != SongStart::NONE)
    {
-      set_scan_message("Checking the music command...");
-      usable = command_score(scan_command(scan_addr_), base_print, nullptr) >= 3;
+      set_scan_message("Checking " + describe_song_start(scan_start_) + "...");
+      usable = start_score(scan_start_, base_print) >= 3;
       if (!usable)
-         log("the music command " + describe_scan_command(scan_addr_) + " starts no songs");
+         log(describe_song_start(scan_start_) + " starts no songs");
    }
    if (!usable && !cancel_)
-      usable = find_command(base_print);
+      usable = find_song_start(base_print);
    if (!usable)
    {
       core.load_state(scan_state_);
       core.set_skip_video(false);
       core_lock.unlock();
       set_scan_message(cancel_ ? "Scan stopped." :
-            "Could not find how this game starts songs. Play it in Advanced and rip songs as you hear them.");
+            "Could not find how this game starts songs. Play it and rip songs as you hear them.");
       scanning_ = false;
       return;
    }
+   const SongStart s = scan_start_;
 
    // Songs must be numbered the way Proteus will see them in the game. If the song
-   // address follows the command, number them by the song address; if it does not
-   // (Super Mario World's $0DDA ignores writes to $1DFB), the command's song byte
-   // becomes the song address, followed as a command register.
-   ScanCommand cmd = scan_command(scan_addr_);
-   uint32_t song_byte = cmd.address + (cmd.bytes.empty() ? 0 : (uint32_t)cmd.offset);
+   // address follows the songs started, number them by it. A RAM command whose song
+   // byte the address does not follow becomes the song address itself (Super Mario
+   // World's $0DDA ignores writes to $1DFB).
+   uint32_t baseline_value = 0;
    core.load_state(scan_state_);
-   run_settle();
+   run_frames(s.settle_frames);
    bool follow = false;
-   if (scan_addr_.known && scan_addr_.address != song_byte && read_song_value(scan_addr_, baseline_value))
+   uint32_t song_byte = s.address + (s.bytes.empty() ? 0 : (uint32_t)s.offset);
+   bool same_byte = s.kind == SongStart::RAM && scan_address_.known && scan_address_.address == song_byte;
+   if (scan_address_.known && !same_byte && read_song_value(scan_address_, baseline_value))
    {
-      static const uint32_t kTrials[] = { 1, 2, 3, 5, 8, 13 };
       int tried = 0, changed = 0;
       for (uint32_t v : kTrials)
       {
-         core.load_state(scan_state_);
-         if (!write_command(cmd, v))
+         if (!start_song(s, v))
             break;
-         run_settle();
+         run_frames(s.settle_frames);
          uint32_t now = 0;
-         if (read_song_value(scan_addr_, now))
+         if (read_song_value(scan_address_, now))
          {
             tried++;
             changed += now != baseline_value;
@@ -893,20 +1039,25 @@ void RomSession::scan_thread(int first, int last)
       }
       follow = tried > 0 && changed * 2 > tried;
    }
-   if (!follow && (!scan_addr_.known || scan_addr_.address != song_byte))
+   if (!follow && !same_byte && s.kind == SongStart::RAM)
    {
-      if (scan_addr_.known)
-         log("the song address $" + hex4(scan_addr_.address) + " does not change when songs are started, so songs "
-             "are numbered by the music command and profiles will follow $" + hex4(song_byte) + " instead");
-      scan_addr_.known = true;
-      scan_addr_.source = "music command";
-      scan_addr_.memory = cmd.memory;
-      scan_addr_.address = song_byte;
-      scan_addr_.size = cmd.bytes.empty() ? cmd.size : 1;
-      scan_addr_.latch = true;
-      scan_addr_.debounce = 1;
-      scan_addr_changed_ = true;
+      if (scan_address_.known)
+         log("the song address $" + hex4(scan_address_.address) + " does not change when songs are started, so "
+             "profiles will follow $" + hex4(song_byte) + " instead");
+      scan_address_ = SongAddress();
+      scan_address_.known = true;
+      scan_address_.address = song_byte;
+      scan_address_.latch = true;
+      scan_address_.debounce = 1;
+      scan_address_source_ = "scan";
+      scan_changed_ = true;
    }
+   else if (!follow && !same_byte && scan_address_.known)
+   {
+      log("the song address $" + hex4(scan_address_.address) + " does not follow the songs started; "
+          "songs are numbered as they were started, which may not match it");
+   }
+   scan_changed_ = true;   // record the confirmed start in the game database
 
    scan_total_ = std::max(1, last - first + 1);
    scan_done_ = 0;
@@ -914,21 +1065,19 @@ void RomSession::scan_thread(int first, int last)
    for (int v = first; v <= last && !cancel_; v++)
    {
       set_scan_message("Trying song " + hex2((uint32_t)v) + "...");
-      core.load_state(scan_state_);
-      if (!write_command(cmd, (uint32_t)v))
+      if (!start_song(s, (uint32_t)v))
       {
-         set_scan_message("The music command is outside the game's memory.");
+         set_scan_message("Could not start songs with " + describe_song_start(s) + ".");
          break;
       }
-      run_settle();
+      run_frames(s.settle_frames);
 
-      // Number the song the way Proteus will see it: by the song address.
       uint32_t key = (uint32_t)v, now = 0;
-      if (follow && read_song_value(scan_addr_, now) && now != baseline_value)
+      if (follow && read_song_value(scan_address_, now) && now != baseline_value)
          key = now;
 
       FoundSong song;
-      if (rip_state(core.save_state(), "", key, true, song, err))
+      if (rip_state(core.save_state(), key, true, song, err))
       {
          if (have_baseline && same_song(song.print, baseline.print))
             ignored++;
@@ -937,12 +1086,12 @@ void RomSession::scan_thread(int first, int last)
             std::lock_guard<std::mutex> lock(songs_mutex);
             FoundSong *existing = find_song(key);
             bool dup = false;
-            for (const auto &s : songs)
-               if ((!existing || &s != existing) && same_song(s.print, song.print))
+            for (const auto &x : songs)
+               if ((!existing || &x != existing) && same_song(x.print, song.print))
                   dup = true;
             if (!dup)
             {
-               song.title = existing ? existing->title : default_title(preset_, song.value, song.kind);
+               song.title = existing ? existing->title : default_title(song.value, song.kind);
                add_song_locked(song);
                scan_found_++;
             }
@@ -956,7 +1105,7 @@ void RomSession::scan_thread(int first, int last)
    core.set_skip_video(false);
    core_lock.unlock();
 
-   save_library(&scan_addr_);
+   save_library();
    std::string summary = (cancel_ ? "Scan stopped: " : "Scan finished: ") + std::to_string((int)scan_found_) + " new songs";
    if (scan_found_ == 0)
       summary += ". Songs loaded later in the game may need Scan from this moment (Advanced).";
@@ -980,33 +1129,23 @@ void RomSession::play_frame(uint16_t buttons)
    if (spc_snes9x_ports(state, ports) && memcmp(ports, last_ports_, 4) != 0)
    {
       memcpy(last_ports_, ports, 4);
-      pending_rip_frames_ = settle_frames;
+      pending_rip_frames_ = std::max(150, start.settle_frames);
    }
 
-   if (address.known)
+   uint32_t v = 0;
+   if (read_song_value(address, v) && !(address.latch && v == 0))
    {
-      size_t size = 0;
-      const uint8_t *ram = core.memory(kMemoryIds[address.memory], &size);
-      if (ram && (uint64_t)address.address + address.size <= size)
+      if (v != candidate_)
       {
-         uint32_t v = 0;
-         for (int i = 0; i < address.size; i++)
-            v |= (uint32_t)ram[address.address + i] << (8 * i);
-         if (!(address.latch && v == 0))
-         {
-            if (v != candidate_)
-            {
-               candidate_ = v;
-               candidate_frames_ = 0;
-            }
-            if (++candidate_frames_ >= (unsigned)std::max(1, address.debounce) && (!have_last_ || v != last_value_))
-            {
-               last_value_ = v;
-               have_last_ = true;
-               pending_rip_frames_ = settle_frames;
-               log("song " + hex2(v));
-            }
-         }
+         candidate_ = v;
+         candidate_frames_ = 0;
+      }
+      if (++candidate_frames_ >= (unsigned)std::max(1, address.debounce) && (!have_last_ || v != last_value_))
+      {
+         last_value_ = v;
+         have_last_ = true;
+         pending_rip_frames_ = std::max(150, start.settle_frames);
+         log("song " + hex2(v));
       }
    }
 
@@ -1030,7 +1169,7 @@ bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, 
    uint32_t value = has_value ? last_value_ : 0;
    FoundSong song;
    std::string err;
-   if (!rip_state(state, "", value, has_value, song, err))
+   if (!rip_state(state, value, has_value, song, err))
    {
       message = err == "silent" ? "Nothing is playing right now." : "Could not rip: " + err;
       return false;
@@ -1054,7 +1193,7 @@ bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, 
       int rips = 0;
       for (const auto &s : songs)
          rips += s.has_value ? 0 : 1;
-      song.title = song.has_value ? default_title(preset_, value, song.kind) : "Rip " + std::to_string(rips + 1);
+      song.title = song.has_value ? default_title(value, song.kind) : "Rip " + std::to_string(rips + 1);
       message = "Ripped \"" + song.title + "\".";
       add_song_locked(song);
    }

@@ -386,20 +386,34 @@ static void draw_panel_header(App &a, int side)
    ImGui::TextUnformatted(s.display_name().c_str());
    ImGui::PopFont();
 
-   chip(s.system().c_str(), P.dim);
-   ImGui::SameLine();
    if (s.address.known)
    {
       std::string addr = "Song address $" + hex(s.address.address, 4) + (s.address.latch ? " (command)" : "");
       chip(addr.c_str(), P.ok);
       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("From the %s. Change it in Advanced > Song address.", s.address.source.c_str());
+         ImGui::SetTooltip("Proteus follows the music through this address. From: %s.\nChange it in Advanced > Game info.",
+               s.address_source.c_str());
    }
    else
    {
-      chip("No song address", P.danger);
+      chip("No song address", side == TARGET ? P.danger : P.dim);
       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("Proteus needs to know where the game keeps its song number. Find it in Advanced.");
+         ImGui::SetTooltip(side == TARGET ? "Generate INI needs to know where the game keeps its song number.\n"
+                                            "Scans find it for many games; otherwise use Advanced > Find song address."
+                                          : "Not needed for the music source.");
+   }
+   ImGui::SameLine();
+   if (s.start.kind != SongStart::NONE)
+   {
+      chip(s.start.kind == SongStart::ROUTINE ? "Songs start: music routine" : "Songs start: RAM command", P.ok);
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("%s\nFrom: %s.", describe_song_start(s.start).c_str(), s.start_source.c_str());
+   }
+   else
+   {
+      chip("Songs start: unknown", P.dim);
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("Scan songs finds how this game starts its songs.");
    }
    ImGui::SameLine();
    std::string count = std::to_string(a.snap[side].size()) + " songs";
@@ -475,12 +489,12 @@ static void draw_scan_bar(App &a, int side)
       {
          if (a.live == side && a.live_running)
             ImGui::SetTooltip("Pause the game in Advanced to scan.");
-         else if (!s.address.scan_known)
+         else if (s.start.kind == SongStart::NONE)
             ImGui::SetTooltip("Finds how the game starts its music, then plays song numbers %d-%d\n"
                   "and keeps the ones that make music.", a.scan_first[side], a.scan_last[side]);
          else
-            ImGui::SetTooltip("Plays song numbers %d-%d through the music command %s\nand keeps the ones that make music.",
-                  a.scan_first[side], a.scan_last[side], describe_scan_command(s.address).c_str());
+            ImGui::SetTooltip("Plays song numbers %d-%d with %s\nand keeps the ones that make music.",
+                  a.scan_first[side], a.scan_last[side], describe_song_start(s.start).c_str());
       }
       ImGui::SameLine();
       bool live_here = a.show_advanced && a.live == side && a.live_running;
@@ -1009,36 +1023,19 @@ static void tab_finder(App &a)
          ImGui::TableNextColumn();
          ImGui::TextUnformatted(c.command ? "command" : "song number");
          ImGui::TableNextColumn();
-         if (ImGui::SmallButton("Song address"))
+         if (ImGui::SmallButton("Use as song address"))
          {
+            s.address = SongAddress();
             s.address.known = true;
-            s.address.source = "song finder";
-            s.address.memory = 0;
             s.address.address = c.address;
-            s.address.size = 1;
             s.address.latch = c.command;
             s.address.debounce = c.command ? 1 : 2;
-            if (c.command)
-            {
-               s.address.scan_known = true;
-               s.address.scan_address = c.address;
-            }
-            set_status(a, "Song address for " + s.display_name() + " set to $" + hex(c.address, 4) + ".");
+            s.address_source = "song finder";
+            s.save_to_game_db("song address from the song finder");
+            set_status(a, "Song address for " + s.display_name() + " set to $" + hex(c.address, 4) + " and saved to the game database.");
          }
          if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Proteus follows the music by reading this address.");
-         if (c.command)
-         {
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Scan address"))
-            {
-               s.address.scan_known = true;
-               s.address.scan_address = c.address;
-               set_status(a, "Scans of " + s.display_name() + " will write song numbers to $" + hex(c.address, 4) + ".");
-            }
-            if (ImGui::IsItemHovered())
-               ImGui::SetTooltip("Scans write song numbers here to start each song.");
-         }
          ImGui::PopID();
       }
       ImGui::EndTable();
@@ -1061,77 +1058,82 @@ static void tab_address(App &a)
             ImGui::PopID();
             continue;
          }
+         char crc[16];
+         snprintf(crc, sizeof(crc), "%08X", s.rom_crc32());
+         ImGui::SameLine();
+         ImGui::TextColored(col(P.dim), "%s  ROM %s", s.display_name().c_str(), crc);
          ImGui::BeginDisabled(s.scanning());
+
+         ImGui::SeparatorText("Song address");
          SongAddress &ad = s.address;
+         bool changed = false;
          ImGui::SetNextItemWidth(140);
          if (ImGui::InputScalar("Address", ImGuiDataType_U32, &ad.address, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal))
          {
             ad.known = true;
-            ad.source = "manual entry";
+            changed = true;
          }
          ImGui::SetNextItemWidth(140);
-         ImGui::Combo("Memory", &ad.memory, "system_ram\0save_ram\0video_ram\0");
+         changed |= ImGui::Combo("Memory", &ad.memory, "system_ram\0save_ram\0video_ram\0");
          ImGui::SetNextItemWidth(140);
-         ImGui::SliderInt("Size (bytes)", &ad.size, 1, 2);
-         ImGui::Checkbox("Command register", &ad.latch);
+         changed |= ImGui::SliderInt("Size (bytes)", &ad.size, 1, 2);
+         changed |= ImGui::Checkbox("Command register", &ad.latch);
          help_marker("The address only holds a song number for a moment when music starts, then returns to 0.");
          ImGui::SetNextItemWidth(140);
-         ImGui::SliderInt("Debounce frames", &ad.debounce, 1, 30);
-         ImGui::Spacing();
-         ImGui::SetNextItemWidth(140);
-         if (ImGui::InputScalar("Command address", ImGuiDataType_U32, &ad.scan_address, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal))
-            ad.scan_known = true;
-         help_marker("Where scans send song numbers to start songs. Often not the same byte as the song address, "
-               "which may only record what is playing (Super Mario World: song address $0DDA, command $1DFB). "
-               "Scans find it themselves when it is unknown or starts no songs.");
-         // The command bytes, with "xx" where the song number goes.
-         char bytes[64] = "";
-         for (size_t i = 0; i < ad.scan_bytes.size(); i++)
+         changed |= ImGui::SliderInt("Debounce frames", &ad.debounce, 1, 30);
+         if (changed)
+            s.address_source = "manual entry";
+         ImGui::TextColored(col(P.dim), "From: %s", ad.known ? s.address_source.c_str() : "not known");
+
+         ImGui::SeparatorText("How songs start");
+         static char start_text[2][160];
+         static std::string shown[2];
+         std::string current = format_song_start(s.start);
+         if (shown[side] != current)
          {
-            char b[8];
-            snprintf(b, sizeof(b), (int)i == ad.scan_offset ? "xx " : "%02X ", ad.scan_bytes[i]);
-            strcat(bytes, b);
+            snprintf(start_text[side], sizeof(start_text[side]), "%s", current.c_str());
+            shown[side] = current;
          }
-         ImGui::SetNextItemWidth(140);
-         if (ImGui::InputTextWithHint("Command bytes", "xx", bytes, sizeof(bytes)))
+         ImGui::SetNextItemWidth(-1);
+         if (ImGui::InputTextWithHint("##start", "found by Scan songs", start_text[side], sizeof(start_text[side]),
+                  ImGuiInputTextFlags_EnterReturnsTrue))
          {
-            std::vector<uint8_t> parsed;
-            int offset = 0;
-            char *p = bytes;
-            while (*p)
+            SongStart parsed;
+            if (!start_text[side][0])
             {
-               while (*p == ' ') p++;
-               if (!*p) break;
-               if ((p[0] == 'x' || p[0] == 'X') && (p[1] == 'x' || p[1] == 'X'))
-               {
-                  offset = (int)parsed.size();
-                  parsed.push_back(0);
-                  p += 2;
-               }
-               else
-               {
-                  char *end;
-                  parsed.push_back((uint8_t)strtoul(p, &end, 16));
-                  if (end == p) break;
-                  p = end;
-               }
+               s.start = SongStart();
+               s.start_source.clear();
             }
-            if (parsed.size() <= 1)
-               parsed.clear();
-            ad.scan_bytes = parsed;
-            ad.scan_offset = offset;
-            ad.scan_known = true;
+            else if (parse_song_start(start_text[side], parsed))
+            {
+               s.start = parsed;
+               s.start_source = "manual entry";
+            }
+            else
+               set_status(a, "Could not read that. Examples: ram 0x1DFB bytes=xx settle=150  or  "
+                     "routine jsl 0xC70004 block=0x1E00 bytes=10 xx FF 05 settle=300", true);
          }
-         help_marker("For games whose command is several bytes, e.g. \"10 xx FF 05\". Leave as \"xx\" when the song "
-               "number alone starts a song.");
+         help_marker("ram <address> bytes=<command>: write a command the game polls (xx is the song number).\n"
+               "routine <jsl|jsr> <address> [block=<address> bytes=<command>] [a=song]: call the game's music "
+               "routine with the command in RAM or the song number in A.\n"
+               "settle=<frames>: how long a song gets to start before it is ripped.\nPress Enter to apply.");
+         ImGui::TextColored(col(P.dim), "%s%s%s", s.start.kind == SongStart::NONE ? "Not known" : describe_song_start(s.start).c_str(),
+               s.start_source.empty() ? "" : "  -  from: ", s.start_source.c_str());
+
+         ImGui::SeparatorText("Scan");
          ImGui::SetNextItemWidth(140);
-         ImGui::SliderInt("Scan first", &a.scan_first[side], 0, 255, "%d");
+         ImGui::SliderInt("First song", &a.scan_first[side], 0, 255, "%d");
          ImGui::SetNextItemWidth(140);
-         ImGui::SliderInt("Scan last", &a.scan_last[side], a.scan_first[side], 255, "%d");
-         ImGui::SetNextItemWidth(140);
-         ImGui::SliderInt("Wait before ripping", &s.settle_frames, 30, 600, "%d frames");
-         help_marker("How long a song gets to start after its number is written. Raise it for games that fade "
-               "the old song out or load music slowly.");
+         ImGui::SliderInt("Last song", &a.scan_last[side], a.scan_first[side], 255, "%d");
+
+         if (ImGui::Button("Save to game database"))
+         {
+            s.save_to_game_db("entered by hand");
+            set_status(a, "Saved " + s.display_name() + " to " + GameDb::get().path());
+         }
+         ImGui::SameLine();
+         if (ImGui::Button("Open database file"))
+            open_folder(GameDb::get().path());
          ImGui::EndDisabled();
          ImGui::PopID();
       }
@@ -1230,7 +1232,7 @@ static void draw_advanced(App &a, float height)
       struct { const char *name; int tab; void (*draw)(App &); } tabs[] = {
          { "Play & rip", TAB_PLAY, tab_play },
          { "Find song address", TAB_FINDER, tab_finder },
-         { "Song address", TAB_ADDRESS, tab_address },
+         { "Game info", TAB_ADDRESS, tab_address },
          { "Channels & mix", TAB_CHANNELS, tab_channels },
          { "INI preview", TAB_PROFILE, tab_profile },
          { "Log", TAB_LOG, tab_log },

@@ -91,11 +91,17 @@ game to change and a game to take music from. It needs RetroArch's snes9x core.
    silent are dropped; short songs are marked as jingles. Rips are kept in
    `%APPDATA%\ProteusStudio\library`, so a ROM opens with its songs next time.
 
-   When the game's music command is unknown, or the known one starts no songs, the scan finds
-   it first: it watches the game boot, notes the RAM bytes the game copies to the sound CPU's
-   ports, and tries each of those commands with a few song numbers in each byte, keeping the one
-   that starts the most different songs (A Link to the Past: `$012C`; a command can be several
-   bytes, such as `10 xx FF 05`).
+   When it is not known how the game starts songs, or the known way starts none, the scan finds
+   out first. It watches the game boot and, each time a command goes to the sound CPU, notes the
+   RAM bytes copied to its ports and the calls left on the CPU stack. It then tries, with a few
+   song numbers each:
+   - writing each command it saw back to RAM for the game to send (A Link to the Past:
+     `$012C = song`), and
+   - calling each routine it saw with the command in RAM or the song number in A, by pointing
+     the CPU at a few instructions in spare RAM (Chrono Trigger: `JSL $C70004` with
+     `$1E00 = 10 song FF 05`),
+
+   and keeps the one that starts the most different songs.
 3. Click play on any song, from either game, to listen. Rips play from the sound chip state,
    with their own loops.
 4. For each song of the game to change, pick a replacement (or drag one from the right), or
@@ -104,28 +110,50 @@ game to change and a game to take music from. It needs RetroArch's snes9x core.
    `system/proteus/<game>.ini`, and copies the chosen songs to `system/proteus/music/<game>/`.
    A profile that Studio did not write is first saved as `<game>.ini.bak`.
 
-Songs are numbered by the **song address** Proteus follows while the game runs. Scans write to
-the **scan address**, the music command register; in some games they are different bytes
-(Super Mario World: song address `$0DDA`, command register `$1DFB`). Both come from the game's
-profile or the built-in presets, and can be set under **Advanced**:
+Songs are numbered by the **song address** Proteus follows while the game runs. When a scan
+starts songs through a RAM command that the song address does not follow, the command itself
+becomes the song address (Super Mario World: `$1DFB`, not `$0DDA`).
+
+### Game database
+
+What Studio learns about a game is kept in `%APPDATA%\ProteusStudio\games.ini`, one section per
+ROM CRC32 (without a copier header), so each game is worked out once:
+
+```ini
+[2D206BF7]
+name = Chrono Trigger
+start = routine jsl 0xC70004 block=0x1E00 bytes=10 xx FF 05 settle=300
+note = confirmed by a scan 2026-09-13
+
+[B19ED489]
+name = Super Mario World
+song_address = system_ram 0x1DFB size=1 latch=1 debounce=1
+start = ram 0x1DFB bytes=xx settle=150
+```
+
+`start` says how songs are started: `ram <address> bytes=<command>` writes a command the game
+sends itself; `routine <jsl|jsr> <address> [block=<address> bytes=<command>] [a=song]` calls the
+game's music routine. `xx` marks the song number; `settle` is how many frames a song gets before
+it is ripped. Scans and the song finder write the file; it can also be edited by hand or under
+**Advanced > Game info**. Super Mario World, A Link to the Past and Chrono Trigger are built in.
+
+The **Advanced** tabs:
 
 | Advanced tab | Use |
 | --- | --- |
 | Play & rip | Play either game. Whenever the game sends the sound CPU a command, or the song address changes, the new song is ripped once it has started (repeats are skipped); **Rip current song** (`R`) rips whatever plays. **Scan from this moment** makes later scans start there, for games that load music per world or level. |
 | Find song address | Press **Music changed** (`M`) right after the music changes and **Same music** (`N`) when it does not; the song and command bytes remain. |
-| Song address | Song address, scan address, size, latch, scan range, and how long songs get to start before ripping. |
+| Game info | The song address, how songs start, and the scan range, saved to the game database. |
 | Channels & mix | The channels muted while replacements play, and the mix volumes. |
 | INI preview | The profile Generate INI will write. |
 
 Game controls in Advanced: arrow keys or a controller; `Z`/`X` B/A, `A`/`S` Y/X, `Q`/`W` L/R,
 `Enter` Start, `Right Shift` Select; `P` pause, `Tab` fast forward, `F2`/`F4` save/load state.
 
-Scanning only finds songs whose music data is loaded at the scan's starting moment, in games
-that start music from a RAM command the game polls. Games that call a music routine instead
-(Chrono Trigger, Super Metroid, ActRaiser) or send commands without a RAM copy (Mega Man X,
-Donkey Kong Country) cannot be scanned; play them in Play & rip. Only the Super Mario World
-and A Link to the Past presets supply song addresses (verified by scans); the other presets
-only name songs, and those titles are unverified.
+A RAM command only finds songs whose music data is loaded at the scan's starting moment; a music
+routine loads each song itself. Games whose songs start some other way (Super Metroid and
+ActRaiser queue them; Mega Man X was not found either) cannot be scanned yet: play them with
+**Play & rip**, or add a `start` line to the game database once it is known.
 
 ## Game profiles
 
@@ -227,7 +255,9 @@ lose some effects; mute fewer channels for those games.
 | `src/music.c` | resampling mixer with crossfades and loops |
 | `src/decoders.c` | WAV / MP3 / Ogg decoders and libgme sources |
 | `studio/main.cpp` | Proteus Studio's window: the two song lists, replacements, Advanced tabs |
-| `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, live ripping, song library |
+| `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, finding how songs start, live ripping, song library |
+| `studio/game_db.cpp` | the game database (`games.ini`) |
+| `studio/snes_rom.cpp` | SNES ROM header, CRC32, and CPU address mapping |
 | `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |
 | `studio/profile_export.cpp` | writes the profile and copies the music |
 | `studio/core_host.cpp` | minimal libretro frontend; runs up to four cores at once |
