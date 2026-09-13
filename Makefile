@@ -2,6 +2,7 @@
 # Build from an MSYS2 UCRT64 shell (or any gcc toolchain on Linux/macOS).
 #   make          build build/proteus_libretro.<ext>
 #   make test     build the test core + harness and run the scenarios
+#   make cli      build/proteus-cli (song scans and reference songs from the command line)
 #   make ZLIB=0   build without compressed .vgz support
 
 CC      ?= gcc
@@ -95,6 +96,19 @@ $(OBJ)/studio/%.o: studio/%.cpp $(wildcard studio/*.h) $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(STUDIO_FLAGS) -c -o $@ $<
 
+# proteus-cli: Studio's scans, references and song tables without the window.
+CLI     := $(BUILD)/proteus-cli$(EXE)
+CLI_OBJ := $(OBJ)/studio/cli/proteus_cli.o            $(filter-out $(OBJ)/studio/main.o $(OBJ)/studio/audio_out.o,$(STUDIO_SRC:%.cpp=$(OBJ)/%.o))            $(filter-out $(OBJ)/src/proteus.o $(OBJ)/src/options.o,$(OBJECTS))
+
+cli: $(CLI)
+
+$(CLI): $(CLI_OBJ)
+	$(CXX) -static -o $@ $(CLI_OBJ) -lz -lcomdlg32 -lole32 -lshell32 -lwininet
+
+$(OBJ)/studio/cli/%.o: studio/cli/%.cpp $(wildcard studio/*.h) $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(filter-out -Dmain=SDL_main,$(STUDIO_FLAGS)) -c -o $@ $<
+
 $(OBJ)/deps/imgui/%.o: deps/imgui/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) -std=gnu++17 -O2 -w -Ideps/imgui $(SDL_CFLAGS) -c -o $@ $<
@@ -122,20 +136,25 @@ $(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini test/lat
 	cp test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini $(TESTDIR)/
 	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $(TESTDIR)/latch.tst $(TESTDIR)/pattern.tst $@
 
-$(TESTDIR)/test_ra$(EXE): test/test_ra.cpp studio/md5.cpp studio/ra_client.cpp | $(TESTDIR)
+$(TESTDIR)/test_ra$(EXE): test/test_ra.cpp studio/md5.cpp studio/ra_client.cpp studio/http.cpp | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -o $@ $^ -lwininet
 
 $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes_rom.cpp studio/md5.cpp studio/game_db.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32
 
+$(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
+	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
+
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
-      $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE)
+      $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
+      $(TESTDIR)/test_reference$(EXE)
 	$(TESTDIR)/test_ra$(EXE)
 	$(TESTDIR)/test_apu$(EXE)
+	$(TESTDIR)/test_reference$(EXE) $(TESTDIR)/reference
 	$(TESTDIR)/harness$(EXE) run $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR) $(TESTDIR)/mixed.wav
 	$(TESTDIR)/harness$(EXE) dsp $(DSP) $(TESTDIR)/testcore_libretro.$(EXT) $(TESTDIR)
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test clean studio
+.PHONY: all test clean studio cli

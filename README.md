@@ -33,6 +33,7 @@ From an MSYS2 **UCRT64** shell (`pacman -S make mingw-w64-ucrt-x86_64-gcc mingw-
 ```sh
 make          # build/proteus_dsp.dll (plugin) and build/proteus_libretro.dll (wrapper core)
 make studio   # build/ProteusStudio.exe (song discovery and profile mapping GUI)
+make cli      # build/proteus-cli.exe (Studio's scans and reference songs from the command line)
 make test     # runs the headless test suite (needs sox for the test assets)
 make ZLIB=0   # without compressed .vgz support
 ```
@@ -102,6 +103,9 @@ game to change and a game to take music from. It needs RetroArch's snes9x core.
      `$1E00 = 10 song FF 05`),
 
    and keeps the one that starts the most different songs.
+   With **reference songs** for the game (below), each rip is named after the song it matches,
+   only real songs are kept, and a way of starting songs counts only when it starts at least two
+   different reference songs.
 3. Click play on any song, from either game, to listen. Rips play from the sound chip state,
    with their own loops.
 4. For each song of the game to change, pick a replacement (or drag one from the right), or
@@ -120,6 +124,34 @@ where `..` matches the bytes that change from song to song).
 
 Rips are taken at a song's first notes when the game goes quiet while it loads the song, so they
 play from the start.
+
+### Reference songs
+
+A game's soundtrack as `.spc` files, from an archive such as [SNESmusic.org](https://www.snesmusic.org) or
+[Zophar's Domain](https://www.zophar.net/music/nintendo-snes-spc), makes Studio's results reliable. Each
+`.spc` holds the sound CPU's memory while its song plays, including the song's data. Add them per game
+with **Reference songs**:
+
+- **Download from Zophar's Domain** finds the game's set by name and downloads it.
+- **Import folder...** or **Import .zip or .spc...** copies a set you downloaded. Dropping a folder, a
+  `.zip` of `.spc` files or `.spc` files on a panel does the same. SNESmusic.org's `.rsn` files are RAR archives:
+  extract them first (7-Zip opens them).
+- **List reference songs** adds every reference to the list without playing the game. That is all a
+  music source needs.
+
+Sets are kept in `%APPDATA%\ProteusStudio\reference\<ROM CRC32>`.
+
+**Naming rips.** A rip is compared with every reference, counting only the sound CPU memory that changed
+since the song was started, so what an earlier song left behind does not count. Data that many
+references hold (instrument samples, which load wherever there is room) counts for little; data only
+one song holds counts for much. A scan names each song after its reference and uses the reference's
+`.spc`, which plays the song from its start. Songs that match no reference are marked **no match**.
+
+**Song tables.** Many games keep their songs uncompressed in the ROM, with a table of pointers to them.
+When the references' song data is found in the ROM and a table points to most of it, Studio reads the
+song numbers from the table (entry 0 is where the game's code reads it). Scan songs then lists every
+song of the table by name at once, plays the table's song numbers, and checks each one against its
+reference. Chrono Trigger's table is at `$C70D18`: 83 songs, all named by the SNESmusic set.
 
 ### Game database
 
@@ -268,6 +300,9 @@ lose some effects; mute fewer channels for those games.
 | `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, finding how songs start, live ripping, song library |
 | `studio/game_db.cpp` | the game database (`games.ini`) |
 | `studio/snes_rom.cpp` | SNES ROM header, CRC32, and CPU address mapping |
+| `studio/reference.cpp` | reference songs: matching rips, finding song tables in the ROM, importing and downloading sets |
+| `studio/zip_read.cpp`, `studio/http.cpp` | reading zip archives; HTTPS requests (RetroAchievements, Zophar's Domain) |
+| `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans and downloads without the window |
 | `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |
 | `studio/profile_export.cpp` | writes the profile and copies the music |
 | `studio/core_host.cpp` | minimal libretro frontend; runs up to four cores at once |

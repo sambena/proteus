@@ -89,3 +89,50 @@ const uint8_t *SnesRom::at(uint32_t address, size_t length) const
    }
    return off + length <= data.size() ? &data[off] : nullptr;
 }
+
+std::vector<uint32_t> SnesRom::cpu_addresses(size_t offset) const
+{
+   std::vector<uint32_t> out;
+   if (offset >= data.size())
+      return out;
+   uint32_t addr;
+   switch (map)
+   {
+      case LOROM:
+         if (offset >= 0x400000)
+            break;
+         addr = (uint32_t)(offset >> 15) << 16 | (offset & 0x7FFF) | 0x8000;
+         out.push_back(addr);
+         out.push_back(addr | 0x800000);
+         break;
+      case HIROM:
+         if (offset >= 0x400000)
+            break;
+         addr = (uint32_t)offset;
+         out.push_back(addr | 0xC00000);
+         out.push_back(addr | 0x400000);
+         if ((addr & 0xFFFF) >= 0x8000)
+         {
+            out.push_back(addr);
+            out.push_back(addr | 0x800000);
+         }
+         break;
+      default:
+         if (offset < 0x400000)
+         {
+            addr = (uint32_t)offset;
+            out.push_back(addr | 0xC00000);
+            if ((addr & 0xFFFF) >= 0x8000)
+               out.push_back(addr | 0x800000);
+         }
+         else if (offset < 0x7E0000)
+         {
+            addr = (uint32_t)(offset - 0x400000);
+            out.push_back(addr | 0x400000);
+            if ((addr & 0xFFFF) >= 0x8000)
+               out.push_back(addr);
+         }
+         break;
+   }
+   return out;
+}

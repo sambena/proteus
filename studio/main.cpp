@@ -21,6 +21,7 @@
 #include "profile_export.h"
 #include "rom_session.h"
 #include "song_finder.h"
+#include "zip_read.h"
 
 // ---------------------------------------------------------------------------
 // Settings
@@ -300,6 +301,46 @@ static void assign(App &a, uint32_t value, const FoundSong &song, const std::str
    a.assignments[value] = as;
 }
 
+// Imports reference songs (a folder, zip or .spc) for the game on one side.
+static void import_references(App &a, int side, const std::string &source)
+{
+   RomSession &s = a.sessions[side];
+   if (!s.is_open())
+   {
+      set_status(a, "Open the game first, then add its reference songs.", true);
+      return;
+   }
+   std::string err;
+   int n = s.import_references(source, err);
+   if (n <= 0)
+      set_status(a, "No reference songs imported: " + err, true);
+   else
+      set_status(a, "Imported " + std::to_string(n) + " reference songs for " + s.display_name() + ".");
+}
+
+// Reference songs the list has found (distinct titles).
+static int references_found(const App &a, int side)
+{
+   std::vector<std::string> seen;
+   for (const auto &song : a.snap[side])
+      if (!song.reference.empty() && std::find(seen.begin(), seen.end(), song.reference) == seen.end())
+         seen.push_back(song.reference);
+   return (int)seen.size();
+}
+
+// A zip archive of .spc files, rather than a zipped ROM.
+static bool is_spc_archive(const std::string &path)
+{
+   std::vector<uint8_t> data;
+   if (lower_ext(path) != "zip" || !read_file_bytes(path, data))
+      return false;
+   bool spc = false;
+   std::string err;
+   zip_read(data, [&](const std::string &name) { spc = spc || lower_ext(name) == "spc"; return false; },
+         [](const std::string &, std::vector<uint8_t> &) { return false; }, err);
+   return spc;
+}
+
 // ---------------------------------------------------------------------------
 // Drawing helpers
 // ---------------------------------------------------------------------------
@@ -419,6 +460,44 @@ static void draw_panel_header(App &a, int side)
    ImGui::SameLine();
    std::string count = std::to_string(a.snap[side].size()) + " songs";
    chip(count.c_str(), P.dim);
+
+   std::string refs;
+   ImU32 refs_color = P.dim;
+   if (s.loading_references())
+      refs = "Loading reference songs...";
+   else if (!s.references.empty())
+   {
+      int found = references_found(a, side);
+      refs = "Reference songs: " + std::to_string(found) + " of " + std::to_string(s.references.size()) + " listed";
+      refs_color = found ? P.ok : P.dim;
+   }
+   else
+      refs = "No reference songs";
+   float width = ImGui::CalcTextSize(refs.c_str()).x + 20;
+   ImGui::SameLine();
+   if (ImGui::GetContentRegionAvail().x < width)
+      ImGui::NewLine();
+   chip(refs.c_str(), refs_color);
+   if (ImGui::IsItemHovered())
+   {
+      std::string tip;
+      if (s.loading_references())
+         tip = s.reference_message();
+      else if (s.references.empty())
+         tip = "The game's soundtrack as .spc files (SNESmusic.org, Zophar's Domain).\n"
+               "With them, songs are named after the reference they match, scans keep only real songs,\n"
+               "and a song table in the ROM lists every song by number.\nAdd them with Reference songs, or drop a folder or .zip here.";
+      else
+      {
+         tip = "Scans and rips are named after the reference .spc they match.\nFolder: " + s.references.dir();
+         if (s.song_table.found)
+            tip += "\nThe ROM lists " + std::to_string(s.song_table.entries.size()) + " songs in a table (ROM offset " +
+                   hex((uint32_t)s.song_table.rom_offset, 6) + "); Scan songs lists and checks them.";
+         else
+            tip += "\nNo song table was found in the ROM.";
+      }
+      ImGui::SetTooltip("%s", tip.c_str());
+   }
 }
 
 static void draw_empty_panel(App &a, int side)
@@ -490,6 +569,9 @@ static void draw_scan_bar(App &a, int side)
       {
          if (a.live == side && a.live_running)
             ImGui::SetTooltip("Pause the game in Advanced to scan.");
+         else if (s.song_table.found)
+            ImGui::SetTooltip("Lists the %d songs of the ROM song table, then plays each song number\n"
+                  "to check it against the reference songs.", (int)s.song_table.entries.size());
          else if (s.start.kind == SongStart::NONE)
             ImGui::SetTooltip("Finds how the game starts its music, then plays song numbers %d-%d\n"
                   "and keeps the ones that make music.", a.scan_first[side], a.scan_last[side]);
@@ -508,6 +590,53 @@ static void draw_scan_bar(App &a, int side)
       }
       if (ImGui::IsItemHovered())
          ImGui::SetTooltip("Play this game in Advanced. Each new song is ripped into this list a few seconds after it starts.");
+      ImGui::SameLine();
+      if (ImGui::Button("Reference songs"))
+         ImGui::OpenPopup("references");
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("The game's soundtrack as .spc files, to name and check the songs found.");
+      if (ImGui::BeginPopup("references"))
+      {
+         bool busy = s.loading_references();
+         if (ImGui::MenuItem("Download from Zophar's Domain", nullptr, false, !busy))
+         {
+            s.download_references();
+            set_status(a, "Looking for " + s.display_name() + " on Zophar's Domain...");
+         }
+         if (ImGui::MenuItem("Import folder...", nullptr, false, !busy))
+         {
+            std::string dir = pick_folder_dialog("Folder with the game's .spc files");
+            if (!dir.empty())
+               import_references(a, side, dir);
+         }
+         if (ImGui::MenuItem("Import .zip or .spc...", nullptr, false, !busy))
+         {
+            std::string path = open_file_dialog("Reference songs", { { "SPC sets", "*.zip;*.spc;*.rsn" }, { "All files", "*.*" } }, "");
+            if (!path.empty())
+               import_references(a, side, path);
+         }
+         ImGui::Separator();
+         bool have = !s.references.empty();
+         if (ImGui::MenuItem("List reference songs", nullptr, false, have && !busy))
+         {
+            a.audio.stop();
+            s.list_reference_songs();
+         }
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adds every reference song to this list without playing the game.\n"
+                  "Enough for a music source; songs of the game to change need numbers from a scan.");
+         if (ImGui::MenuItem("Open reference folder"))
+         {
+            make_dirs(s.reference_dir());
+            open_folder(s.reference_dir());
+         }
+         if (ImGui::MenuItem("Remove reference songs", nullptr, false, have && !busy))
+         {
+            s.remove_references();
+            set_status(a, "Removed the reference songs for " + s.display_name() + ".");
+         }
+         ImGui::EndPopup();
+      }
       ImGui::SameLine();
       if (ImGui::Button("Open ROM..."))
       {
@@ -530,7 +659,7 @@ static void draw_scan_bar(App &a, int side)
       ImGui::SameLine();
       ImGui::SetNextItemWidth(-1);
       ImGui::InputTextWithHint("##filter", "Filter songs", a.filter[side], sizeof(a.filter[side]));
-      std::string msg = s.scan_message();
+      std::string msg = s.loading_references() ? s.reference_message() : s.scan_message();
       if (!msg.empty())
          ImGui::TextColored(col(P.dim), "%s", msg.c_str());
    }
@@ -709,10 +838,14 @@ static void draw_song_table(App &a, int side)
       ImGui::PushStyleColor(ImGuiCol_Text, col(P.dim));
       if (s.scanning())
          ImGui::TextWrapped("Looking for songs. They appear here as they are found.");
+      else if (!s.references.empty())
+         ImGui::TextWrapped("No songs yet. Scan songs plays the game's song numbers and names each song after the "
+               "reference it matches. For a music source, Reference songs > List reference songs adds them all "
+               "without playing the game.");
       else
          ImGui::TextWrapped("No songs yet. Scan songs plays every song number from a moment early in the game "
                "and keeps the ones that make music. You can also play the game in Advanced and rip songs "
-               "as you hear them.");
+               "as you hear them. Reference songs (the game's .spc soundtrack) name the songs and make scans reliable.");
       ImGui::PopStyleColor();
       return;
    }
@@ -727,7 +860,7 @@ static void draw_song_table(App &a, int side)
    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, fh);
    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("000").x);
    ImGui::TableSetupColumn("Song", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-   ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("jingle").x + 12);
+   ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("no match").x + 12);
    if (side == TARGET)
       ImGui::TableSetupColumn("Replace with", ImGuiTableColumnFlags_WidthStretch, 1.3f);
    ImGui::TableHeadersRow();
@@ -757,7 +890,13 @@ static void draw_song_table(App &a, int side)
 
       ImGui::TableSetColumnIndex(3);
       ImGui::AlignTextToFramePadding();
-      if (song.kind == SONG_JINGLE)
+      if (!s.references.empty() && song.reference.empty())
+      {
+         ImGui::TextColored(col(P.dim), "no match");
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Not one of the reference songs: a sound effect, silence, or a song the set lacks.");
+      }
+      else if (song.kind == SONG_JINGLE)
          ImGui::TextColored(col(P.dim), "jingle");
 
       if (side == TARGET)
@@ -1786,7 +1925,12 @@ int main(int argc, char **argv)
             SDL_GetWindowSize(a.window, &ww, &wh);
             std::string path = ev.drop.file;
             SDL_free(ev.drop.file);
-            open_rom(a, (mx - wx) < ww / 2 ? TARGET : SOURCE, path);
+            int side = (mx - wx) < ww / 2 ? TARGET : SOURCE;
+            std::string ext = lower_ext(path);
+            if (dir_exists(path) || ext == "spc" || ext == "rsn" || is_spc_archive(path))
+               import_references(a, side, path);
+            else
+               open_rom(a, side, path);
          }
       }
 
@@ -1795,6 +1939,7 @@ int main(int argc, char **argv)
       for (int side = 0; side < 2; side++)
       {
          a.sessions[side].apply_scan_results();
+         a.sessions[side].apply_reference_results();
          for (auto &line : a.sessions[side].take_log())
             a.log.push_back(line);
          std::lock_guard<std::mutex> lock(a.sessions[side].songs_mutex);

@@ -14,6 +14,7 @@
 #include "core_host.h"
 #include "game_db.h"
 #include "ra_client.h"
+#include "reference.h"
 #include "snes_rom.h"
 
 enum SongKind { SONG_MUSIC, SONG_JINGLE };
@@ -33,6 +34,7 @@ struct FoundSong
    bool has_value = true;       // false for rips made while playing without a song number
    std::string title;
    std::string spc_path;
+   std::string reference;       // title of the reference song it matched, if any
    SongKind kind = SONG_MUSIC;
    SongPrint print;
 };
@@ -42,6 +44,9 @@ class RomSession
 public:
    RomSession();
    ~RomSession();
+
+   // Where the song library and reference songs are kept (default %APPDATA%/ProteusStudio).
+   void set_app_dir(const std::string &dir) { app_dir_ = dir; }
 
    // Loads the ROM with the core. `system_dir` is RetroArch's system folder.
    bool open(const std::string &rom_path, const std::string &core_path,
@@ -76,6 +81,28 @@ public:
    ApuAnalysisResult apu_analysis;
    void run_static_analysis();
 
+   // Reference songs: the game's soundtrack as .spc files. Scans and rips are named after the
+   // reference they match, and a song table found in the ROM lists every song by number.
+   // Replaced only by apply_reference_results(), never while scanning (UI thread).
+   ReferenceSet references;
+   SongTable song_table;
+   std::string reference_dir() const;
+   // Copies .spc files (a folder, zip or .spc) into this game's reference folder and reloads.
+   int import_references(const std::string &source, std::string &error);
+   // Downloads the game's SPC set from Zophar's Domain in the background.
+   void download_references();
+   void remove_references();
+   bool loading_references() const { return loading_refs_; }
+   std::string reference_message();
+   // Adopts references loaded in the background; true when they changed (UI thread).
+   bool apply_reference_results();
+   // Lists every song of the ROM song table that has a reference, without playing the game
+   // (scan thread).
+   int add_songs_from_table();
+   // Adds every reference song to the list, without song numbers: a music source needs no
+   // more. Runs in the background like a scan.
+   void list_reference_songs();
+
    // Songs, in value order. Lock songs_mutex while reading from another thread.
    std::mutex songs_mutex;
    std::vector<FoundSong> songs;
@@ -87,7 +114,10 @@ public:
    // Scanning: from the scan start state, starts each song number and rips what plays.
    // Without a working way to start songs, the scan first watches the game boot to find
    // one: a RAM command the game polls, or the game's music routine.
+   // With a ROM song table, the scan plays the table's song numbers instead of first..last.
    void start_scan(int first, int last);
+   // When set, scans also save each raw rip (rip_XX.spc) and the scan start (before.spc) here.
+   std::string keep_rips_dir;
    void stop_scan();
    bool scanning() const { return scanning_; }
    float scan_progress() const;
@@ -124,12 +154,28 @@ private:
    bool find_song_start(const SongPrint *baseline);
    bool choose_stub_area(const std::vector<uint8_t> &before);
    void add_song_locked(FoundSong song);
+   // "same": titles of references that are versions of one song, the first one preferred;
+   // a match to any of them, or nearly as good as one, takes that name.
+   bool name_by_reference(FoundSong &song, const std::vector<uint8_t> *before,
+         const std::vector<std::string> &same = std::vector<std::string>());
+   void load_references_async(bool download);
+   std::vector<uint8_t> spc_of_state(const std::vector<uint8_t> &state);
    std::string library_dir() const;
    void load_library();
    void save_library();
    void log(const std::string &line);
 
    bool open_ = false;
+   std::string app_dir_;
+   std::thread ref_thread_;
+   std::atomic<bool> loading_refs_{false};
+   std::mutex ref_mutex_;
+   bool refs_ready_ = false;
+   ReferenceSet pending_refs_;
+   SongTable pending_table_;
+   std::string ref_message_;
+   std::vector<uint8_t> scan_before_spc_;   // the sound CPU at the scan start state
+   std::vector<uint8_t> command_state_;     // the game when it last sent the sound CPU a command
    std::string rom_path_, game_name_, display_name_, profile_path_;
    SnesRom rom_;
 

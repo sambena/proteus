@@ -1,0 +1,669 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+#include "reference.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <map>
+#include <set>
+#include <unordered_map>
+
+#include "http.h"
+#include "platform.h"
+#include "zip_read.h"
+
+static const size_t kSpcRam = 0x100;
+static const size_t kSpcMin = 0x10100;
+
+const uint8_t *spc_ram(const std::vector<uint8_t> &spc)
+{
+   static const char magic[] = "SNES-SPC700 Sound File Data";
+   if (spc.size() < kSpcMin || memcmp(spc.data(), magic, sizeof(magic) - 1) != 0)
+      return nullptr;
+   return spc.data() + kSpcRam;
+}
+
+std::string spc_song_title(const std::vector<uint8_t> &spc)
+{
+   if (!spc_ram(spc) || spc[0x23] != 26)
+      return "";
+   std::string t((const char*)&spc[0x2E], 32);
+   size_t nul = t.find('\0');
+   if (nul != std::string::npos)
+      t.resize(nul);
+   while (!t.empty() && (t.back() == ' ' || (unsigned char)t.back() < 0x20))
+      t.pop_back();
+   for (char &c : t)
+      if ((unsigned char)c < 0x20)
+         c = ' ';
+   return t;
+}
+
+static uint32_t fnv(const uint8_t *p, size_t n)
+{
+   uint32_t h = 2166136261u;
+   for (size_t i = 0; i < n; i++)
+      h = (h ^ p[i]) * 16777619u;
+   return h;
+}
+
+static bool flat_block(const uint8_t *p, size_t n)
+{
+   for (size_t i = 1; i < n; i++)
+      if (p[i] != p[0])
+         return false;
+   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Loading
+// ---------------------------------------------------------------------------
+
+bool ReferenceSet::load(const std::string &dir, std::string &error)
+{
+   clear();
+   dir_ = dir;
+   if (!dir_exists(dir))
+      return true;
+   std::vector<std::string> files = list_files(dir);
+   std::sort(files.begin(), files.end());
+   std::vector<ReferenceSong> songs;
+   for (const auto &f : files)
+   {
+      if (lower_ext(f) != "spc")
+         continue;
+      ReferenceSong s;
+      s.path = dir + "\\" + f;
+      if (!read_file_bytes(s.path, s.spc) || !spc_ram(s.spc))
+      {
+         error = f + " is not an .spc file";
+         continue;
+      }
+      s.title = spc_song_title(s.spc);
+      if (s.title.empty())
+         s.title = stem_of(f);
+      songs.push_back(std::move(s));
+   }
+   std::string keep = dir_;
+   assign(std::move(songs));
+   dir_ = keep;
+   return true;
+}
+
+void ReferenceSet::assign(std::vector<ReferenceSong> songs)
+{
+   clear();
+   songs_ = std::move(songs);
+   index();
+}
+
+void ReferenceSet::clear()
+{
+   dir_.clear();
+   songs_.clear();
+   hashes_.clear();
+   share_.clear();
+   content_.clear();
+}
+
+void ReferenceSet::index()
+{
+   size_t n = songs_.size();
+   hashes_.assign(n, std::vector<uint32_t>(kBlocks));
+   share_.assign(n, std::vector<uint16_t>(kBlocks));
+   for (size_t i = 0; i < n; i++)
+   {
+      const uint8_t *ram = spc_ram(songs_[i].spc);
+      for (size_t b = 0; b < kBlocks; b++)
+         hashes_[i][b] = fnv(ram + b * kBlock, kBlock);
+   }
+   for (size_t b = 0; b < kBlocks; b++)
+   {
+      std::unordered_map<uint32_t, uint16_t> count;
+      for (size_t i = 0; i < n; i++)
+         count[hashes_[i][b]]++;
+      for (size_t i = 0; i < n; i++)
+         share_[i][b] = count[hashes_[i][b]];
+   }
+   content_.clear();
+   content_.reserve(n * 0x10000);
+   for (size_t i = 0; i < n; i++)
+   {
+      const uint8_t *ram = spc_ram(songs_[i].spc);
+      for (size_t o = 0; o + kBlock <= 0x10000; o++)
+         if (!flat_block(ram + o, kBlock))
+            content_.push_back((uint64_t)fnv(ram + o, kBlock) << 16 | i);
+   }
+   std::sort(content_.begin(), content_.end());
+   content_.erase(std::unique(content_.begin(), content_.end()), content_.end());
+}
+
+int ReferenceSet::content_share(uint32_t hash) const
+{
+   auto lo = std::lower_bound(content_.begin(), content_.end(), (uint64_t)hash << 16);
+   auto hi = std::lower_bound(lo, content_.end(), ((uint64_t)hash + 1) << 16);
+   return std::max<int>(1, (int)(hi - lo));
+}
+
+// ---------------------------------------------------------------------------
+// Matching rips
+// ---------------------------------------------------------------------------
+
+ReferenceSet::Match ReferenceSet::match(const uint8_t *ram, const uint8_t *before) const
+{
+   Match m;
+   if (!ram || songs_.empty())
+      return m;
+   // Data many songs hold somewhere (instrument samples, which load wherever there is room)
+   // says little; song data only its own song holds (and songs dumped while it lingered) says
+   // much. Weighting by the square of how many songs hold it keeps the rare data in charge.
+   std::vector<double> score(songs_.size(), 0.0);
+   for (size_t b = 0; b < kBlocks; b++)
+   {
+      const uint8_t *p = ram + b * kBlock;
+      if (flat_block(p, kBlock))
+         continue;
+      if (before && memcmp(p, before + b * kBlock, kBlock) == 0)
+         continue;
+      uint32_t h = fnv(p, kBlock);
+      int holders = -1;
+      for (size_t i = 0; i < songs_.size(); i++)
+         if (hashes_[i][b] == h)
+         {
+            if (holders < 0)
+               holders = content_share(h);
+            score[i] += 1.0 / ((double)holders * holders);
+         }
+   }
+   const double kEps = 1e-9;
+   for (size_t i = 0; i < songs_.size(); i++)
+   {
+      if (m.index < 0 || score[i] > m.score + kEps)
+      {
+         m.index = (int)i;
+         m.score = score[i];
+      }
+      // Versions of one song score the same; the plainest title names it.
+      else if (score[i] > m.score - kEps && songs_[i].title.size() < songs_[m.index].title.size())
+         m.index = (int)i;
+   }
+   for (size_t i = 0; i < songs_.size(); i++)
+      if (score[i] < m.score - kEps)
+         m.second = std::max(m.second, score[i]);
+   // A few blocks of song data that only this song has.
+   if (m.score < 2.0)
+   {
+      m.index = -1;
+      return m;
+   }
+   for (size_t i = 0; i < songs_.size(); i++)
+      if (score[i] >= m.score * 0.9)
+         m.close.push_back((int)i);
+   return m;
+}
+
+ReferenceSet::Match ReferenceSet::match_spc(const std::vector<uint8_t> &spc, const std::vector<uint8_t> *before) const
+{
+   return match(spc_ram(spc), before ? spc_ram(*before) : nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Song tables in the ROM
+// ---------------------------------------------------------------------------
+
+SongTable ReferenceSet::find_song_table(const SnesRom &rom) const
+{
+   SongTable table;
+   const std::vector<uint8_t> &d = rom.data;
+   const size_t n = songs_.size();
+   if (n == 0 || d.size() < 0x10000)
+      return table;
+
+   // Index every 12-byte window of the ROM.
+   const size_t K = 12;
+   std::vector<std::pair<uint32_t, uint32_t>> windows;
+   windows.reserve(d.size());
+   for (size_t i = 0; i + K <= d.size(); i++)
+   {
+      if (d[i] == d[i + 1] && d[i] == d[i + 4] && d[i] == d[i + 9])
+         continue;
+      windows.push_back({ fnv(&d[i], K), (uint32_t)i });
+   }
+   std::sort(windows.begin(), windows.end());
+
+   // Where each reference's own song data (RAM blocks at most two references share)
+   // starts in the ROM, and every CPU address a pointer to it, or a few bytes before it
+   // (a length or header), could hold.
+   struct Want
+   {
+      uint16_t ref;
+      uint8_t back;
+      uint32_t target;   // ROM offset
+   };
+   std::unordered_map<uint32_t, std::vector<Want>> want3, want2;
+   for (size_t r = 0; r < n; r++)
+   {
+      const uint8_t *ram = spc_ram(songs_[r].spc);
+      std::set<size_t> starts;
+      for (size_t a = 0; a + K <= 0x10000;)
+      {
+         size_t b = a / kBlock;
+         if (share_[r][b] > 2 || flat_block(ram + b * kBlock, kBlock))
+         {
+            a = (b + 1) * kBlock;
+            continue;
+         }
+         uint32_t h = fnv(ram + a, K);
+         auto range = std::equal_range(windows.begin(), windows.end(), std::make_pair(h, (uint32_t)0),
+               [](const std::pair<uint32_t, uint32_t> &x, const std::pair<uint32_t, uint32_t> &y) { return x.first < y.first; });
+         size_t best_len = 0, best_at = 0, tried = 0;
+         for (auto it = range.first; it != range.second && tried < 8; ++it, tried++)
+         {
+            size_t o = it->second, len = 0;
+            while (a + len < 0x10000 && o + len < d.size() && ram[a + len] == d[o + len])
+               len++;
+            if (len > best_len)
+            {
+               best_len = len;
+               best_at = o;
+            }
+         }
+         if (best_len >= 32)
+         {
+            starts.insert(best_at);
+            a += best_len;
+         }
+         else
+            a++;
+      }
+      for (size_t s : starts)
+         for (uint8_t back = 0; back <= 4 && back <= s; back++)
+            for (uint32_t cpu : rom.cpu_addresses(s - back))
+            {
+               Want w{ (uint16_t)r, back, (uint32_t)(s - back) };
+               want3[cpu & 0xFFFFFF].push_back(w);
+               auto &list2 = want2[cpu & 0xFFFF];
+               bool dup = false;
+               for (const auto &x : list2)
+                  dup = dup || (x.ref == w.ref && x.target == w.target);
+               if (!dup)
+                  list2.push_back(w);
+            }
+   }
+
+   struct Hit
+   {
+      uint32_t at;
+      Want want;
+      uint8_t bank;
+   };
+   std::vector<Hit> hits[2];   // [0]: 2-byte pointers, [1]: 3-byte
+   for (size_t i = 0; i + 3 <= d.size(); i++)
+   {
+      uint32_t v2 = d[i] | d[i + 1] << 8;
+      auto w2 = want2.find(v2);
+      if (w2 != want2.end())
+         for (const auto &w : w2->second)
+            hits[0].push_back({ (uint32_t)i, w, 0 });
+      auto w3 = want3.find(v2 | (uint32_t)d[i + 2] << 16);
+      if (w3 != want3.end())
+         for (const auto &w : w3->second)
+            hits[1].push_back({ (uint32_t)i, w, d[i + 2] });
+   }
+
+   // A table: aligned pointers close together, many of them to exactly one song.
+   struct Cluster
+   {
+      int width = 0;
+      double score = 0;
+      std::vector<Hit> hits;
+   } best;
+   for (int wi = 1; wi >= 0; wi--)
+   {
+      int width = wi + 2;
+      for (int mod = 0; mod < width; mod++)
+      {
+         std::vector<Hit> aligned;
+         for (const auto &h : hits[wi])
+            if ((int)(h.at % width) == mod)
+               aligned.push_back(h);
+         for (size_t i = 0; i < aligned.size();)
+         {
+            size_t j = i;
+            while (j + 1 < aligned.size() && aligned[j + 1].at - aligned[j].at <= (uint32_t)(8 * width))
+               j++;
+            std::map<uint32_t, std::set<int>> at_refs;
+            for (size_t k = i; k <= j; k++)
+               at_refs[aligned[k].at].insert(aligned[k].want.ref);
+            std::set<int> unique;
+            for (const auto &e : at_refs)
+               if (e.second.size() == 1)
+                  unique.insert(*e.second.begin());
+            double score = unique.size() * (width == 3 ? 1.0 : 0.9);
+            if (score > best.score)
+            {
+               best.width = width;
+               best.score = score;
+               best.hits.assign(aligned.begin() + i, aligned.begin() + j + 1);
+            }
+            i = j + 1;
+         }
+      }
+   }
+   if (best.score < std::max(4.0, 0.4 * n))
+      return table;
+
+   // The header bytes before song data are the same for every song: keep the pointers
+   // that agree with most of them.
+   int back_votes[5] = { 0 };
+   std::map<int, int> bank_votes;
+   for (const auto &h : best.hits)
+   {
+      back_votes[h.want.back]++;
+      if (best.width == 3)
+         bank_votes[h.bank]++;
+   }
+   int back = (int)(std::max_element(back_votes, back_votes + 5) - back_votes);
+   std::vector<Hit> kept;
+   size_t lo_target = d.size(), hi_target = 0;
+   for (const auto &h : best.hits)
+      if (h.want.back == back)
+      {
+         kept.push_back(h);
+         lo_target = std::min<size_t>(lo_target, h.want.target);
+         hi_target = std::max<size_t>(hi_target, h.want.target);
+      }
+   if (kept.empty())
+      return table;
+   const int width = best.width;
+   size_t first = kept.front().at, last = kept.back().at;
+   uint32_t bank2 = 0;
+   if (width == 2)
+   {
+      // Two-byte pointers stay in the bank of the song data.
+      std::vector<uint32_t> cpus = rom.cpu_addresses(kept.front().want.target);
+      bank2 = cpus.empty() ? 0 : cpus.front() & 0xFF0000;
+   }
+
+   // An entry is a pointer into the region the songs occupy.
+   auto entry_target = [&](size_t at, size_t &target) {
+      if (at + width > d.size())
+         return false;
+      uint32_t cpu = width == 3 ? (uint32_t)(d[at] | d[at + 1] << 8 | d[at + 2] << 16) : bank2 | d[at] | d[at + 1] << 8;
+      const uint8_t *p = rom.at(cpu);
+      if (!p)
+         return false;
+      target = (size_t)(p - d.data());
+      const size_t margin = 0x20000;
+      return target + margin >= lo_target && target <= hi_target + margin;
+   };
+
+   // Entry 0: where the game's code reads the table (LDA/CMP long, or long indexed), or
+   // failing that, the first of the valid pointers before the first song found.
+   // CPU address -> (entry, byte within it)
+   std::map<uint32_t, std::pair<size_t, int>> code_targets;
+   for (int k = 0; k <= 16 && (size_t)(k * width) <= first; k++)
+   {
+      size_t t = first - k * width;
+      for (int j = 0; j < width; j++)
+         for (uint32_t cpu : rom.cpu_addresses(t + j))
+            code_targets[cpu] = { t, j };
+   }
+   size_t start = first;
+   uint32_t start_cpu = 0;
+   for (size_t i = 0; i + 4 <= d.size(); i++)
+   {
+      uint8_t op = d[i];
+      if (op != 0xAF && op != 0xBF && op != 0xCF && op != 0xDF)
+         continue;
+      uint32_t operand = d[i + 1] | d[i + 2] << 8 | (uint32_t)d[i + 3] << 16;
+      auto ref = code_targets.find(operand);
+      if (ref == code_targets.end())
+         continue;
+      size_t t = ref->second.first;
+      bool valid = true;
+      size_t target;
+      for (size_t e = t; e < first && valid; e += width)
+         valid = entry_target(e, target);
+      if (valid && (t < start || !start_cpu))
+      {
+         start = t;
+         start_cpu = operand - (uint32_t)ref->second.second;
+      }
+   }
+   if (!start_cpu)
+   {
+      size_t target;
+      for (int k = 0; k < 16 && start >= (size_t)width && entry_target(start - width, target); k++)
+         start -= width;
+   }
+   size_t end = last + width;
+   {
+      size_t target;
+      while (end + width <= d.size() && (end - start) / width < 512 && entry_target(end, target))
+         end += width;
+   }
+
+   table.found = true;
+   table.rom_offset = start;
+   table.cpu_address = start_cpu;
+   table.width = width;
+   table.entries.assign((end - start) / width, -1);
+   table.versions.assign(table.entries.size(), std::vector<int>());
+   std::set<int> matched;
+   for (const auto &h : kept)
+   {
+      if (h.at < start || h.at >= end)
+         continue;
+      std::vector<int> &v = table.versions[(h.at - start) / width];
+      if (std::find(v.begin(), v.end(), (int)h.want.ref) == v.end())
+         v.push_back(h.want.ref);
+      int &e = table.entries[(h.at - start) / width];
+      if (e < 0 || songs_[h.want.ref].title.size() < songs_[e].title.size())
+         e = h.want.ref;
+   }
+   for (int e : table.entries)
+      if (e >= 0)
+         matched.insert(e);
+   table.matched = (int)matched.size();
+   return table;
+}
+
+// ---------------------------------------------------------------------------
+// Importing and downloading
+// ---------------------------------------------------------------------------
+
+static bool write_bytes(const std::string &path, const std::vector<uint8_t> &data)
+{
+   std::string text((const char*)data.data(), data.size());
+   return write_text(path, text);
+}
+
+static int import_zip(const std::vector<uint8_t> &zip, const std::string &dir, std::string &error)
+{
+   int count = 0;
+   make_dirs(dir);
+   bool ok = zip_read(zip, [](const std::string &name) { return lower_ext(name) == "spc"; },
+         [&](const std::string &name, std::vector<uint8_t> &data) {
+            if (spc_ram(data) && write_bytes(dir + "\\" + sanitize_filename(file_name(name)), data))
+               count++;
+            return true;
+         }, error);
+   return ok ? count : -1;
+}
+
+int import_reference_songs(const std::string &source, const std::string &dir, std::string &error)
+{
+   int count = 0;
+   std::string ext = lower_ext(source);
+   if (dir_exists(source))
+   {
+      make_dirs(dir);
+      for (const auto &f : list_files(source))
+      {
+         std::string from = source + "\\" + f;
+         if (lower_ext(f) == "zip")
+         {
+            std::vector<uint8_t> zip;
+            int n = read_file_bytes(from, zip) ? import_zip(zip, dir, error) : -1;
+            count += std::max(0, n);
+         }
+         else if (lower_ext(f) == "spc" && copy_file_data(from, dir + "\\" + f))
+            count++;
+      }
+   }
+   else if (ext == "zip")
+   {
+      std::vector<uint8_t> zip;
+      if (!read_file_bytes(source, zip))
+      {
+         error = "cannot read " + source;
+         return -1;
+      }
+      count = import_zip(zip, dir, error);
+      if (count < 0)
+         return -1;
+   }
+   else if (ext == "spc")
+   {
+      make_dirs(dir);
+      if (copy_file_data(source, dir + "\\" + file_name(source)))
+         count = 1;
+   }
+   else if (ext == "rsn" || ext == "rar" || ext == "7z")
+   {
+      error = file_name(source) + " is a " + (ext == "7z" ? "7-Zip" : "RAR") +
+              " archive, which Proteus Studio cannot open. Extract it first (7-Zip opens it), then import the folder.";
+      return -1;
+   }
+   else
+   {
+      error = "choose a folder, a .zip archive or .spc files";
+      return -1;
+   }
+   if (count == 0 && error.empty())
+      error = "no .spc files in " + file_name(source);
+   return count;
+}
+
+// "Addams Family, The (USA) [!]" -> "Addams Family, The"
+static std::string plain_name(const std::string &name)
+{
+   std::string out;
+   int depth = 0;
+   for (char c : name)
+   {
+      if (c == '(' || c == '[')
+         depth++;
+      else if ((c == ')' || c == ']') && depth > 0)
+         depth--;
+      else if (depth == 0)
+         out += c;
+   }
+   while (!out.empty() && out.back() == ' ')
+      out.pop_back();
+   return out;
+}
+
+std::string zophar_slug(const std::string &game_name)
+{
+   std::string slug;
+   for (char c : plain_name(game_name))
+   {
+      unsigned char u = (unsigned char)c;
+      if (c == '\'')
+         continue;
+      if (isalnum(u))
+         slug += (char)tolower(u);
+      else if (!slug.empty() && slug.back() != '-')
+         slug += '-';
+   }
+   while (!slug.empty() && slug.back() == '-')
+      slug.pop_back();
+   return slug;
+}
+
+// The link to the page's emulated-format (.spc) archive.
+static std::string find_emu_zip(const std::string &html)
+{
+   size_t pos = 0;
+   while ((pos = html.find(".zophar.zip", pos)) != std::string::npos)
+   {
+      size_t href = html.rfind("href=\"", pos);
+      size_t endq = html.find('"', pos);
+      if (href != std::string::npos && endq != std::string::npos)
+      {
+         std::string link = html.substr(href + 6, endq - href - 6);
+         if (link.find("%28EMU%29") != std::string::npos || link.find("(EMU)") != std::string::npos)
+            return link;
+      }
+      pos++;
+   }
+   return "";
+}
+
+int download_reference_songs(const std::string &game_name, const std::string &dir,
+      const std::function<void(const std::string &)> &progress, std::string &error)
+{
+   const std::string site = "https://www.zophar.net";
+   std::string name = plain_name(game_name);
+   std::string page_url = site + "/music/nintendo-snes-spc/" + zophar_slug(name);
+   std::string html, err;
+   progress("Looking for " + name + " on Zophar's Domain...");
+   std::string link = http_fetch(page_url, "", html, err) ? find_emu_zip(html) : "";
+   if (link.empty())
+   {
+      // Not under the expected address: search for it.
+      std::string results;
+      if (!http_fetch(site + "/search?search=" + url_encode(name), "", results, err))
+      {
+         error = "Zophar's Domain search failed: " + err;
+         return -1;
+      }
+      // Result links are absolute or site-relative: href=".../music/nintendo-snes-spc/<name>.html"
+      size_t at = results.find("/music/nintendo-snes-spc/");
+      size_t href = at == std::string::npos ? at : results.rfind("href=\"", at);
+      if (href == std::string::npos)
+      {
+         error = "Zophar's Domain has no SNES soundtrack named like \"" + name + "\". Download a set yourself and import it.";
+         return -1;
+      }
+      size_t endq = results.find('"', href + 6);
+      page_url = results.substr(href + 6, endq - href - 6);
+      if (page_url[0] == '/')
+         page_url = site + page_url;
+      progress("Opening " + page_url + "...");
+      if (!http_fetch(page_url, "", html, err) || (link = find_emu_zip(html)).empty())
+      {
+         error = "no SPC archive on " + page_url + (err.empty() ? "" : ": " + err);
+         return -1;
+      }
+   }
+   if (link.compare(0, 2, "//") == 0)
+      link = "https:" + link;
+   else if (link[0] == '/')
+      link = site + link;
+   std::string file;
+   for (size_t i = link.rfind('/') + 1; i < link.size(); i++)
+   {
+      if (link[i] == '%' && i + 2 < link.size())
+      {
+         file += (char)strtol(link.substr(i + 1, 2).c_str(), nullptr, 16);
+         i += 2;
+      }
+      else
+         file += link[i];
+   }
+   progress("Downloading " + file + "...");
+   std::string body;
+   if (!http_fetch(link, "", body, err))
+   {
+      error = "download failed: " + err;
+      return -1;
+   }
+   std::vector<uint8_t> zip(body.begin(), body.end());
+   int count = import_zip(zip, dir, error);
+   if (count == 0 && error.empty())
+      error = "the archive from " + page_url + " has no .spc files";
+   return count;
+}

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "ra_client.h"
+#include "http.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8,96 +9,11 @@
 #include <cstring>
 #include <sstream>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <wininet.h>
-#endif
-
 static std::string to_lower(std::string s)
 {
    for (char &c : s)
       c = (char)std::tolower((unsigned char)c);
    return s;
-}
-
-static bool http_post(const std::string &host, const std::string &path,
-      const std::string &post_data, std::string &response, std::string &err)
-{
-#ifdef _WIN32
-   HINTERNET hInternet = InternetOpenA("ProteusStudio/1.0", INTERNET_OPEN_TYPE_PRECONFIG,
-         NULL, NULL, 0);
-   if (!hInternet)
-   {
-      err = "Failed to initialize WinINet (error " + std::to_string(GetLastError()) + ")";
-      return false;
-   }
-
-   HINTERNET hConnect = InternetConnectA(hInternet, host.c_str(),
-         INTERNET_DEFAULT_HTTPS_PORT, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
-   if (!hConnect)
-   {
-      err = "Could not connect to " + host + " (error " + std::to_string(GetLastError()) + ")";
-      InternetCloseHandle(hInternet);
-      return false;
-   }
-
-   DWORD flags = INTERNET_FLAG_SECURE | INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE |
-                 INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
-   HINTERNET hRequest = HttpOpenRequestA(hConnect, "POST", path.c_str(),
-         NULL, NULL, NULL, flags, 0);
-   if (!hRequest)
-   {
-      err = "Failed to create HTTP request (error " + std::to_string(GetLastError()) + ")";
-      InternetCloseHandle(hConnect);
-      InternetCloseHandle(hInternet);
-      return false;
-   }
-
-   // Set reasonable network timeouts (8 seconds)
-   DWORD timeout = 8000;
-   InternetSetOptionA(hRequest, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
-   InternetSetOptionA(hRequest, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-
-   std::string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
-   BOOL sent = HttpSendRequestA(hRequest, headers.c_str(), (DWORD)headers.size(),
-         (void*)post_data.c_str(), (DWORD)post_data.size());
-   if (!sent)
-   {
-      err = "HTTP request failed (error " + std::to_string(GetLastError()) + ")";
-      InternetCloseHandle(hRequest);
-      InternetCloseHandle(hConnect);
-      InternetCloseHandle(hInternet);
-      return false;
-   }
-
-   DWORD status_code = 0;
-   DWORD status_size = sizeof(status_code);
-   HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
-         &status_code, &status_size, NULL);
-   if (status_code != 200)
-   {
-      err = "Server returned HTTP " + std::to_string(status_code);
-      InternetCloseHandle(hRequest);
-      InternetCloseHandle(hConnect);
-      InternetCloseHandle(hInternet);
-      return false;
-   }
-
-   response.clear();
-   char buf[8192];
-   DWORD read = 0;
-   while (InternetReadFile(hRequest, buf, sizeof(buf), &read) && read > 0)
-      response.append(buf, read);
-
-   InternetCloseHandle(hRequest);
-   InternetCloseHandle(hConnect);
-   InternetCloseHandle(hInternet);
-   return true;
-#else
-   (void)host; (void)path; (void)post_data; (void)response;
-   err = "Network lookup is currently supported on Windows";
-   return false;
-#endif
 }
 
 int ra_parse_game_id_json(const std::string &json_str)
@@ -364,13 +280,12 @@ RaLookupResult ra_lookup_music_notes(const std::string &md5_hex)
       return res;
    }
 
-   const std::string host = "retroachievements.org";
-   const std::string path = "/dorequest.php";
+   const std::string url = "https://retroachievements.org/dorequest.php";
 
    // 1. Resolve ROM hash to game ID
    std::string post_game = "r=gameid&m=" + md5_hex;
    std::string response_game, err;
-   if (!http_post(host, path, post_game, response_game, err))
+   if (!http_fetch(url, post_game, response_game, err))
    {
       res.status = RaLookupStatus::ERROR_NET;
       res.message = err;
@@ -390,7 +305,7 @@ RaLookupResult ra_lookup_music_notes(const std::string &md5_hex)
    // 2. Fetch code notes for game ID
    std::string post_notes = "r=codenotes2&g=" + std::to_string(game_id);
    std::string response_notes;
-   if (!http_post(host, path, post_notes, response_notes, err))
+   if (!http_fetch(url, post_notes, response_notes, err))
    {
       res.status = RaLookupStatus::ERROR_NET;
       res.message = err;

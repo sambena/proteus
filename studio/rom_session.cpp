@@ -26,7 +26,8 @@ static const int kRoutineSettle  = 300;   // music routines may upload a song be
 static const int kPrintRate      = 32000;
 static const int kPrintSeconds   = 10;
 static const int kWindowMs       = 100;
-static const char kLibraryHeader[] = "# proteus-studio library 2";
+static const char kLibraryHeader[] = "# proteus-studio library 3";
+static const char kLibraryHeader2[] = "# proteus-studio library 2";
 static const uint32_t kTrials[]  = { 1, 2, 3, 5, 8, 13 };
 
 static std::string hex2(uint32_t v)
@@ -161,7 +162,7 @@ static std::string default_title(uint32_t value, SongKind kind)
 // Session
 // ---------------------------------------------------------------------------
 
-RomSession::RomSession() {}
+RomSession::RomSession() : app_dir_(app_data_dir()) {}
 
 RomSession::~RomSession()
 {
@@ -186,7 +187,7 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
       const std::string &system_dir, std::string &error)
 {
    close();
-   std::string save_dir = app_data_dir() + "\\saves";
+   std::string save_dir = app_dir_ + "\\saves";
    make_dirs(save_dir);
    {
       std::lock_guard<std::mutex> lock(core_mutex);
@@ -295,6 +296,7 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    pending_rip_frames_ = -1;
    open_ = true;
    load_library();
+   load_references_async(false);
    log("opened " + rom_path + " (ROM " + hex4(rom_.crc32 >> 16) + hex4(rom_.crc32 & 0xFFFF) + ")");
    return true;
 }
@@ -319,6 +321,16 @@ void RomSession::close()
       worker_.join();
    if (ra_thread_.joinable())
       ra_thread_.join();
+   if (ref_thread_.joinable())
+      ref_thread_.join();
+   references.clear();
+   song_table = SongTable();
+   {
+      std::lock_guard<std::mutex> lock(ref_mutex_);
+      refs_ready_ = false;
+      ref_message_.clear();
+   }
+   command_state_.clear();
    {
       std::lock_guard<std::mutex> ra_lock(ra_mutex);
       ra_result = RaLookupResult();
@@ -420,12 +432,267 @@ void RomSession::clear_library()
 }
 
 // ---------------------------------------------------------------------------
+// Reference songs: %APPDATA%/ProteusStudio/reference/<ROM CRC32>/*.spc
+// ---------------------------------------------------------------------------
+
+std::string RomSession::reference_dir() const
+{
+   return app_dir_ + "\\reference\\" + hex4(rom_.crc32 >> 16) + hex4(rom_.crc32 & 0xFFFF);
+}
+
+std::string RomSession::reference_message()
+{
+   std::lock_guard<std::mutex> lock(ref_mutex_);
+   return ref_message_;
+}
+
+// Loads the reference folder, after downloading into it, and looks for the ROM's song table.
+void RomSession::load_references_async(bool download)
+{
+   if (loading_refs_ || !open_)
+      return;
+   if (ref_thread_.joinable())
+      ref_thread_.join();
+   loading_refs_ = true;
+   std::string dir = reference_dir(), name = game_name_;
+   ref_thread_ = std::thread([this, dir, name, download]() {
+      auto say = [this](const std::string &m) {
+         std::lock_guard<std::mutex> lock(ref_mutex_);
+         ref_message_ = m;
+      };
+      std::string err;
+      if (download)
+      {
+         int n = download_reference_songs(name, dir, say, err);
+         if (n <= 0)
+         {
+            say(err);
+            log(err);
+            loading_refs_ = false;
+            return;
+         }
+         log("downloaded " + std::to_string(n) + " reference songs to " + dir);
+      }
+      ReferenceSet refs;
+      refs.load(dir, err);
+      SongTable table;
+      std::string summary;
+      if (!refs.empty())
+      {
+         say("Looking for the song table in the ROM...");
+         table = refs.find_song_table(rom_);
+         summary = std::to_string(refs.size()) + " reference songs";
+         if (table.found)
+         {
+            char where[64];
+            snprintf(where, sizeof(where), "ROM 0x%X", (unsigned)table.rom_offset);
+            if (table.cpu_address)
+               snprintf(where + strlen(where), sizeof(where) - strlen(where), ", $%06X", (unsigned)table.cpu_address);
+            log("song table at " + std::string(where) + ": " + std::to_string(table.entries.size()) + " songs, " +
+                std::to_string(table.matched) + " of them with a reference");
+            summary += "; the ROM lists " + std::to_string(table.entries.size()) + " songs";
+         }
+         else
+            log("no song table found in the ROM; scans name the songs they find");
+      }
+      std::lock_guard<std::mutex> lock(ref_mutex_);
+      pending_refs_ = std::move(refs);
+      pending_table_ = table;
+      refs_ready_ = true;
+      ref_message_ = summary;
+      loading_refs_ = false;
+   });
+}
+
+bool RomSession::apply_reference_results()
+{
+   if (scanning_)
+      return false;
+   std::lock_guard<std::mutex> lock(ref_mutex_);
+   if (!refs_ready_)
+      return false;
+   refs_ready_ = false;
+   references = std::move(pending_refs_);
+   song_table = pending_table_;
+   pending_refs_.clear();
+   return true;
+}
+
+int RomSession::import_references(const std::string &source, std::string &error)
+{
+   if (!open_)
+      return -1;
+   if (loading_refs_)
+   {
+      error = "reference songs are still loading";
+      return -1;
+   }
+   int n = import_reference_songs(source, reference_dir(), error);
+   if (n > 0)
+   {
+      log("imported " + std::to_string(n) + " reference songs from " + source);
+      load_references_async(false);
+   }
+   return n;
+}
+
+void RomSession::download_references()
+{
+   load_references_async(true);
+}
+
+void RomSession::remove_references()
+{
+   if (loading_refs_ || scanning_)
+      return;
+   std::string dir = reference_dir();
+   for (const auto &file : list_files(dir))
+   {
+      std::string p = dir + "\\" + file;
+      std::remove(p.c_str());
+   }
+   references.clear();
+   song_table = SongTable();
+   std::lock_guard<std::mutex> lock(ref_mutex_);
+   ref_message_.clear();
+}
+
+// Lists the song table's songs that have a reference, from the references alone. Measuring
+// each song takes a moment, so this runs on the scan thread.
+int RomSession::add_songs_from_table()
+{
+   if (!song_table.found)
+      return 0;
+   int added = 0;
+   std::string err;
+   for (size_t v = 0; v < song_table.entries.size() && !cancel_; v++)
+   {
+      int r = song_table.entries[v];
+      if (r < 0)
+         continue;
+      {
+         std::lock_guard<std::mutex> lock(songs_mutex);
+         FoundSong *existing = find_song((uint32_t)v);
+         if (existing && !existing->reference.empty())
+            continue;
+      }
+      const ReferenceSong &ref = references.song(r);
+      FoundSong song;
+      song.value = (uint32_t)v;
+      if (!analyze_spc(ref.spc, song.print, err))
+         continue;
+      if (!classify(song.print, song.kind))
+         song.kind = SONG_JINGLE;
+      song.title = ref.title;
+      song.reference = ref.title;
+      song.spc_path.assign((const char*)ref.spc.data(), ref.spc.size());
+      std::lock_guard<std::mutex> lock(songs_mutex);
+      add_song_locked(song);
+      added++;
+   }
+   if (added)
+      log("listed " + std::to_string(added) + " songs from the ROM song table");
+   return added;
+}
+
+void RomSession::list_reference_songs()
+{
+   if (scanning_ || !open_ || references.empty())
+      return;
+   if (worker_.joinable())
+      worker_.join();
+   cancel_ = false;
+   scanning_ = true;
+   scan_changed_ = false;
+   scan_done_ = 0;
+   scan_found_ = 0;
+   scan_total_ = (int)references.size();
+   worker_ = std::thread([this]() {
+      std::string err;
+      for (size_t i = 0; i < references.size() && !cancel_; i++, scan_done_++)
+      {
+         const ReferenceSong &ref = references.song(i);
+         {
+            std::lock_guard<std::mutex> lock(songs_mutex);
+            bool listed = false;
+            for (const auto &s : songs)
+               listed = listed || s.reference == ref.title;
+            if (listed)
+               continue;
+         }
+         set_scan_message("Adding \"" + ref.title + "\"...");
+         FoundSong song;
+         song.has_value = false;
+         if (!analyze_spc(ref.spc, song.print, err))
+            continue;
+         if (!classify(song.print, song.kind))
+            song.kind = SONG_JINGLE;
+         song.title = ref.title;
+         song.reference = ref.title;
+         song.spc_path.assign((const char*)ref.spc.data(), ref.spc.size());
+         std::lock_guard<std::mutex> lock(songs_mutex);
+         add_song_locked(song);
+         scan_found_++;
+      }
+      save_library();
+      std::string summary = "Added " + std::to_string((int)scan_found_) + " reference songs.";
+      set_scan_message(summary);
+      log(summary);
+      scanning_ = false;
+   });
+}
+
+// Names a rip after the reference song it matches and keeps the reference's .spc, which
+// plays the song from its start. False when no reference matches.
+bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *before,
+      const std::vector<std::string> &same)
+{
+   if (references.empty())
+      return false;
+   std::vector<uint8_t> rip(song.spc_path.begin(), song.spc_path.end());
+   ReferenceSet::Match m = references.match_spc(rip, before);
+   if (m.index < 0)
+      return false;
+   if (!same.empty())
+      for (int i : m.close)
+         if (std::find(same.begin(), same.end(), references.song(i).title) != same.end())
+         {
+            for (size_t r = 0; r < references.size(); r++)
+               if (references.song(r).title == same.front())
+                  m.index = (int)r;
+            break;
+         }
+   const ReferenceSong &ref = references.song(m.index);
+   std::string err;
+   SongPrint print;
+   if (analyze_spc(ref.spc, print, err))
+   {
+      song.print = print;
+      if (!classify(print, song.kind))
+         song.kind = SONG_JINGLE;
+   }
+   song.title = ref.title;
+   song.reference = ref.title;
+   song.spc_path.assign((const char*)ref.spc.data(), ref.spc.size());
+   return true;
+}
+
+std::vector<uint8_t> RomSession::spc_of_state(const std::vector<uint8_t> &state)
+{
+   std::vector<uint8_t> spc;
+   std::string err;
+   if (state.empty() || !spc_from_snes9x_state(state, SpcTags(), spc, nullptr, err))
+      spc.clear();
+   return spc;
+}
+
+// ---------------------------------------------------------------------------
 // Library on disk: %APPDATA%/ProteusStudio/library/<game>/songs.txt + rips
 // ---------------------------------------------------------------------------
 
 std::string RomSession::library_dir() const
 {
-   return app_data_dir() + "\\library\\" + sanitize_filename(game_name_);
+   return app_dir_ + "\\library\\" + sanitize_filename(game_name_);
 }
 
 void RomSession::save_library()
@@ -433,12 +700,12 @@ void RomSession::save_library()
    std::string dir = library_dir();
    make_dirs(dir);
    std::ostringstream out;
-   out << kLibraryHeader << "\n# value\thas_value\tkind\tfile\ttitle\tloudness tail count envelope... brightness...\n";
+   out << kLibraryHeader << "\n# value\thas_value\tkind\tfile\ttitle\treference\tloudness tail count envelope... brightness...\n";
    std::lock_guard<std::mutex> lock(songs_mutex);
    for (const auto &s : songs)
    {
       out << s.value << '\t' << (s.has_value ? 1 : 0) << '\t' << (int)s.kind << '\t'
-          << file_name(s.spc_path) << '\t' << s.title << '\t' << s.print.loudness << ' ' << s.print.tail
+          << file_name(s.spc_path) << '\t' << s.title << '\t' << s.reference << '\t' << s.print.loudness << ' ' << s.print.tail
           << ' ' << s.print.envelope.size();
       for (float e : s.print.envelope)
          out << ' ' << (int)std::lround(e);
@@ -454,7 +721,9 @@ void RomSession::load_library()
    std::string dir = library_dir();
    std::string text = read_text(dir + "\\songs.txt");
    // Libraries from older versions measured songs differently; measure them again.
-   bool current = text.compare(0, strlen(kLibraryHeader), kLibraryHeader) == 0;
+   bool v3 = text.compare(0, strlen(kLibraryHeader), kLibraryHeader) == 0;
+   bool current = v3 || text.compare(0, strlen(kLibraryHeader2), kLibraryHeader2) == 0;
+   const int fields = v3 ? 6 : 5;
    std::istringstream in(text);
    std::string line;
    std::unique_lock<std::mutex> lock(songs_mutex);
@@ -467,7 +736,7 @@ void RomSession::load_library()
          line.pop_back();
       std::vector<std::string> f;
       size_t pos = 0;
-      for (int i = 0; i < 5; i++)
+      for (int i = 0; i < fields; i++)
       {
          size_t tab = line.find('\t', pos);
          if (tab == std::string::npos)
@@ -475,7 +744,7 @@ void RomSession::load_library()
          f.push_back(line.substr(pos, tab - pos));
          pos = tab + 1;
       }
-      if (f.size() < 5)
+      if ((int)f.size() < fields)
          continue;
       FoundSong s;
       s.value = (uint32_t)strtoul(f[0].c_str(), nullptr, 10);
@@ -483,6 +752,8 @@ void RomSession::load_library()
       s.kind = f[2] == "1" ? SONG_JINGLE : SONG_MUSIC;
       s.spc_path = dir + "\\" + f[3];
       s.title = f[4];
+      if (v3)
+         s.reference = f[5];
       if (!file_exists(s.spc_path))
          continue;
       std::istringstream nums(line.substr(pos));
@@ -503,7 +774,7 @@ void RomSession::load_library()
       songs.push_back(s);
    }
    lock.unlock();
-   if (!current && !songs.empty())
+   if (!v3 && !songs.empty())
       save_library();
 }
 
@@ -884,10 +1155,13 @@ bool RomSession::choose_song_address(const SongStart &s, bool &by_address)
    return false;
 }
 
-// Starts each trial song and counts the different songs heard (music 2, jingles 1).
+// Starts each trial song and counts the different songs heard (music 2, jingles 1). With
+// reference songs, only those count (3 each), and only when at least two differ: a game that
+// moves on to its next song by itself plays the same one whatever number was sent.
 int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
 {
    std::vector<SongPrint> heard;
+   std::vector<std::string> named;
    int score = 0;
    std::string err;
    for (uint32_t v : kTrials)
@@ -898,6 +1172,16 @@ int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
       FoundSong song;
       if (!rip_state(core.save_state(), v, true, song, err))
          continue;
+      // A song from the reference set is certainly a song.
+      if (name_by_reference(song, scan_before_spc_.empty() ? nullptr : &scan_before_spc_))
+      {
+         if (std::find(named.begin(), named.end(), song.reference) == named.end())
+         {
+            named.push_back(song.reference);
+            score += 3;
+         }
+         continue;
+      }
       if (baseline && same_song(song.print, *baseline))
          continue;
       bool dup = false;
@@ -908,6 +1192,8 @@ int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
       heard.push_back(song.print);
       score += song.kind == SONG_MUSIC ? 2 : 1;
    }
+   if (!references.empty())
+      return named.size() >= 2 ? 3 * (int)named.size() : 0;
    return score;
 }
 
@@ -1223,6 +1509,18 @@ void RomSession::scan_thread(int first, int last)
       return;
    }
 
+   scan_before_spc_ = spc_of_state(scan_state_);
+   if (!keep_rips_dir.empty())
+   {
+      make_dirs(keep_rips_dir);
+      write_text(keep_rips_dir + "\\before.spc",std::string(scan_before_spc_.begin(), scan_before_spc_.end()));
+   }
+   if (song_table.found)
+   {
+      set_scan_message("Listing the songs of the ROM song table...");
+      add_songs_from_table();
+   }
+
    // What plays without starting anything: values the game ignores sound like this.
    // The same run shows which RAM the game leaves alone, for the routine call code.
    std::string err;
@@ -1252,8 +1550,10 @@ void RomSession::scan_thread(int first, int last)
       core.load_state(scan_state_);
       core.set_skip_video(false);
       core_lock.unlock();
-      set_scan_message(cancel_ ? "Scan stopped." :
+      set_scan_message(cancel_ ? "Scan stopped." : song_table.found ?
+            "Listed the ROM song table's songs, but could not find how this game starts songs to check them." :
             "Could not find how this game starts songs. Play it and rip songs as you hear them.");
+      save_library();
       scanning_ = false;
       return;
    }
@@ -1265,9 +1565,20 @@ void RomSession::scan_thread(int first, int last)
    choose_song_address(s, by_address);
    scan_changed_ = true;   // record the confirmed start in the game database
 
+   if (song_table.found)
+   {
+      first = 0;
+      last = (int)song_table.entries.size() - 1;
+   }
+   else if (first < 0)
+   {
+      first = 1;
+      last = 255;
+   }
    scan_total_ = std::max(1, last - first + 1);
    scan_done_ = 0;
-   int ignored = 0;
+   int ignored = 0, unmatched = 0, confirmed = 0;
+   std::vector<std::string> heard;
    for (int v = first; v <= last && !cancel_; v++)
    {
       set_scan_message("Trying song " + hex2((uint32_t)v) + "...");
@@ -1289,13 +1600,45 @@ void RomSession::scan_thread(int first, int last)
       FoundSong song;
       if (rip_state(onset.empty() ? core.save_state() : onset, key, true, song, err))
       {
-         if (have_baseline && same_song(song.print, baseline.print))
+         if (!keep_rips_dir.empty())
+            write_text(keep_rips_dir + "\\rip_" + hex2(key).substr(2) + ".spc", song.spc_path);
+         // The song already listed under this number, and the versions the ROM table has for it.
+         std::vector<std::string> same;
+         {
+            std::lock_guard<std::mutex> lock(songs_mutex);
+            if (FoundSong *existing = find_song(key))
+               if (!existing->reference.empty())
+                  same.push_back(existing->reference);
+         }
+         if (!same.empty() && song_table.found && key < song_table.versions.size())
+            for (int r : song_table.versions[key])
+               same.push_back(references.song(r).title);
+         if (name_by_reference(song, scan_before_spc_.empty() ? nullptr : &scan_before_spc_, same))
+         {
+            // Every number of a reference song is kept: the game may play it under several.
+            std::lock_guard<std::mutex> lock(songs_mutex);
+            if (std::find(heard.begin(), heard.end(), song.reference) == heard.end())
+               heard.push_back(song.reference);
+            FoundSong *existing = find_song(key);
+            if (existing && existing->reference == song.reference)
+               confirmed++;
+            else
+            {
+               if (existing && !existing->reference.empty())
+                  log("song " + hex2(key) + " plays \"" + song.reference + "\", not \"" + existing->reference + "\" as listed");
+               add_song_locked(song);
+               scan_found_++;
+            }
+         }
+         else if (have_baseline && same_song(song.print, baseline.print))
             ignored++;
          else
          {
             std::lock_guard<std::mutex> lock(songs_mutex);
             FoundSong *existing = find_song(key);
-            bool dup = false;
+            if (!references.empty())
+               unmatched++;
+            bool dup = existing && !existing->reference.empty();
             for (const auto &x : songs)
                if ((!existing || &x != existing) && same_song(x.print, song.print))
                   dup = true;
@@ -1317,7 +1660,15 @@ void RomSession::scan_thread(int first, int last)
 
    save_library();
    std::string summary = (cancel_ ? "Scan stopped: " : "Scan finished: ") + std::to_string((int)scan_found_) + " new songs";
-   if (scan_found_ == 0)
+   if (!references.empty())
+   {
+      summary += ", " + std::to_string(heard.size()) + " of " + std::to_string(references.size()) + " reference songs heard";
+      if (confirmed)
+         summary += " (" + std::to_string(confirmed) + " already listed)";
+      if (unmatched)
+         log(std::to_string(unmatched) + " song numbers played something that is not in the reference set");
+   }
+   if (scan_found_ == 0 && heard.empty())
       summary += ". Songs loaded later in the game may need Scan from this moment (Advanced).";
    set_scan_message(summary);
    log(summary + " (" + std::to_string(ignored) + " values changed nothing)");
@@ -1339,6 +1690,7 @@ void RomSession::play_frame(uint16_t buttons)
    if (spc_snes9x_ports(state, ports) && memcmp(ports, last_ports_, 4) != 0)
    {
       memcpy(last_ports_, ports, 4);
+      command_state_ = state;
       pending_rip_frames_ = std::max(150, start.settle_frames);
    }
 
@@ -1384,17 +1736,21 @@ bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, 
       message = err == "silent" ? "Nothing is playing right now." : "Could not rip: " + err;
       return false;
    }
+   std::vector<uint8_t> before = spc_of_state(command_state_);
+   bool named = name_by_reference(song, before.empty() ? nullptr : &before);
    {
       std::lock_guard<std::mutex> lock(songs_mutex);
       for (const auto &s : songs)
-         if (same_song(s.print, song.print))
+         if (named ? s.reference == song.reference && (!has_value || !s.has_value || s.value == value)
+                   : same_song(s.print, song.print))
          {
             message = "Already in the list as \"" + s.title + "\".";
             return false;
          }
       // A different song under a number we already have: the address did not
       // follow this change (or a jingle played over it), so keep it unnumbered.
-      if (has_value && find_song(value))
+      FoundSong *existing = has_value ? find_song(value) : nullptr;
+      if (existing && !(named && existing->reference.empty()))
       {
          if (automatic && song.kind == SONG_JINGLE)
             return false;
@@ -1403,7 +1759,8 @@ bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, 
       int rips = 0;
       for (const auto &s : songs)
          rips += s.has_value ? 0 : 1;
-      song.title = song.has_value ? default_title(value, song.kind) : "Rip " + std::to_string(rips + 1);
+      if (!named)
+         song.title = song.has_value ? default_title(value, song.kind) : "Rip " + std::to_string(rips + 1);
       message = "Ripped \"" + song.title + "\".";
       add_song_locked(song);
    }

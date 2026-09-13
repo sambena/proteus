@@ -7,7 +7,7 @@
 #include <fstream>
 #include <mutex>
 
-#include <zlib.h>
+#include "zip_read.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -160,9 +160,6 @@ static bool read_file(const std::string &path, std::vector<uint8_t> &out)
    return ok;
 }
 
-static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
-static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
-
 static std::string lower_ext(const std::string &name)
 {
    size_t dot = name.find_last_of('.');
@@ -192,68 +189,18 @@ static bool ext_allowed(const std::string &ext, const std::string &valid)
 static bool unzip_first(const std::vector<uint8_t> &zip, const std::string &valid_exts,
       std::string &name, std::vector<uint8_t> &out, std::string &error)
 {
-   if (zip.size() < 22)
+   bool found = false;
+   if (!zip_read(zip, [&](const std::string &entry) { return ext_allowed(lower_ext(entry), valid_exts); },
+            [&](const std::string &entry, std::vector<uint8_t> &data) {
+               name = entry;
+               out.swap(data);
+               found = true;
+               return false;
+            }, error))
       return false;
-   size_t eocd = std::string::npos;
-   for (size_t i = zip.size() - 22 + 1; i-- > 0 && zip.size() - i <= 65557;)
-      if (rd32(&zip[i]) == 0x06054b50) { eocd = i; break; }
-   if (eocd == std::string::npos)
-   {
-      error = "not a zip archive";
-      return false;
-   }
-
-   uint16_t entries = rd16(&zip[eocd + 10]);
-   size_t pos = rd32(&zip[eocd + 16]);
-   for (unsigned e = 0; e < entries && pos + 46 <= zip.size(); e++)
-   {
-      if (rd32(&zip[pos]) != 0x02014b50)
-         break;
-      uint16_t method = rd16(&zip[pos + 10]);
-      uint32_t csize = rd32(&zip[pos + 20]), usize = rd32(&zip[pos + 24]);
-      uint16_t nlen = rd16(&zip[pos + 28]), xlen = rd16(&zip[pos + 30]), clen = rd16(&zip[pos + 32]);
-      uint32_t local = rd32(&zip[pos + 42]);
-      std::string entry((const char*)&zip[pos + 46], nlen);
-      pos += 46 + nlen + xlen + clen;
-
-      if (entry.empty() || entry.back() == '/' || !ext_allowed(lower_ext(entry), valid_exts))
-         continue;
-      if (local + 30 > zip.size())
-         break;
-      size_t data = local + 30 + rd16(&zip[local + 26]) + rd16(&zip[local + 28]);
-      if (data + csize > zip.size())
-         break;
-
-      out.resize(usize);
-      if (method == 0 && csize == usize)
-         memcpy(out.data(), &zip[data], usize);
-      else if (method == 8)
-      {
-         z_stream zs{};
-         if (inflateInit2(&zs, -MAX_WBITS) != Z_OK)
-            return false;
-         zs.next_in   = (Bytef*)&zip[data];
-         zs.avail_in  = csize;
-         zs.next_out  = out.data();
-         zs.avail_out = usize;
-         int r = inflate(&zs, Z_FINISH);
-         inflateEnd(&zs);
-         if (r != Z_STREAM_END)
-         {
-            error = "corrupt zip entry " + entry;
-            return false;
-         }
-      }
-      else
-      {
-         error = "unsupported zip compression in " + entry;
-         return false;
-      }
-      name = entry;
-      return true;
-   }
-   error = "no file in the archive matches the core's extensions (" + valid_exts + ")";
-   return false;
+   if (!found)
+      error = "no file in the archive matches the core's extensions (" + valid_exts + ")";
+   return found;
 }
 
 // ---------------------------------------------------------------------------

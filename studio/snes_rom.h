@@ -18,4 +18,6 @@ struct SnesRom
    bool load(const std::vector<uint8_t> &content);
    // The ROM bytes at a CPU address, or nullptr where the address is not ROM.
    const uint8_t *at(uint32_t address, size_t length = 1) const;
+   // The CPU addresses where the ROM byte at `offset` appears (each mirror bank).
+   std::vector<uint32_t> cpu_addresses(size_t offset) const;
 };
