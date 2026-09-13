@@ -52,7 +52,8 @@ static const std::vector<RomPreset> s_presets = {
          { 0x12, "Invincible (Starman)" },
          { 0x13, "P-Switch" },
          { 0x14, "Keyhole / Iris Out" }
-      }
+      },
+      true // verified: scans of $1DFB start songs
    },
    {
       "Super Metroid",
@@ -62,7 +63,7 @@ static const std::vector<RomPreset> s_presets = {
       1,
       false, // persistent track index
       2,
-      "Current music track index in System RAM ($07F3).",
+      "Current music track index in System RAM ($07F3). Unverified; scans find no RAM command that starts songs.",
       {
          { 0x00, "Silence" },
          { 0x03, "Title Screen" },
@@ -86,12 +87,12 @@ static const std::vector<RomPreset> s_presets = {
    {
       "The Legend of Zelda: A Link to the Past",
       "SNES",
-      0x0130,
+      0x012C,
       0, // system_ram
       1,
       true, // latch = 1
       1,
-      "APU sound command register ($0130, latch=1). Pulses song ID to SPC700.",
+      "Music command register ($012C, latch=1), confirmed by a Proteus Studio scan. Song titles unverified.",
       {
          { 0x01, "Title Screen" },
          { 0x02, "Light World Overworld" },
@@ -107,7 +108,8 @@ static const std::vector<RomPreset> s_presets = {
          { 0x19, "Dungeon (Dark World)" },
          { 0x22, "Boss Battle" },
          { 0x23, "Ganon's Battle" }
-      }
+      },
+      true // verified: scans of $012C start songs
    },
    {
       "Chrono Trigger",
@@ -117,7 +119,8 @@ static const std::vector<RomPreset> s_presets = {
       1,
       true, // latch = 1
       1,
-      "APU sound command register ($0100, latch=1).",
+      "Unverified song address ($0100): writing song numbers there starts nothing. The game starts music "
+      "through a routine ($1E00 holds its parameters), so songs must be ripped while playing.",
       {
          { 0x01, "Presentiment / Chrono Trigger Theme" },
          { 0x02, "Morning Glow" },
@@ -159,7 +162,7 @@ static const std::vector<RomPreset> s_presets = {
       1,
       true, // latch = 1
       1,
-      "Music command register ($0BD7, latch=1).",
+      "Music command register ($0BD7, latch=1). Unverified.",
       {
          { 0x01, "Opening Stage (Highway)" },
          { 0x02, "Stage Select" },
@@ -195,7 +198,7 @@ static const std::vector<RomPreset> s_presets = {
       1,
       true, // latch = 1
       1,
-      "Music command register ($0513, latch=1).",
+      "Music command register ($0513, latch=1). Unverified.",
       {
          { 0x01, "Theme / Title" },
          { 0x02, "Jungle Groove" },

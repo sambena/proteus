@@ -104,6 +104,17 @@ bool spc_calibrate_snes9x(const std::vector<uint8_t> &state,
    return false;
 }
 
+bool spc_snes9x_ports(const std::vector<uint8_t> &state, uint8_t ports[4])
+{
+   size_t len = 0;
+   const uint8_t *snd = find_block(state, "SND", &len);
+   const size_t at = kRam + kSmpFields * 4 + g_dsp_state + 12;
+   if (!snd || len < at + 4)
+      return false;
+   memcpy(ports, snd + at, 4);
+   return true;
+}
+
 bool spc_from_snes9x_state(const std::vector<uint8_t> &state, const SpcTags &tags,
       std::vector<uint8_t> &spc, SpcState *info, std::string &error)
 {

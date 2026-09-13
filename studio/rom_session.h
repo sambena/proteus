@@ -26,9 +26,27 @@ struct SongAddress
    bool latch = false;
    int debounce = 2;
 
+   // The music command. With `scan_bytes` empty, the song number alone is written
+   // (`size` bytes); otherwise the whole command is written with the song number at
+   // `scan_offset` (Chrono Trigger: $1E00 = 10 song FF 05).
    bool scan_known = false;
    uint32_t scan_address = 0;
+   std::vector<uint8_t> scan_bytes;
+   int scan_offset = 0;
 };
+
+struct ScanCommand
+{
+   int memory = 0;
+   uint32_t address = 0;
+   std::vector<uint8_t> bytes;
+   int offset = 0;
+   int size = 1;
+};
+
+ScanCommand scan_command(const SongAddress &a);
+// "$1E00 = 10 song FF 05"
+std::string describe_scan_command(const SongAddress &a);
 
 enum SongKind { SONG_MUSIC, SONG_JINGLE };
 
@@ -36,6 +54,7 @@ enum SongKind { SONG_MUSIC, SONG_JINGLE };
 struct SongPrint
 {
    std::vector<float> envelope; // loudness per 100 ms
+   std::vector<float> brightness; // loudness of the signal's changes per 100 ms (high frequencies)
    float loudness = 0;          // mean envelope
    float tail = 0;              // mean envelope over the last seconds
 };
@@ -79,9 +98,10 @@ public:
    void rename_song(size_t index, const std::string &title);
    void remove_song(size_t index);
 
-   // Scanning: from the scan start state, writes each song number to the scan
-   // address, lets the sound driver start it, and rips what plays. Songs are
-   // numbered by what the song address holds afterwards.
+   // Scanning: from the scan start state, sends each song number through the music
+   // command, lets the sound driver start it, and rips what plays. Songs are numbered
+   // by what the song address holds afterwards. Without a working command, the scan
+   // first watches the game boot to find the one it uses.
    void start_scan(int first, int last);
    void stop_scan();
    bool scanning() const { return scanning_; }
@@ -104,15 +124,21 @@ public:
    bool heard_song() const { return have_last_; }
 
    std::vector<std::string> take_log();
+   // Adopts the music command and song address a finished scan found (UI thread).
+   void apply_scan_results();
 
 private:
    void scan_thread(int first, int last);
    bool rip_state(const std::vector<uint8_t> &state, const std::string &title, uint32_t value,
          bool has_value, FoundSong &out, std::string &error);
-   bool write_value(uint32_t value);
-   bool read_song_value(uint32_t &value);
+   bool rip_playing(const std::vector<uint8_t> &state, bool automatic, std::string &message);
+   bool write_command(const ScanCommand &cmd, uint32_t value);
+   bool read_song_value(const SongAddress &a, uint32_t &value);
+   void set_scan_message(const std::string &message);
+   void run_settle();
+   int command_score(const ScanCommand &cmd, const SongPrint *baseline, int *music_out);
+   bool find_command(const SongPrint *baseline);
    void add_song_locked(FoundSong song);
-   bool duplicate_locked(const SongPrint &print) const;
    std::string library_dir() const;
    void load_library();
    void save_library();
@@ -123,6 +149,8 @@ private:
    const RomPreset *preset_ = nullptr;
 
    std::vector<uint8_t> scan_state_;
+   SongAddress scan_addr_;                  // the scan thread's copy of `address`
+   std::atomic<bool> scan_addr_changed_{false};
    std::thread worker_;
    std::atomic<bool> scanning_{false}, cancel_{false};
    std::atomic<int> scan_done_{0}, scan_total_{0}, scan_found_{0};
@@ -134,7 +162,7 @@ private:
    unsigned candidate_frames_ = 0;
    bool have_last_ = false;
    int pending_rip_frames_ = -1;
-   uint32_t pending_value_ = 0;
+   uint8_t last_ports_[4] = { 0, 0, 0, 0 };
 
    std::mutex log_mutex_;
    std::vector<std::string> log_;

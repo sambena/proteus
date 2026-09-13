@@ -27,6 +27,8 @@ struct SpcState
 bool spc_calibrate_snes9x(const std::vector<uint8_t> &state,
       const std::function<std::vector<uint8_t>(const std::vector<uint8_t> &)> &round_trip);
 
+// The four bytes the game last wrote to the sound CPU ($2140-$2143).
+bool spc_snes9x_ports(const std::vector<uint8_t> &state, uint8_t ports[4]);
 // Builds an .spc file from a snes9x libretro save state (retro_serialize data).
 bool spc_from_snes9x_state(const std::vector<uint8_t> &state, const SpcTags &tags,
       std::vector<uint8_t> &spc, SpcState *info, std::string &error);

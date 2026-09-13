@@ -85,11 +85,17 @@ game to change and a game to take music from. It needs RetroArch's snes9x core.
 
 1. Open the game to change on the left and the music source on the right (or drop ROMs on
    either side).
-2. **Scan songs** on each side. Studio starts the game, writes every song number to the game's
-   music command register from that moment, and rips whatever the sound chip plays to an
-   `.spc` file. Values that change nothing, repeat an earlier song, or stay silent are dropped;
-   short songs are marked as jingles. Rips are kept in `%APPDATA%\ProteusStudio\library`, so a
-   ROM opens with its songs next time.
+2. **Scan songs** on each side. Studio starts the game, sends every song number through the
+   game's music command from that moment, and rips whatever the sound chip plays to an `.spc`
+   file. Values that change nothing, repeat an earlier song (even shifted in time), or stay
+   silent are dropped; short songs are marked as jingles. Rips are kept in
+   `%APPDATA%\ProteusStudio\library`, so a ROM opens with its songs next time.
+
+   When the game's music command is unknown, or the known one starts no songs, the scan finds
+   it first: it watches the game boot, notes the RAM bytes the game copies to the sound CPU's
+   ports, and tries each of those commands with a few song numbers in each byte, keeping the one
+   that starts the most different songs (A Link to the Past: `$012C`; a command can be several
+   bytes, such as `10 xx FF 05`).
 3. Click play on any song, from either game, to listen. Rips play from the sound chip state,
    with their own loops.
 4. For each song of the game to change, pick a replacement (or drag one from the right), or
@@ -105,7 +111,7 @@ profile or the built-in presets, and can be set under **Advanced**:
 
 | Advanced tab | Use |
 | --- | --- |
-| Play & rip | Play either game. New song numbers are ripped as they start; **Rip current song** (`R`) rips whatever plays, for games without a known address. **Scan from this moment** makes later scans start there, for games that load music per world or level. |
+| Play & rip | Play either game. Whenever the game sends the sound CPU a command, or the song address changes, the new song is ripped once it has started (repeats are skipped); **Rip current song** (`R`) rips whatever plays. **Scan from this moment** makes later scans start there, for games that load music per world or level. |
 | Find song address | Press **Music changed** (`M`) right after the music changes and **Same music** (`N`) when it does not; the song and command bytes remain. |
 | Song address | Song address, scan address, size, latch, scan range, and how long songs get to start before ripping. |
 | Channels & mix | The channels muted while replacements play, and the mix volumes. |
@@ -114,10 +120,12 @@ profile or the built-in presets, and can be set under **Advanced**:
 Game controls in Advanced: arrow keys or a controller; `Z`/`X` B/A, `A`/`S` Y/X, `Q`/`W` L/R,
 `Enter` Start, `Right Shift` Select; `P` pause, `Tab` fast forward, `F2`/`F4` save/load state.
 
-Scanning only finds songs that start from a single byte written to the command register, and
-only songs whose music data is loaded at the scan's starting moment. Games that send
-multi-byte commands (Chrono Trigger) need Play & rip. The preset song addresses and titles
-are unverified; A Link to the Past and Chrono Trigger's presets start no songs.
+Scanning only finds songs whose music data is loaded at the scan's starting moment, in games
+that start music from a RAM command the game polls. Games that call a music routine instead
+(Chrono Trigger, Super Metroid, ActRaiser) or send commands without a RAM copy (Mega Man X,
+Donkey Kong Country) cannot be scanned; play them in Play & rip. Only the Super Mario World
+and A Link to the Past presets supply song addresses (verified by scans); the other presets
+only name songs, and those titles are unverified.
 
 ## Game profiles
 

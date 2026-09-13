@@ -441,7 +441,7 @@ static void draw_scan_bar(App &a, int side)
    }
    else
    {
-      ImGui::BeginDisabled(!s.address.scan_known || (a.live == side && a.live_running));
+      ImGui::BeginDisabled(a.live == side && a.live_running);
       if (primary_button("Scan songs", ImVec2(120, 0), P.side[side]))
       {
          a.audio.stop();
@@ -450,14 +450,14 @@ static void draw_scan_bar(App &a, int side)
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       {
-         if (!s.address.scan_known)
-            ImGui::SetTooltip("Scanning needs the game's music command address. Set it in Advanced > Song address,\n"
-                  "or play the game in Advanced and rip songs as you hear them.");
-         else if (a.live == side && a.live_running)
+         if (a.live == side && a.live_running)
             ImGui::SetTooltip("Pause the game in Advanced to scan.");
+         else if (!s.address.scan_known)
+            ImGui::SetTooltip("Finds how the game starts its music, then plays song numbers %d-%d\n"
+                  "and keeps the ones that make music.", a.scan_first[side], a.scan_last[side]);
          else
-            ImGui::SetTooltip("Plays song numbers %d-%d by writing them to $%s, and keeps the ones that make music.",
-                  a.scan_first[side], a.scan_last[side], hex(s.address.scan_address, 4).c_str());
+            ImGui::SetTooltip("Plays song numbers %d-%d through the music command %s\nand keeps the ones that make music.",
+                  a.scan_first[side], a.scan_last[side], describe_scan_command(s.address).c_str());
       }
       ImGui::SameLine();
       if (ImGui::Button("Open ROM..."))
@@ -648,12 +648,10 @@ static void draw_song_table(App &a, int side)
       ImGui::PushStyleColor(ImGuiCol_Text, col(P.dim));
       if (s.scanning())
          ImGui::TextWrapped("Looking for songs. They appear here as they are found.");
-      else if (s.address.scan_known)
-         ImGui::TextWrapped("No songs yet. Scan songs plays every song number from a moment early in the game "
-               "and keeps the ones that make music.");
       else
-         ImGui::TextWrapped("No songs yet. Open Advanced to play the game and rip songs as you hear them, "
-               "or to find the song address so the whole game can be scanned.");
+         ImGui::TextWrapped("No songs yet. Scan songs plays every song number from a moment early in the game "
+               "and keeps the ones that make music. You can also play the game in Advanced and rip songs "
+               "as you hear them.");
       ImGui::PopStyleColor();
       return;
    }
@@ -1046,11 +1044,51 @@ static void tab_address(App &a)
          ImGui::SliderInt("Debounce frames", &ad.debounce, 1, 30);
          ImGui::Spacing();
          ImGui::SetNextItemWidth(140);
-         if (ImGui::InputScalar("Scan address", ImGuiDataType_U32, &ad.scan_address, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal))
+         if (ImGui::InputScalar("Command address", ImGuiDataType_U32, &ad.scan_address, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal))
             ad.scan_known = true;
-         help_marker("The music command register: writing a song number here starts that song. Often not the same "
-               "byte as the song address, which may only record what is playing (Super Mario World: song address "
-               "$0DDA, command $1DFB).");
+         help_marker("Where scans send song numbers to start songs. Often not the same byte as the song address, "
+               "which may only record what is playing (Super Mario World: song address $0DDA, command $1DFB). "
+               "Scans find it themselves when it is unknown or starts no songs.");
+         // The command bytes, with "xx" where the song number goes.
+         char bytes[64] = "";
+         for (size_t i = 0; i < ad.scan_bytes.size(); i++)
+         {
+            char b[8];
+            snprintf(b, sizeof(b), (int)i == ad.scan_offset ? "xx " : "%02X ", ad.scan_bytes[i]);
+            strcat(bytes, b);
+         }
+         ImGui::SetNextItemWidth(140);
+         if (ImGui::InputTextWithHint("Command bytes", "xx", bytes, sizeof(bytes)))
+         {
+            std::vector<uint8_t> parsed;
+            int offset = 0;
+            char *p = bytes;
+            while (*p)
+            {
+               while (*p == ' ') p++;
+               if (!*p) break;
+               if ((p[0] == 'x' || p[0] == 'X') && (p[1] == 'x' || p[1] == 'X'))
+               {
+                  offset = (int)parsed.size();
+                  parsed.push_back(0);
+                  p += 2;
+               }
+               else
+               {
+                  char *end;
+                  parsed.push_back((uint8_t)strtoul(p, &end, 16));
+                  if (end == p) break;
+                  p = end;
+               }
+            }
+            if (parsed.size() <= 1)
+               parsed.clear();
+            ad.scan_bytes = parsed;
+            ad.scan_offset = offset;
+            ad.scan_known = true;
+         }
+         help_marker("For games whose command is several bytes, e.g. \"10 xx FF 05\". Leave as \"xx\" when the song "
+               "number alone starts a song.");
          ImGui::SetNextItemWidth(140);
          ImGui::SliderInt("Scan first", &a.scan_first[side], 0, 255, "%d");
          ImGui::SetNextItemWidth(140);
@@ -1595,6 +1633,7 @@ int main(int argc, char **argv)
 
       for (int side = 0; side < 2; side++)
       {
+         a.sessions[side].apply_scan_results();
          for (auto &line : a.sessions[side].take_log())
             a.log.push_back(line);
          std::lock_guard<std::mutex> lock(a.sessions[side].songs_mutex);

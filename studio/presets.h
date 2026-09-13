@@ -23,6 +23,7 @@ struct RomPreset
    int debounce;                // Debounce frame count (default 1)
    std::string description;     // Descriptive notes for users
    std::vector<RomPresetSong> songs; // Known songs and their titles
+   bool verified = false;       // address confirmed to start songs; otherwise only the titles are used
 };
 
 const std::vector<RomPreset> &get_rom_presets();
