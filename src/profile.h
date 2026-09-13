@@ -2,6 +2,10 @@
 #ifndef PROTEUS_PROFILE_H
 #define PROTEUS_PROFILE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -48,6 +52,7 @@ typedef struct
    unsigned size;       /* 1, 2 or 4 bytes, little endian */
    uint32_t mask;
    unsigned debounce;   /* frames a value must be stable before it counts */
+   bool latch;          /* the address is a one-shot command: ignore zero, keep the last song */
    px_action unmapped;
 
    /* [mute] core options forced while the original music is muted */
@@ -74,5 +79,9 @@ typedef struct
 bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen);
 /* Returns the index of the track mapped to `value`, or -1. */
 int px_profile_find(const px_profile *p, uint32_t value);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

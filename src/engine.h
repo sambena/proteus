@@ -4,6 +4,10 @@
 #ifndef PROTEUS_ENGINE_H
 #define PROTEUS_ENGINE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -82,5 +86,9 @@ const char *px_engine_mute_override(const px_engine *e, const char *key);
 void px_engine_save_state(const px_engine *e, uint8_t *block);
 bool px_engine_is_state(const uint8_t *block);
 bool px_engine_load_state(px_engine *e, const uint8_t *block);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

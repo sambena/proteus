@@ -357,6 +357,9 @@ void px_engine_frame(px_engine *e)
 
    if (!e->profile.loaded || !e->cfg.enabled || !read_song_value(e, &v))
       return;
+   /* A command register reads zero between commands; the last song keeps playing. */
+   if (e->profile.latch && v == 0)
+      return;
 
    if (!e->have_candidate || v != e->candidate)
    {

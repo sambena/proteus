@@ -2,6 +2,10 @@
 #ifndef PROTEUS_UTIL_H
 #define PROTEUS_UTIL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdio.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -27,5 +31,9 @@ bool px_file_exists(const char *path);
 /* Calls `cb` with the UTF-8 name of each regular file directly inside `dir`. */
 bool px_list_files(const char *dir, void (*cb)(const char *name, void *userdata), void *userdata);
 const char *px_path_ext(const char *path);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

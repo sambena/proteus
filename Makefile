@@ -74,6 +74,31 @@ $(OBJ)/deps/gme/ext/emu2413.o: deps/gme/ext/emu2413.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=gnu11 -O2 -w $(PIC) -c -o $@ $<
 
+# Proteus Studio: the song mapping tool (SDL2 + Dear ImGui).
+STUDIO     := $(BUILD)/ProteusStudio$(EXE)
+IMGUI_SRC  := deps/imgui/imgui.cpp deps/imgui/imgui_draw.cpp deps/imgui/imgui_tables.cpp \
+              deps/imgui/imgui_widgets.cpp deps/imgui/backends/imgui_impl_sdl2.cpp \
+              deps/imgui/backends/imgui_impl_sdlrenderer2.cpp
+STUDIO_SRC := $(wildcard studio/*.cpp)
+STUDIO_OBJ := $(STUDIO_SRC:%.cpp=$(OBJ)/%.o) $(IMGUI_SRC:%.cpp=$(OBJ)/%.o) \
+              $(filter-out $(OBJ)/src/proteus.o $(OBJ)/src/options.o,$(OBJECTS))
+SDL_CFLAGS := $(shell pkg-config --cflags sdl2 2>/dev/null)
+SDL_LIBS   := $(shell pkg-config --static --libs sdl2 2>/dev/null)
+STUDIO_FLAGS := -std=gnu++17 -O2 -Wall -Wextra -Ideps -Ideps/imgui -Isrc -Istudio $(SDL_CFLAGS)
+
+studio: $(STUDIO)
+
+$(STUDIO): $(STUDIO_OBJ)
+	$(CXX) -static -o $@ $(STUDIO_OBJ) $(SDL_LIBS) -lz -lcomdlg32 -lole32 -lshell32
+
+$(OBJ)/studio/%.o: studio/%.cpp $(wildcard studio/*.h) $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(STUDIO_FLAGS) -c -o $@ $<
+
+$(OBJ)/deps/imgui/%.o: deps/imgui/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++17 -O2 -w -Ideps/imgui $(SDL_CFLAGS) -c -o $@ $<
+
 $(TESTDIR):
 	mkdir -p $@
 
@@ -105,4 +130,4 @@ test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test clean
+.PHONY: all test clean studio

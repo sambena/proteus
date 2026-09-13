@@ -2,6 +2,10 @@
 #ifndef PROTEUS_MUSIC_H
 #define PROTEUS_MUSIC_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -73,5 +77,9 @@ uint64_t px_mixer_position(const px_mixer *m);
 unsigned px_mixer_source_rate(const px_mixer *m);
 bool px_mixer_seek(px_mixer *m, uint64_t frame);
 void px_mixer_free(px_mixer *m);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
