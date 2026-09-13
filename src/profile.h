@@ -10,6 +10,7 @@
 
 #define PX_MAX_TRACKS 256
 #define PX_MAX_MUTE   64
+#define PX_MAX_LIBRARY 8
 
 typedef enum
 {
@@ -24,6 +25,7 @@ typedef struct
    uint32_t value;
    px_action action;
    char path[PX_PATH_MAX]; /* resolved against the profile's directory */
+   unsigned subtrack;      /* 0-based song within multi-song files (NSF, GBS, ...) */
    bool loop;
    uint64_t loop_start;    /* source sample frame the loop jumps back to */
    float volume;           /* 0..1 */
@@ -60,6 +62,10 @@ typedef struct
    /* [tracks] */
    px_track tracks[PX_MAX_TRACKS];
    unsigned track_count;
+
+   /* [library] folders listed in the RetroArch song pickers */
+   char library[PX_MAX_LIBRARY][PX_PATH_MAX];
+   unsigned library_count;
 
    /* [debug] */
    bool log_songs;

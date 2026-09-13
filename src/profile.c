@@ -166,6 +166,12 @@ static bool parse_track(px_profile *p, const char *dir, uint32_t value, char *sp
             if (!parse_volume(val, &t->volume))
                goto bad_value;
          }
+         else if (!strcmp(key, "track"))
+         {
+            if (!parse_uint(val, &n) || n < 1 || n > 255)
+               goto bad_value;
+            t->subtrack = (unsigned)(n - 1);
+         }
          else
          {
             snprintf(err, errlen, "unknown track option '%s'", key);
@@ -273,6 +279,17 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
          return false;
       }
       return parse_track(p, dir, (uint32_t)n, val, err, errlen);
+   }
+   else if (!strcmp(section, "library"))
+   {
+      if (strcmp(key, "dir"))
+         goto bad_key;
+      if (p->library_count >= PX_MAX_LIBRARY)
+      {
+         snprintf(err, errlen, "too many library folders (max %d)", PX_MAX_LIBRARY);
+         return false;
+      }
+      px_path_join(dir, val, p->library[p->library_count++], PX_PATH_MAX);
    }
    else if (!strcmp(section, "debug"))
    {

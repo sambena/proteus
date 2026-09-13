@@ -102,3 +102,52 @@ const char *px_path_ext(const char *path)
    const char *dot = strrchr(sep ? sep : path, '.');
    return dot ? dot + 1 : "";
 }
+
+#ifdef _WIN32
+bool px_list_files(const char *dir, void (*cb)(const char *name, void *userdata), void *userdata)
+{
+   char pattern[PX_PATH_MAX + 4];
+   wchar_t *wpattern;
+   WIN32_FIND_DATAW fd;
+   HANDLE h;
+
+   snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+   if (!(wpattern = px_utf8_to_wide(pattern)))
+      return false;
+   h = FindFirstFileW(wpattern, &fd);
+   free(wpattern);
+   if (h == INVALID_HANDLE_VALUE)
+      return false;
+   do
+   {
+      char name[PX_PATH_MAX];
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+         continue;
+      if (WideCharToMultiByte(CP_UTF8, 0, fd.cFileName, -1, name, sizeof(name), NULL, NULL) > 0)
+         cb(name, userdata);
+   } while (FindNextFileW(h, &fd));
+   FindClose(h);
+   return true;
+}
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+
+bool px_list_files(const char *dir, void (*cb)(const char *name, void *userdata), void *userdata)
+{
+   DIR *d = opendir(dir);
+   struct dirent *e;
+   if (!d)
+      return false;
+   while ((e = readdir(d)))
+   {
+      char full[PX_PATH_MAX * 2];
+      struct stat st;
+      snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+      if (stat(full, &st) == 0 && S_ISREG(st.st_mode))
+         cb(e->d_name, userdata);
+   }
+   closedir(d);
+   return true;
+}
+#endif

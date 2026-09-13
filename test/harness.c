@@ -2,7 +2,7 @@
 /* Headless libretro frontend that drives Proteus around the test core and checks
  * which tones come out of the mixed audio.
  *
- *   harness gen <dir>                           write tone_220/330/550.wav
+ *   harness gen <dir>                           write the test music files
  *   harness run <core> <test dir> <out.wav>     run the scenarios
  */
 #include <math.h>
@@ -19,16 +19,16 @@
 #include <windows.h>
 #define LOAD(p)    (void*)LoadLibraryA(p)
 #define SYM(h, n)  (void*)GetProcAddress((HMODULE)h, n)
-#define UNLOAD(h)  FreeLibrary((HMODULE)h)
 #else
 #include <dlfcn.h>
 #define LOAD(p)    dlopen(p, RTLD_NOW)
 #define SYM(h, n)  dlsym(h, n)
-#define UNLOAD(h)  dlclose(h)
 #endif
 
-#define RATE 32000.0
-#define FPS  60.0
+#define RATE      32000.0
+#define FPS       60.0
+#define MAX_OPTS  64
+#define MAX_FRAME 4096
 
 static struct
 {
@@ -49,14 +49,22 @@ static struct
    void (*unload_game)(void);
 } core;
 
-static const char *system_dir;
-static char var_keys[16][64];
-static char var_values[16][64];
-static unsigned var_count;
+/* Core options as the frontend sees them. */
+static struct
+{
+   char key[64];
+   char value[512];
+   char values[8192]; /* "|"-joined, for checking the picker contents */
+   char legacy[8192]; /* the raw "Desc; a|b" string in legacy mode */
+} opts[MAX_OPTS];
+static unsigned opt_count;
+static unsigned options_version = 2;
+static bool options_updated;
 
+static const char *system_dir;
 static int16_t *audio;
 static size_t audio_frames, audio_cap;
-static size_t frame_offsets[4096];
+static size_t frame_offsets[MAX_FRAME];
 static unsigned failures;
 
 static void RETRO_CALLCONV log_cb(enum retro_log_level level, const char *fmt, ...)
@@ -66,6 +74,49 @@ static void RETRO_CALLCONV log_cb(enum retro_log_level level, const char *fmt, .
    va_start(ap, fmt);
    vprintf(fmt, ap);
    va_end(ap);
+}
+
+static int find_opt(const char *key)
+{
+   for (unsigned i = 0; i < opt_count; i++)
+      if (!strcmp(opts[i].key, key))
+         return (int)i;
+   return -1;
+}
+
+/* Keeps the user's current value when options are re-declared, as RetroArch does. */
+static int declare_opt(const char *key, const char *def)
+{
+   int i = find_opt(key);
+   if (i < 0 && opt_count < MAX_OPTS)
+   {
+      i = (int)opt_count++;
+      snprintf(opts[i].key, sizeof(opts[i].key), "%s", key);
+      snprintf(opts[i].value, sizeof(opts[i].value), "%s", def ? def : "");
+   }
+   if (i >= 0)
+      opts[i].values[0] = opts[i].legacy[0] = '\0';
+   return i;
+}
+
+static void append_value(int i, const char *value)
+{
+   size_t len = strlen(opts[i].values);
+   snprintf(opts[i].values + len, sizeof(opts[i].values) - len, "|%s", value);
+}
+
+static void set_option(const char *key, const char *value)
+{
+   int i = find_opt(key);
+   printf("  [menu] %s = %s\n", key, value);
+   if (i < 0)
+   {
+      printf("  FAIL: option %s was never declared\n", key);
+      failures++;
+      return;
+   }
+   snprintf(opts[i].value, sizeof(opts[i].value), "%s", value);
+   options_updated = true;
 }
 
 static bool RETRO_CALLCONV env_cb(unsigned cmd, void *data)
@@ -78,39 +129,51 @@ static bool RETRO_CALLCONV env_cb(unsigned cmd, void *data)
       case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
          *(const char**)data = system_dir;
          return true;
-      case RETRO_ENVIRONMENT_SET_VARIABLES:
-         for (const struct retro_variable *v = data; v->key && var_count < 16; v++)
+      case RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION:
+         *(unsigned*)data = options_version;
+         return true;
+      case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2:
+      {
+         const struct retro_core_options_v2 *o = data;
+         if (options_version < 2)
+            return false;
+         for (const struct retro_core_option_v2_definition *d = o->definitions; d->key; d++)
          {
-            const char *opts = strstr(v->value, "; ");
+            int i = declare_opt(d->key, d->default_value);
+            for (unsigned v = 0; i >= 0 && d->values[v].value; v++)
+               append_value(i, d->values[v].value);
+         }
+         return true;
+      }
+      case RETRO_ENVIRONMENT_SET_VARIABLES:
+         for (const struct retro_variable *v = data; v->key; v++)
+         {
+            const char *list = strstr(v->value, "; ");
             const char *bar;
-            size_t len;
-            opts = opts ? opts + 2 : v->value;
-            bar  = strchr(opts, '|');
-            len  = bar ? (size_t)(bar - opts) : strlen(opts);
-            snprintf(var_keys[var_count], 64, "%s", v->key);
-            snprintf(var_values[var_count], 64, "%.*s", (int)len, opts);
-            var_count++;
+            char def[512];
+            int i;
+            list = list ? list + 2 : v->value;
+            bar  = strchr(list, '|');
+            snprintf(def, sizeof(def), "%.*s", (int)(bar ? (size_t)(bar - list) : strlen(list)), list);
+            if ((i = declare_opt(v->key, def)) >= 0)
+               snprintf(opts[i].legacy, sizeof(opts[i].legacy), "%s", v->value);
          }
          return true;
       case RETRO_ENVIRONMENT_GET_VARIABLE:
       {
          struct retro_variable *v = data;
-         for (unsigned i = 0; i < var_count; i++)
-            if (!strcmp(var_keys[i], v->key))
-            {
-               v->value = var_values[i];
-               return true;
-            }
-         v->value = NULL;
-         return false;
+         int i = find_opt(v->key);
+         v->value = i >= 0 ? opts[i].value : NULL;
+         return i >= 0;
       }
       case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
-         *(bool*)data = false;
+         *(bool*)data = options_updated;
+         options_updated = false;
          return true;
       case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
          return true;
       case RETRO_ENVIRONMENT_SET_MESSAGE:
-         printf("[osd] %s\n", ((const struct retro_message*)data)->msg);
+         printf("  [osd] %s\n", ((const struct retro_message*)data)->msg);
          return true;
       default:
          return false;
@@ -162,10 +225,12 @@ static bool open_core(const char *path)
    return true;
 }
 
-static bool start_session(const char *content)
+static bool start_session(const char *content, unsigned version)
 {
    struct retro_game_info game = { content, NULL, 0, NULL };
-   var_count = 0;
+   opt_count       = 0;
+   options_version = version;
+   options_updated = false;
    core.set_environment(env_cb);
    core.set_video_refresh(video_cb);
    core.set_audio_sample(audio_cb);
@@ -213,15 +278,35 @@ static double tone_level(unsigned from_frame, unsigned to_frame, double freq)
    return 2.0 * sqrt(fabs(s1 * s1 + s2 * s2 - coeff * s1 * s2)) / (double)(b - a);
 }
 
-static void expect(const char *label, unsigned from, unsigned to, double freq, bool present)
+static void check(const char *label, bool ok, const char *detail)
 {
-   double level = tone_level(from, to, freq);
-   bool ok = present ? level > 1500.0 : level < 300.0;
-   printf("  %-34s %4.0f Hz %-7s level %6.0f  %s\n", label, freq,
-         present ? "present" : "absent", level, ok ? "ok" : "FAIL");
+   printf("  %-42s %s  %s\n", label, detail, ok ? "ok" : "FAIL");
    if (!ok)
       failures++;
 }
+
+static double expect(const char *label, unsigned from, unsigned to, double freq, bool present)
+{
+   char detail[64];
+   double level = tone_level(from, to, freq);
+   snprintf(detail, sizeof(detail), "%6.1f Hz %-7s level %6.0f", freq,
+         present ? "present" : "absent", level);
+   check(label, present ? level > 1500.0 : level < 300.0, detail);
+   return level;
+}
+
+static void expect_option(const char *key, const char *needle)
+{
+   char label[128];
+   int i = find_opt(key);
+   const char *hay = i < 0 ? "" : (opts[i].legacy[0] ? opts[i].legacy : opts[i].values);
+   snprintf(label, sizeof(label), "option %s offers %s", key, needle ? needle : "(declared)");
+   check(label, i >= 0 && (!needle || strstr(hay, needle)), "");
+}
+
+/* ---------------------------------------------------------------------------
+ * Test music files
+ * ------------------------------------------------------------------------- */
 
 static void write_wav(const char *path, const int16_t *data, size_t frames, unsigned rate)
 {
@@ -241,14 +326,89 @@ static void write_wav(const char *path, const int16_t *data, size_t frames, unsi
    fclose(f);
 }
 
+static void put32(uint8_t *p, uint32_t v)
+{
+   p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+/* An SPC snapshot whose DSP is already keyed on: voice 0 loops a 16-sample BRR
+ * square wave at pitch 0x600 (12 kHz), i.e. 750 Hz, while the SPC700 idles. */
+static void write_spc(const char *path)
+{
+   static uint8_t spc[0x10200];
+   uint8_t *ram = spc + 0x100, *dsp = spc + 0x10100;
+   static const uint8_t brr[] = { 0xB3, 0x77, 0x77, 0x77, 0x77, 0x99, 0x99, 0x99, 0x99 };
+   FILE *f;
+
+   memset(spc, 0, sizeof(spc));
+   memcpy(spc, "SNES-SPC700 Sound File Data v0.30", 33);
+   spc[0x21] = 26; spc[0x22] = 26; spc[0x23] = 27; spc[0x24] = 30;
+   spc[0x25] = 0x00; spc[0x26] = 0x04;  /* PC = $0400 */
+   spc[0x2B] = 0xEF;                    /* SP */
+
+   ram[0x0400] = 0x2F; ram[0x0401] = 0xFE;         /* BRA -2 */
+   ram[0x0200] = 0x00; ram[0x0201] = 0x03;         /* sample 0 start $0300 */
+   ram[0x0202] = 0x00; ram[0x0203] = 0x03;         /* loop $0300 */
+   memcpy(ram + 0x0300, brr, sizeof(brr));
+
+   dsp[0x00] = 0x7F; dsp[0x01] = 0x7F;             /* voice 0 volume */
+   dsp[0x02] = 0x00; dsp[0x03] = 0x06;             /* pitch */
+   dsp[0x04] = 0x00;                               /* source 0 */
+   dsp[0x05] = 0x00; dsp[0x07] = 0x7F;             /* direct gain */
+   dsp[0x0C] = 0x7F; dsp[0x1C] = 0x7F;             /* main volume */
+   dsp[0x4C] = 0x01;                               /* key on voice 0 */
+   dsp[0x6C] = 0x20;                               /* echo off, unmuted */
+   dsp[0x5D] = 0x02;                               /* sample directory $0200 */
+
+   if ((f = fopen(path, "wb")))
+   {
+      fwrite(spc, 1, sizeof(spc), f);
+      fclose(f);
+   }
+}
+
+/* A VGM that plays an SN76489 square at 3579545 / (32 * 224) = 499.4 Hz forever. */
+static void write_vgm(const char *path)
+{
+   static const uint8_t cmds[] = {
+      0x50, 0x80, 0x50, 0x0E,              /* tone 0 divider 224 */
+      0x50, 0x90,                          /* tone 0 loudest */
+      0x50, 0xBF, 0x50, 0xDF, 0x50, 0xFF,  /* other channels off */
+      0x61, 0x44, 0xAC,                    /* wait 44100 samples (loop start) */
+      0x66,
+   };
+   uint8_t vgm[0x40 + sizeof(cmds)];
+   FILE *f;
+
+   memset(vgm, 0, sizeof(vgm));
+   memcpy(vgm, "Vgm ", 4);
+   put32(vgm + 0x04, sizeof(vgm) - 0x04);
+   put32(vgm + 0x08, 0x150);
+   put32(vgm + 0x0C, 3579545);
+   put32(vgm + 0x18, 44100);
+   put32(vgm + 0x1C, 0x40 + 12 - 0x1C);
+   put32(vgm + 0x20, 44100);
+   put32(vgm + 0x24, 60);
+   vgm[0x28] = 0x09; vgm[0x2A] = 16;
+   put32(vgm + 0x34, 0x40 - 0x34);
+   memcpy(vgm + 0x40, cmds, sizeof(cmds));
+
+   if ((f = fopen(path, "wb")))
+   {
+      fwrite(vgm, 1, sizeof(vgm), f);
+      fclose(f);
+   }
+}
+
 static int gen(const char *dir)
 {
    static const unsigned freqs[] = { 220, 330, 550 };
    const unsigned rate = 44100;
+   char path[512];
    int16_t *buf = malloc(rate * 2 * sizeof(int16_t));
+
    for (unsigned k = 0; k < 3; k++)
    {
-      char path[512];
       /* One second of a whole number of cycles loops seamlessly. */
       for (unsigned i = 0; i < rate; i++)
          buf[i * 2] = buf[i * 2 + 1] = (int16_t)lrint(8000.0 * sin(2.0 * M_PI * freqs[k] * i / rate));
@@ -256,8 +416,19 @@ static int gen(const char *dir)
       write_wav(path, buf, rate, rate);
    }
    free(buf);
+
+   snprintf(path, sizeof(path), "%s/tone_750.spc", dir);
+   write_spc(path);
+   snprintf(path, sizeof(path), "%s/tone_500.vgm", dir);
+   write_vgm(path);
    return 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Scenarios
+ * ------------------------------------------------------------------------- */
+
+#define VGM_HZ (3579545.0 / (32.0 * 224.0))
 
 int main(int argc, char **argv)
 {
@@ -280,18 +451,20 @@ int main(int argc, char **argv)
 
    core.get_system_info(&info);
    printf("core: %s %s\n", info.library_name, info.library_version);
-   if (!strstr(info.library_name, "Proteus Retune (Test Core)"))
-   {
-      printf("FAIL: unexpected library name\n");
-      failures++;
-   }
+   check("library name", strstr(info.library_name, "Proteus Retune (Test Core)") != NULL, "");
+   snprintf(content, sizeof(content), "%s/game.tst", argv[3]);
 
    /* 1. Song changes swap music while sound effects keep playing. */
    printf("\nscenario: song changes\n");
-   snprintf(content, sizeof(content), "%s/game.tst", argv[3]);
-   if (!start_session(content))
+   if (!start_session(content, 2))
       return 1;
-   run_frames(0, 600);
+   expect_option("testcore_music", "disabled");
+   expect_option("proteus_enabled", "disabled");
+   expect_option("proteus_music_volume", "200");
+   expect_option("proteus_song_2", "tone_750.spc");
+   expect_option("proteus_song_6", "tone_500.vgz");
+   expect_option("proteus_song_6", "silence");
+   run_frames(0, 900);
    write_wav(argv[4], audio, audio_frames, (unsigned)RATE);
 
    expect("song 1: original music", 6, 60, 440, true);
@@ -311,27 +484,24 @@ int main(int argc, char **argv)
    expect("song 5: original muted", 366, 480, 440, false);
    expect("song 9: unmapped -> original", 486, 540, 440, true);
    expect("song 9: replacement stopped", 486, 540, 550, false);
-   expect("song 1 again: original music", 546, 600, 440, true);
+   expect("song 6: spc replacement", 606, 720, 750, true);
+   expect("song 6: original muted", 606, 720, 440, false);
+   expect("song 6: sound effects kept", 606, 720, 1000, true);
+   expect("song 7: vgz replacement", 726, 840, VGM_HZ, true);
+   expect("song 7: spc stopped", 726, 840, 750, false);
+   expect("song 1 again: original music", 846, 900, 440, true);
    end_session();
 
    /* 2. Loading a state restores the replacement track that was playing. */
    printf("\nscenario: save state\n");
-   if (!start_session(content))
+   if (!start_session(content, 2))
       return 1;
    run_frames(0, 150);
    state_size = core.serialize_size();
    state      = malloc(state_size);
-   if (!core.serialize(state, state_size))
-   {
-      printf("  FAIL: serialize\n");
-      failures++;
-   }
+   check("serialize", core.serialize(state, state_size), "");
    run_frames(150, 60); /* now in song 3 (ogg) */
-   if (!core.unserialize(state, state_size))
-   {
-      printf("  FAIL: unserialize\n");
-      failures++;
-   }
+   check("unserialize", core.unserialize(state, state_size), "");
    run_frames(210, 30);
    expect("after load: wav replacement back", 212, 240, 220, true);
    expect("after load: ogg track stopped", 212, 240, 330, false);
@@ -339,11 +509,61 @@ int main(int argc, char **argv)
    free(state);
    end_session();
 
-   /* 3. Games without a profile pass through untouched. */
+   /* 3. Changing core options while the game runs. */
+   printf("\nscenario: core options in game\n");
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 20);
+   set_option("testcore_music", "disabled");  /* the wrapped core's own option */
+   run_frames(20, 30);
+   expect("core's own option still applies", 26, 50, 440, false);
+   set_option("testcore_music", "enabled");
+   run_frames(50, 50);
+   expect("song 2 from profile", 66, 100, 220, true);
+   set_option("proteus_song_2", "tone_750.spc");
+   run_frames(100, 40);
+   {
+      double full, half;
+      expect("picker: song 2 now spc", 106, 140, 220, false);
+      full = expect("picker: song 2 now spc", 106, 140, 750, true);
+      set_option("proteus_music_volume", "50");
+      run_frames(140, 40);
+      half = tone_level(146, 180, 750);
+      {
+         char detail[64];
+         snprintf(detail, sizeof(detail), "ratio %.2f", half / full);
+         check("music volume 50%", half / full > 0.45 && half / full < 0.55, detail);
+      }
+   }
+   set_option("proteus_enabled", "disabled");
+   run_frames(180, 60);
+   expect("disabled: original music back", 186, 240, 440, true);
+   expect("disabled: no replacement", 186, 240, 330, false);
+   set_option("proteus_enabled", "enabled");
+   run_frames(240, 60);
+   expect("re-enabled: song 3 replacement", 246, 300, 330, true);
+   expect("re-enabled: original muted", 246, 300, 440, false);
+   end_session();
+
+   /* 4. Frontends that only know the legacy option API. */
+   printf("\nscenario: legacy options\n");
+   if (!start_session(content, 0))
+      return 1;
+   expect_option("testcore_music", "Music; enabled|disabled");
+   expect_option("proteus_enabled", "Proteus: Music replacement; enabled|disabled");
+   expect_option("proteus_song_2", "Proteus: Song 0x2; profile|original|silence|");
+   run_frames(0, 180);
+   expect("legacy: wav replacement", 66, 180, 220, true);
+   expect("legacy: original muted", 66, 180, 440, false);
+   end_session();
+
+   /* 5. Games without a profile pass through untouched. */
    printf("\nscenario: no profile\n");
    snprintf(content, sizeof(content), "%s/other.tst", argv[3]);
-   if (!start_session(content))
+   if (!start_session(content, 2))
       return 1;
+   expect_option("proteus_enabled", NULL);
+   check("no song pickers", find_opt("proteus_song_2") < 0, "");
    run_frames(0, 180);
    expect("no profile: original music", 66, 180, 440, true);
    expect("no profile: no replacement", 66, 180, 220, false);

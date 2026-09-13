@@ -2,12 +2,12 @@
 #include "music.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 static void voice_reset(px_voice *v)
 {
    memset(v, 0, sizeof(*v));
-   v->id = -1;
 }
 
 static void voice_close(px_voice *v)
@@ -65,10 +65,11 @@ void px_mixer_set_rate(px_mixer *m, double out_rate)
    m->out_rate = out_rate;
 }
 
-bool px_mixer_play(px_mixer *m, int id, const char *path, bool loop, uint64_t loop_start,
-      float volume, unsigned fade_frames, uint64_t start_frame, char *err, size_t errlen)
+bool px_mixer_play(px_mixer *m, const char *path, unsigned subtrack, bool loop,
+      uint64_t loop_start, float volume, unsigned fade_frames, uint64_t start_frame,
+      char *err, size_t errlen)
 {
-   px_source *src = px_source_open(path, err, errlen);
+   px_source *src = px_source_open(path, subtrack, loop, m->out_rate, err, errlen);
    if (!src)
       return false;
 
@@ -86,7 +87,8 @@ bool px_mixer_play(px_mixer *m, int id, const char *path, bool loop, uint64_t lo
    voice_reset(&m->current);
 
    m->current.src        = src;
-   m->current.id         = id;
+   m->current.subtrack   = subtrack;
+   snprintf(m->current.path, sizeof(m->current.path), "%s", path);
    m->current.loop       = loop;
    m->current.loop_start = loop_start;
    m->current.volume     = volume;
@@ -179,9 +181,9 @@ void px_mixer_mix(px_mixer *m, int16_t *frames, size_t count, float game_gain, f
    }
 }
 
-int px_mixer_current_id(const px_mixer *m)
+bool px_mixer_is_playing(const px_mixer *m, const char *path, unsigned subtrack)
 {
-   return m->current.src ? m->current.id : -1;
+   return m->current.src && m->current.subtrack == subtrack && !strcmp(m->current.path, path);
 }
 
 uint64_t px_mixer_position(const px_mixer *m)

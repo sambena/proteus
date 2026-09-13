@@ -1,0 +1,4 @@
+libgme (Game_Music_Emu) 0.6.5, https://github.com/libgme/game-music-emu
+Vendored from the gme/ directory of the 0.6.5 release; LGPL-2.1-or-later (LICENSE).
+ext/emu2413 is MIT (ext/LICENSE). The MAME and GENS YM2612 emulators were omitted;
+the default Nuked OPN2 emulator (LGPL-2.1-or-later) is used.

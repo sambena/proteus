@@ -20,6 +20,7 @@
 
 #include "libretro.h"
 #include "music.h"
+#include "options.h"
 #include "profile.h"
 #include "util.h"
 
@@ -34,7 +35,7 @@ typedef void *px_lib;
 #define PX_NAME        "Proteus Retune"
 #define PX_PREFIX      "proteus_"
 #define PX_STATE_MAGIC 0x4E545250u /* "PRTN" */
-#define PX_STATE_VER   1u
+#define PX_STATE_VER   2u
 #define PX_STATE_SIZE  48u
 
 struct inner_api
@@ -93,6 +94,7 @@ static struct
 {
    bool muted;           /* mute options are being forced */
    bool options_dirty;   /* the inner core has not seen the latest mute state */
+   bool option_update;   /* a frontend option change Proteus consumed, owed to the inner core */
    bool audio_enabled;   /* false while the frontend runs hidden frames (run-ahead) */
    bool have_candidate;
    uint32_t candidate;
@@ -103,6 +105,16 @@ static struct
    int16_t *scratch;
    size_t scratch_frames;
 } st;
+
+/* Effective settings: the profile, overridden by core options. */
+static struct
+{
+   bool enabled;
+   float music_volume;
+   float game_volume;
+   unsigned crossfade_ms;
+   bool notify;
+} cfg;
 
 static void px_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -301,6 +313,11 @@ static void update_sample_rate(double rate)
 
 static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
 {
+   bool result;
+
+   if (px_options_intercept(cmd, data, &result))
+      return result;
+
    switch (cmd)
    {
       case RETRO_ENVIRONMENT_GET_VARIABLE:
@@ -320,8 +337,9 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
       {
          bool updated = false;
          bool ret     = fe_env(cmd, &updated);
-         bool ours    = st.options_dirty;
+         bool ours    = st.options_dirty || st.option_update;
          st.options_dirty = false;
+         st.option_update = false;
          if (data)
             *(bool*)data = (ret && updated) || ours;
          return ret || ours;
@@ -365,14 +383,14 @@ static int16_t *scratch_buffer(size_t frames)
 
 static bool mixing_active(void)
 {
-   return profile.loaded && st.audio_enabled;
+   return profile.loaded && cfg.enabled && st.audio_enabled;
 }
 
 static void RETRO_CALLCONV audio_sample_wrap(int16_t left, int16_t right)
 {
    int16_t frame[2] = { left, right };
    if (mixing_active())
-      px_mixer_mix(&mixer, frame, 1, profile.game_volume, profile.music_volume);
+      px_mixer_mix(&mixer, frame, 1, cfg.game_volume, cfg.music_volume);
    if (fe_audio_sample)
       fe_audio_sample(frame[0], frame[1]);
 }
@@ -385,7 +403,7 @@ static size_t RETRO_CALLCONV audio_batch_wrap(const int16_t *data, size_t frames
    if (!mixing_active() || !(buf = scratch_buffer(frames)))
       return fe_audio_batch(data, frames);
    memcpy(buf, data, frames * 2 * sizeof(int16_t));
-   px_mixer_mix(&mixer, buf, frames, profile.game_volume, profile.music_volume);
+   px_mixer_mix(&mixer, buf, frames, cfg.game_volume, cfg.music_volume);
    return fe_audio_batch(buf, frames);
 }
 
@@ -419,29 +437,127 @@ static void set_muted(bool muted)
    st.options_dirty = true;
 }
 
-static unsigned fade_frames(void)
+static float option_percent(const char *key, float fallback)
 {
-   return (unsigned)(mixer.out_rate * profile.crossfade_ms / 1000.0);
+   const char *v = px_options_get(key);
+   return (!v || !strcmp(v, PX_OPT_PROFILE)) ? fallback : (float)atoi(v) / 100.0f;
 }
 
-static void start_track(int index, unsigned fade, uint64_t start_frame)
+static void read_config(void)
 {
-   const px_track *t = &profile.tracks[index];
+   const char *v;
+
+   cfg.enabled      = !((v = px_options_get(PX_OPT_ENABLED)) && !strcmp(v, "disabled"));
+   cfg.music_volume = option_percent(PX_OPT_MUSIC_VOLUME, profile.music_volume);
+   cfg.game_volume  = option_percent(PX_OPT_GAME_VOLUME, profile.game_volume);
+
+   v = px_options_get(PX_OPT_CROSSFADE);
+   cfg.crossfade_ms = (!v || !strcmp(v, PX_OPT_PROFILE)) ? profile.crossfade_ms : (unsigned)atoi(v);
+
+   v = px_options_get(PX_OPT_NOTIFY);
+   cfg.notify = (!v || !strcmp(v, PX_OPT_PROFILE)) ? profile.log_songs : !strcmp(v, "enabled");
+}
+
+static unsigned fade_frames(void)
+{
+   return (unsigned)(mixer.out_rate * cfg.crossfade_ms / 1000.0);
+}
+
+/* What to do for one song value, after applying the song picker core option. */
+typedef struct
+{
+   px_action action;
+   char path[PX_PATH_MAX];
+   unsigned subtrack;
+   bool loop;
+   uint64_t loop_start;
+   float volume;
+   bool mapped;
+} px_choice;
+
+static void resolve_song(uint32_t value, px_choice *c)
+{
+   int index = px_profile_find(&profile, value);
+   char key[32], rel[PX_PATH_MAX], dir[PX_PATH_MAX], full[PX_PATH_MAX];
+   unsigned subtrack = 0;
+   const char *v;
+   char *hash;
+
+   memset(c, 0, sizeof(*c));
+   c->loop   = true;
+   c->volume = 1.0f;
+   if (index < 0)
+   {
+      c->action = profile.unmapped;
+      return;
+   }
+
+   {
+      const px_track *t = &profile.tracks[index];
+      c->mapped     = true;
+      c->action     = t->action;
+      c->subtrack   = t->subtrack;
+      c->loop       = t->loop;
+      c->loop_start = t->loop_start;
+      c->volume     = t->volume;
+      snprintf(c->path, sizeof(c->path), "%s", t->path);
+   }
+
+   snprintf(key, sizeof(key), PX_OPT_SONG_FMT, (unsigned)value);
+   v = px_options_get(key);
+   if (!v || !strcmp(v, PX_OPT_PROFILE))
+      return;
+   if (!strcmp(v, "original"))
+   {
+      c->action = PX_ACTION_ORIGINAL;
+      return;
+   }
+   if (!strcmp(v, "silence"))
+   {
+      c->action = PX_ACTION_SILENCE;
+      return;
+   }
+
+   /* "music/dungeon.nsf#3" picks song 3 of a multi-song file. */
+   snprintf(rel, sizeof(rel), "%s", v);
+   hash = strrchr(rel, '#');
+   if (hash && hash[1] && strspn(hash + 1, "0123456789") == strlen(hash + 1) && atoi(hash + 1) > 0)
+   {
+      subtrack = (unsigned)atoi(hash + 1) - 1;
+      *hash    = '\0';
+   }
+   px_path_dir(profile.path, dir, sizeof(dir));
+   px_path_join(dir, rel, full, sizeof(full));
+
+   /* Picking the profile's own file keeps its loop point and volume. */
+   if (c->action == PX_ACTION_FILE && !strcmp(full, c->path) && subtrack == c->subtrack)
+      return;
+   c->action     = PX_ACTION_FILE;
+   c->subtrack   = subtrack;
+   c->loop       = true;
+   c->loop_start = 0;
+   c->volume     = 1.0f;
+   snprintf(c->path, sizeof(c->path), "%s", full);
+}
+
+static void start_choice(const px_choice *c, unsigned fade, uint64_t start_frame)
+{
    char err[PX_PATH_MAX + 64];
 
    /* Several song values may share a file; keep it playing without a restart. */
-   if (px_mixer_current_id(&mixer) >= 0
-         && !strcmp(profile.tracks[px_mixer_current_id(&mixer)].path, t->path))
+   if (px_mixer_is_playing(&mixer, c->path, c->subtrack))
    {
-      mixer.current.id = index;
+      mixer.current.volume = c->volume;
+      mixer.current.loop   = c->loop;
       set_muted(true);
       return;
    }
 
-   if (!px_mixer_play(&mixer, index, t->path, t->loop, t->loop_start, t->volume,
+   if (!px_mixer_play(&mixer, c->path, c->subtrack, c->loop, c->loop_start, c->volume,
             fade, start_frame, err, sizeof(err)))
    {
       px_log(RETRO_LOG_ERROR, "%s", err);
+      px_notify("Proteus: cannot play %s", c->path);
       px_mixer_stop(&mixer, fade);
       set_muted(false);
       return;
@@ -449,27 +565,31 @@ static void start_track(int index, unsigned fade, uint64_t start_frame)
    set_muted(true);
 }
 
-static void apply_song(uint32_t value)
+/* `announce` is false when re-applying the current song after an option change. */
+static void apply_song(uint32_t value, bool announce)
 {
-   int index = px_profile_find(&profile, value);
-   px_action action = index >= 0 ? profile.tracks[index].action : profile.unmapped;
+   px_choice c;
+   resolve_song(value, &c);
 
    st.have_applied = true;
    st.applied      = value;
 
-   if (profile.log_songs)
+   if (announce && cfg.notify)
    {
-      static const char *names[] = { "", "silence", "original", "keep" };
-      px_log(RETRO_LOG_INFO, "song value 0x%X -> %s%s", (unsigned)value,
-            action == PX_ACTION_FILE ? profile.tracks[index].path : names[action],
-            index >= 0 ? "" : " (unmapped)");
-      px_notify("Proteus: song 0x%X%s", (unsigned)value, index >= 0 ? "" : " (unmapped)");
+      static const char *names[] = { "", "silence", "original music", "keep playing" };
+      const char *what = c.action == PX_ACTION_FILE ? c.path : names[c.action];
+      const char *name = c.action == PX_ACTION_FILE ? what + strlen(what) : what;
+      while (name > what && name[-1] != '/' && name[-1] != '\\')
+         name--;
+      px_log(RETRO_LOG_INFO, "song 0x%X -> %s%s", (unsigned)value, what,
+            c.mapped ? "" : " (unmapped)");
+      px_notify("Proteus: song 0x%X%s: %s", (unsigned)value, c.mapped ? "" : " (unmapped)", name);
    }
 
-   switch (action)
+   switch (c.action)
    {
       case PX_ACTION_FILE:
-         start_track(index, fade_frames(), 0);
+         start_choice(&c, fade_frames(), 0);
          break;
       case PX_ACTION_SILENCE:
          px_mixer_stop(&mixer, fade_frames());
@@ -523,7 +643,7 @@ static void detect_song(void)
       st.stable_frames++;
 
    if (st.stable_frames >= profile.debounce && (!st.have_applied || v != st.applied))
-      apply_song(v);
+      apply_song(v, true);
 }
 
 static bool find_profile(const char *content_path, char *out, size_t n)
@@ -562,7 +682,7 @@ static bool find_profile(const char *content_path, char *out, size_t n)
    return false;
 }
 
-static void load_profile_for(const char *content_path)
+static void find_and_load_profile(const char *content_path)
 {
    char path[PX_PATH_MAX * 2];
    char err[PX_PATH_MAX + 128];
@@ -592,6 +712,16 @@ static void load_profile_for(const char *content_path)
    px_log(RETRO_LOG_INFO, "loaded profile %s (%u tracks)", path, profile.track_count);
 }
 
+/* Loads the game's profile and publishes its song pickers before the inner core
+ * loads, so both see the same options. */
+static void load_profile_for(const char *content_path)
+{
+   find_and_load_profile(content_path);
+   px_options_set_profile(profile.loaded ? &profile : NULL);
+   px_options_publish();
+   read_config();
+}
+
 /* ---------------------------------------------------------------------------
  * libretro API
  * ------------------------------------------------------------------------- */
@@ -600,10 +730,15 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 {
    struct retro_log_callback log;
    fe_env = cb;
+   px_options_set_frontend(cb);
    if (cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
       fe_log = log.log;
    if (ensure_inner())
       inner.api.set_environment(env_wrap);
+   /* Cores that declare options do so above, merged with ours; the rest still
+    * need Proteus's own options shown. */
+   if (!px_options_inner_declared())
+      px_options_publish();
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb)
@@ -655,6 +790,7 @@ RETRO_API void retro_deinit(void)
    free(st.scratch);
    memset(&st, 0, sizeof(st));
    profile.loaded = false;
+   px_options_free();
    /* Unload so the next session starts the inner core with fresh static state. */
    unload_inner();
 }
@@ -714,11 +850,31 @@ RETRO_API void retro_run(void)
    if (profile.loaded)
    {
       int av = 0;
+      bool updated = false;
+
+      /* Taking the update flag hides it from the inner core; env_wrap hands it on. */
+      if (fe_env(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
+      {
+         bool was_enabled = cfg.enabled;
+         st.option_update = true;
+         read_config();
+         if (!cfg.enabled && was_enabled)
+         {
+            px_mixer_stop(&mixer, fade_frames());
+            set_muted(false);
+            st.have_applied   = false;
+            st.have_candidate = false;
+         }
+         else if (cfg.enabled && st.have_applied)
+            apply_song(st.applied, false);
+      }
+
       /* Bit 1 is cleared while run-ahead renders frames nobody will hear;
        * the music must not advance during those. */
       st.audio_enabled = !fe_env(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av) || (av & 2);
       /* Detect before running so a mute takes effect in this frame's audio. */
-      detect_song();
+      if (cfg.enabled)
+         detect_song();
    }
 
    inner.api.run();
@@ -757,6 +913,7 @@ RETRO_API bool retro_serialize(void *data, size_t size)
    if (st.have_applied)   flags |= 1;
    if (st.muted)          flags |= 2;
    if (st.have_candidate) flags |= 4;
+   if (mixer.current.src) flags |= 8;
 
    pos   = px_mixer_position(&mixer);
    block = (uint8_t*)data + size - PX_STATE_SIZE;
@@ -765,7 +922,6 @@ RETRO_API bool retro_serialize(void *data, size_t size)
    put_u32(block + 4,  PX_STATE_VER);
    put_u32(block + 8,  flags);
    put_u32(block + 12, st.applied);
-   put_u32(block + 16, (uint32_t)px_mixer_current_id(&mixer));
    put_u32(block + 20, (uint32_t)pos);
    put_u32(block + 24, (uint32_t)(pos >> 32));
    put_u32(block + 28, st.candidate);
@@ -773,30 +929,34 @@ RETRO_API bool retro_serialize(void *data, size_t size)
    return true;
 }
 
-static void restore_music(int index, uint64_t pos)
+static void restore_music(bool playing, uint64_t pos)
 {
-   int current = px_mixer_current_id(&mixer);
+   px_choice c;
 
-   if (index < 0 || index >= (int)profile.track_count
-         || profile.tracks[index].action != PX_ACTION_FILE)
+   if (!playing || !st.have_applied)
+   {
+      px_mixer_stop(&mixer, 0);
+      return;
+   }
+   resolve_song(st.applied, &c);
+   if (c.action != PX_ACTION_FILE)
    {
       px_mixer_stop(&mixer, 0);
       return;
    }
 
-   if (current >= 0 && !strcmp(profile.tracks[current].path, profile.tracks[index].path))
+   if (px_mixer_is_playing(&mixer, c.path, c.subtrack))
    {
       /* Rewind and run-ahead load states every frame; only seek on a real jump so
        * the music doesn't stutter. */
       uint64_t cur  = px_mixer_position(&mixer);
       uint64_t diff = cur > pos ? cur - pos : pos - cur;
-      mixer.current.id = index;
       if (diff > px_mixer_source_rate(&mixer) / 2)
          px_mixer_seek(&mixer, pos);
       return;
    }
 
-   start_track(index, 0, pos);
+   start_choice(&c, 0, pos);
 }
 
 RETRO_API bool retro_unserialize(const void *data, size_t size)
@@ -821,7 +981,7 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
    st.applied        = get_u32(block + 12);
    st.candidate      = get_u32(block + 28);
    st.stable_frames  = get_u32(block + 32);
-   restore_music((int)get_u32(block + 16),
+   restore_music(flags & 8,
          (uint64_t)get_u32(block + 20) | (uint64_t)get_u32(block + 24) << 32);
    set_muted(flags & 2);
    return true;

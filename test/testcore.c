@@ -43,6 +43,9 @@ static uint8_t testcore_song_for_frame(uint32_t frame)
    if (frame < 360) return 4; /* silence */
    if (frame < 480) return 5; /* mp3 replacement */
    if (frame < 540) return 9; /* unmapped -> original */
+   if (frame < 600) return 1;
+   if (frame < 720) return 6; /* spc replacement */
+   if (frame < 840) return 7; /* vgz replacement */
    return 1;
 }
 
@@ -52,8 +55,24 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
       { "testcore_music", "Music; enabled|disabled" },
       { NULL, NULL },
    };
+   static struct retro_core_option_v2_category cats[] = {
+      { "audio", "Audio", "Sound settings." },
+      { NULL, NULL, NULL },
+   };
+   static struct retro_core_option_v2_definition defs[] = {
+      { "testcore_music", "Music", NULL, "Play the music tone.", NULL, "audio",
+         { { "enabled", "Enabled" }, { "disabled", "Disabled" }, { NULL, NULL } }, "enabled" },
+      { NULL, NULL, NULL, NULL, NULL, NULL, { { NULL, NULL } }, NULL },
+   };
+   static struct retro_core_options_v2 options = { cats, defs };
+   unsigned version = 0;
+
    env_cb = cb;
-   cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
+   /* Use whichever option API the frontend offers, like real cores do. */
+   if (cb(RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION, &version) && version >= 2)
+      cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
+   else
+      cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }

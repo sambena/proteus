@@ -24,6 +24,8 @@ void px_path_stem(const char *path, char *out, size_t n);
 /* Joins `dir` and `name` with a separator unless `name` is already absolute. */
 void px_path_join(const char *dir, const char *name, char *out, size_t n);
 bool px_file_exists(const char *path);
+/* Calls `cb` with the UTF-8 name of each regular file directly inside `dir`. */
+bool px_list_files(const char *dir, void (*cb)(const char *name, void *userdata), void *userdata);
 const char *px_path_ext(const char *path);
 
 #endif
