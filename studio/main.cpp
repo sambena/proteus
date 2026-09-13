@@ -34,6 +34,7 @@ struct Settings
    std::string retroarch_dir;
    std::string core_file;
    std::string rom_path;
+   float ui_scale = 1.25f;
 };
 
 static std::string settings_path() { return app_data_dir() + "/studio.cfg"; }
@@ -57,6 +58,12 @@ static Settings load_settings()
       if (k == "retroarch_dir") s.retroarch_dir = v;
       else if (k == "core") s.core_file = v;
       else if (k == "rom") s.rom_path = v;
+      else if (k == "ui_scale")
+      {
+         try { s.ui_scale = std::stof(v); } catch (...) {}
+         if (s.ui_scale < 0.8f) s.ui_scale = 0.8f;
+         if (s.ui_scale > 2.5f) s.ui_scale = 2.5f;
+      }
    }
    if (s.retroarch_dir.empty())
       for (const char *guess : { "D:\\RetroArch", "C:\\RetroArch-Win64", "C:\\RetroArch" })
@@ -68,7 +75,7 @@ static Settings load_settings()
 
 static void save_settings(const Settings &s)
 {
-   write_text(settings_path(), "retroarch_dir=" + s.retroarch_dir + "\ncore=" + s.core_file + "\nrom=" + s.rom_path + "\n");
+   write_text(settings_path(), "retroarch_dir=" + s.retroarch_dir + "\ncore=" + s.core_file + "\nrom=" + s.rom_path + "\nui_scale=" + std::to_string(s.ui_scale) + "\n");
 }
 
 // Reads `key = "value"` from retroarch.cfg, expanding RetroArch's ":" prefix.
@@ -334,7 +341,23 @@ struct App
    int playing_compare_index = -1;
    bool is_playing = false;
    bool show_game_screen = false;
+   bool mute_emulator = false;
    std::string export_status;
+
+   struct DeepScan
+   {
+      bool running = false;
+      std::vector<uint8_t> base;
+      uint32_t address = 0;
+      int mem = 0;
+      int from = 1;
+      int to = 64;
+      int current = 1;
+      int found = 0;
+      int silent = 0;
+      bool is_compare = false;
+      std::string status_msg;
+   } deep_scan;
 };
 
 static App *g_app = nullptr;
@@ -673,6 +696,7 @@ static void load_game(App &a)
       return;
    }
    save_settings(a.settings);
+   a.paused = !a.show_game_screen;
    a.status = "Loaded " + content_name(a);
 
    size_t size = 0;
@@ -1031,6 +1055,7 @@ static void stop_audio(App &a)
    a.is_playing = false;
    a.playing_target_index = -1;
    a.playing_compare_index = -1;
+   a.paused = true; // Always halt emulator audio output so Stop means silence
 }
 
 static void capture_and_play_song(App &a, Song &s)
@@ -1064,6 +1089,218 @@ static void capture_and_play_song(App &a, Song &s)
       play_clip(a, s.clip, s.clip_rate);
 }
 
+static void capture_and_play_compare_song(App &a, Song &s, int index)
+{
+   if (a.compare.path.empty() || !file_exists(a.compare.path))
+   {
+      a.status = "Compare ROM file not found: " + a.compare.path;
+      return;
+   }
+
+   uint32_t addr = a.compare.preset ? a.compare.preset->address : (a.profile.have_address ? a.profile.address : 0x1DFB);
+   int mem = a.compare.preset ? a.compare.preset->memory : 0;
+
+   a.status = "Auditioning compare ROM song " + (s.name[0] ? std::string(s.name) : hex(s.value)) + "...";
+
+   std::string target_rom = a.settings.rom_path;
+   std::string target_core = a.settings.retroarch_dir + "\\cores\\" + a.settings.core_file;
+   std::string err;
+   std::vector<uint8_t> target_state;
+   if (a.core.loaded())
+      target_state = a.core.save_state();
+
+   std::string save_dir = app_data_dir() + "\\saves";
+   if (a.core.load(target_core, a.compare.path, system_dir(a), save_dir, err))
+   {
+      size_t size = 0;
+      uint8_t *ram = a.core.memory_mut(kMemories[mem].id, &size);
+      if (ram && addr < size)
+         ram[addr] = (uint8_t)s.value;
+
+      a.core.set_skip_video(true);
+      a.core.audio().clear();
+      s.clip.clear();
+      for (int f = 0; f < 180; f++)
+      {
+         a.core.run_frame(0);
+         s.clip.insert(s.clip.end(), a.core.audio().begin(), a.core.audio().end());
+         a.core.audio().clear();
+      }
+      a.core.set_skip_video(false);
+      s.clip_rate = a.core.sample_rate();
+
+      // Restore target ROM & state
+      if (!target_rom.empty())
+      {
+         a.core.load(target_core, target_rom, system_dir(a), save_dir, err);
+         if (!target_state.empty())
+            a.core.load_state(target_state);
+      }
+
+      if (!s.clip.empty())
+      {
+         play_clip(a, s.clip, s.clip_rate);
+         a.is_playing = true;
+         a.playing_compare_index = index;
+         a.status = "Playing compare song: " + (s.name[0] ? std::string(s.name) : hex(s.value));
+      }
+      else
+      {
+         a.status = "No audio produced by compare ROM for " + hex(s.value);
+      }
+   }
+   else
+   {
+      a.status = "Could not load compare ROM in current core: " + err;
+   }
+}
+
+static void start_deep_scan(App &a, bool is_compare, int max_val = 64)
+{
+   if (!a.core.loaded())
+   {
+      a.status = "Please load a core and ROM first before scanning.";
+      return;
+   }
+   stop_audio(a);
+
+   uint32_t addr = a.profile.address;
+   int mem = a.profile.memory;
+   if (!a.profile.have_address)
+   {
+      if (a.detected_preset)
+      {
+         apply_rom_preset(a, *a.detected_preset);
+         addr = a.profile.address;
+         mem = a.profile.memory;
+      }
+      else if (!a.probe.results.empty())
+      {
+         addr = a.probe.results[0].address;
+         mem = 0;
+         a.profile.address = addr;
+         a.profile.have_address = true;
+      }
+      else
+      {
+         addr = 0x1DFB;
+         mem = 0;
+         a.profile.address = addr;
+         a.profile.have_address = true;
+      }
+   }
+
+   a.deep_scan.base = a.core.save_state();
+   if (a.deep_scan.base.empty())
+   {
+      a.status = "This core cannot save states; deep scan requires state save support.";
+      return;
+   }
+
+   a.deep_scan.address = addr;
+   a.deep_scan.mem = mem;
+   a.deep_scan.from = 1;
+   a.deep_scan.to = std::clamp(max_val, 16, 255);
+   a.deep_scan.current = 1;
+   a.deep_scan.found = 0;
+   a.deep_scan.silent = 0;
+   a.deep_scan.is_compare = is_compare;
+   a.deep_scan.running = true;
+   a.core.set_skip_video(true);
+   a.status = "Deep scanning " + std::string(is_compare ? "Compare" : "Target") + " ROM from 0x01 to " + hex((uint32_t)a.deep_scan.to) + "...";
+   app_log(a, a.status);
+}
+
+static void deep_scan_step(App &a)
+{
+   auto &ds = a.deep_scan;
+   if (!ds.running)
+      return;
+
+   size_t size = 0;
+   uint8_t *ram = a.core.memory_mut(kMemories[ds.mem].id, &size);
+   if (!ram || ds.address >= size)
+   {
+      ds.running = false;
+      a.core.set_skip_video(false);
+      return;
+   }
+
+   for (int step = 0; step < 2 && ds.current <= ds.to; step++, ds.current++)
+   {
+      uint32_t val = (uint32_t)ds.current;
+
+      a.core.load_state(ds.base);
+      ram[ds.address] = (uint8_t)val;
+      a.core.audio().clear();
+
+      std::vector<int16_t> clip;
+      const int settle = 15, capture = 50;
+      for (int f = 0; f < settle + capture; f++)
+      {
+         a.core.run_frame(0);
+         if (f >= settle)
+            clip.insert(clip.end(), a.core.audio().begin(), a.core.audio().end());
+         a.core.audio().clear();
+      }
+
+      double sum = 0;
+      for (int16_t s : clip)
+         sum += (double)s * s;
+      double rms = clip.empty() ? 0 : std::sqrt(sum / clip.size());
+
+      if (rms >= 55.0)
+      {
+         std::vector<Song> &song_list = ds.is_compare ? a.compare.songs : a.songs;
+         Song *existing = nullptr;
+         for (auto &s : song_list)
+         {
+            if (s.value == val)
+            {
+               existing = &s;
+               break;
+            }
+         }
+
+         if (!existing)
+         {
+            Song s;
+            s.value = val;
+            snprintf(s.name, sizeof(s.name), "Sound 0x%02X", (unsigned)val);
+            s.clip = clip;
+            s.clip_rate = a.core.sample_rate();
+            if (!ds.is_compare)
+               make_thumb(a, s);
+            song_list.push_back(s);
+            ds.found++;
+         }
+         else if (existing->clip.empty())
+         {
+            existing->clip = clip;
+            existing->clip_rate = a.core.sample_rate();
+            if (!ds.is_compare && !existing->thumb)
+               make_thumb(a, *existing);
+            ds.found++;
+         }
+      }
+      else
+      {
+         ds.silent++;
+      }
+   }
+
+   if (ds.current > ds.to)
+   {
+      ds.running = false;
+      a.core.set_skip_video(false);
+      a.core.load_state(ds.base);
+      a.core.audio().clear();
+      a.paused = true;
+      a.status = "Deep scan complete: " + std::to_string(ds.found) + " songs found (tested " + std::to_string(ds.to) + " sound IDs)!";
+      app_log(a, a.status);
+   }
+}
+
 static void play_song_item(App &a, Song &s, bool is_compare, int index)
 {
    if (a.is_playing && ((is_compare && a.playing_compare_index == index) || (!is_compare && a.playing_target_index == index)))
@@ -1074,7 +1311,7 @@ static void play_song_item(App &a, Song &s, bool is_compare, int index)
 
    stop_audio(a);
 
-   // 1. If song has an audio file that exists, play it
+   // 1. If song has an audio file that exists, play it (WAV, MP3, OGG, FLAC, SPC, NSF, VGM, GBS)
    if (s.path[0] && file_exists(s.path))
    {
       play_file(a, s);
@@ -1094,7 +1331,14 @@ static void play_song_item(App &a, Song &s, bool is_compare, int index)
       return;
    }
 
-   // 3. For target song with core loaded: capture / audition live
+   // 3. For compare song from a ROM: capture and play
+   if (is_compare && a.compare.type == App::CompareSource::TYPE_ROM)
+   {
+      capture_and_play_compare_song(a, s, index);
+      return;
+   }
+
+   // 4. For target song with core loaded: capture / audition live
    if (!is_compare && a.core.loaded() && a.profile.have_address)
    {
       capture_and_play_song(a, s);
@@ -1174,7 +1418,7 @@ static void load_compare_rom(App &a, const std::string &path)
 
    if (a.compare.songs.empty())
    {
-      for (uint32_t i = 1; i <= 16; i++)
+      for (uint32_t i = 1; i <= 32; i++)
       {
          Song s;
          s.value = i;
@@ -1184,6 +1428,45 @@ static void load_compare_rom(App &a, const std::string &path)
    }
 
    a.status = "Loaded compare ROM: " + a.compare.name + " (" + std::to_string(a.compare.songs.size()) + " songs)";
+   app_log(a, a.status);
+}
+
+static void load_compare_file(App &a, const std::string &path)
+{
+   a.compare.path = path;
+   a.compare.type = App::CompareSource::TYPE_FOLDER;
+   a.compare.name = stem_of(path);
+   a.compare.system = "Music File (" + lower_ext(path) + ")";
+   a.compare.preset = nullptr;
+   a.compare.songs.clear();
+   a.compare.selected_song = -1;
+
+   unsigned count = px_source_song_count(path.c_str());
+   if (count > 1)
+   {
+      for (unsigned i = 1; i <= count; i++)
+      {
+         Song s;
+         s.value = i;
+         s.track = (int)i;
+         snprintf(s.name, sizeof(s.name), "%s - Track %u", stem_of(path).c_str(), i);
+         snprintf(s.path, sizeof(s.path), "%s", path.c_str());
+         s.action = MAP_FILE;
+         a.compare.songs.push_back(s);
+      }
+      a.status = "Loaded multi-track music file: " + a.compare.name + " (" + std::to_string(count) + " tracks)";
+   }
+   else
+   {
+      Song s;
+      s.value = 1;
+      s.track = 1;
+      snprintf(s.name, sizeof(s.name), "%s", stem_of(path).c_str());
+      snprintf(s.path, sizeof(s.path), "%s", path.c_str());
+      s.action = MAP_FILE;
+      a.compare.songs.push_back(s);
+      a.status = "Loaded music file: " + a.compare.name;
+   }
    app_log(a, a.status);
 }
 
@@ -1204,15 +1487,34 @@ static void load_compare_folder(App &a, const std::string &folder)
       std::string ext = lower_ext(f);
       if (ext == "wav" || ext == "mp3" || ext == "ogg" || ext == "flac" ||
           ext == "spc" || ext == "vgm" || ext == "vgz" || ext == "nsf" ||
-          ext == "nsfe" || ext == "gbs" || ext == "hes" || ext == "kss")
+          ext == "nsfe" || ext == "gbs" || ext == "hes" || ext == "kss" ||
+          ext == "gym" || ext == "ay"  || ext == "sap")
       {
-         Song s;
-         s.value = (uint32_t)(a.compare.songs.size() + 1);
-         snprintf(s.name, sizeof(s.name), "%s", stem_of(f).c_str());
          std::string full_path = folder + "\\" + f;
-         snprintf(s.path, sizeof(s.path), "%s", full_path.c_str());
-         s.action = MAP_FILE;
-         a.compare.songs.push_back(s);
+         unsigned count = px_source_song_count(full_path.c_str());
+         if (count > 1)
+         {
+            for (unsigned t = 1; t <= count; t++)
+            {
+               Song s;
+               s.value = (uint32_t)(a.compare.songs.size() + 1);
+               s.track = (int)t;
+               snprintf(s.name, sizeof(s.name), "%s - #%u", stem_of(f).c_str(), t);
+               snprintf(s.path, sizeof(s.path), "%s", full_path.c_str());
+               s.action = MAP_FILE;
+               a.compare.songs.push_back(s);
+            }
+         }
+         else
+         {
+            Song s;
+            s.value = (uint32_t)(a.compare.songs.size() + 1);
+            s.track = 1;
+            snprintf(s.name, sizeof(s.name), "%s", stem_of(f).c_str());
+            snprintf(s.path, sizeof(s.path), "%s", full_path.c_str());
+            s.action = MAP_FILE;
+            a.compare.songs.push_back(s);
+         }
       }
    }
 
@@ -1245,9 +1547,15 @@ static void load_compare_preset(App &a, const RomPreset &p)
 static void match_songs(App &a, Song &target, const Song &source)
 {
    target.action = MAP_FILE;
+   target.track = source.track;
    if (source.path[0])
    {
       snprintf(target.path, sizeof(target.path), "%s", source.path);
+      if (!source.clip.empty())
+      {
+         target.clip = source.clip;
+         target.clip_rate = source.clip_rate;
+      }
    }
    else
    {
@@ -1389,15 +1697,7 @@ static bool export_to_retroarch(App &a, std::string &out_ini, std::string &out_m
       std::string safe_name = sanitize_filename(s.name[0] ? s.name : ("track_" + hex(s.value)));
       std::string dest_wav = music_dir + "\\" + hex(s.value) + "_" + safe_name + ".wav";
 
-      if (!s.clip.empty())
-      {
-         if (write_wav(dest_wav, s.clip, (int)s.clip_rate))
-         {
-            snprintf(s.path, sizeof(s.path), "%s", dest_wav.c_str());
-            exported_tracks++;
-         }
-      }
-      else if (s.path[0] && file_exists(s.path))
+      if (s.path[0] && file_exists(s.path))
       {
          std::string cur_path = normalize_path(s.path);
          std::string target_dir_norm = normalize_path(music_dir);
@@ -1412,6 +1712,14 @@ static bool export_to_retroarch(App &a, std::string &out_ini, std::string &out_m
          }
          else
          {
+            exported_tracks++;
+         }
+      }
+      else if (!s.clip.empty())
+      {
+         if (write_wav(dest_wav, s.clip, (int)s.clip_rate))
+         {
+            snprintf(s.path, sizeof(s.path), "%s", dest_wav.c_str());
             exported_tracks++;
          }
       }
@@ -1748,7 +2056,7 @@ static void ui_mix_and_match(App &a)
       cmp_title += " [" + a.compare.system + "]";
 
    // Top header: Source & Target cards
-   ImGui::BeginChild("mix_header", ImVec2(0, 84), true);
+   ImGui::BeginChild("mix_header", ImVec2(0, 100), true);
 
    // Left column of header: Target Game
    ImGui::BeginGroup();
@@ -1784,7 +2092,22 @@ static void ui_mix_and_match(App &a)
       ImGui::EndCombo();
    }
    ImGui::SameLine();
+   ImGui::BeginDisabled(!a.core.loaded() || a.deep_scan.running);
+   if (ImGui::SmallButton("Deep Scan ROM for Songs..."))
+      start_deep_scan(a, false, 64);
+   ImGui::EndDisabled();
+
+   ImGui::SameLine();
    ImGui::TextDisabled("| %zu song(s)", a.songs.size());
+
+   if (a.deep_scan.running && !a.deep_scan.is_compare)
+   {
+      ImGui::ProgressBar((float)a.deep_scan.current / (float)a.deep_scan.to, ImVec2(-80, 0),
+         ("Scanning Target ROM: " + hex(a.deep_scan.current) + "/" + hex(a.deep_scan.to) + " (" + std::to_string(a.deep_scan.found) + " found)").c_str());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Stop Scan"))
+         a.deep_scan.current = a.deep_scan.to + 1;
+   }
    ImGui::EndGroup();
 
    ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.52f);
@@ -1800,6 +2123,15 @@ static void ui_mix_and_match(App &a)
          a.settings.rom_path.empty() ? "" : dir_of(a.settings.rom_path));
       if (!rom.empty())
          load_compare_rom(a, rom);
+   }
+   ImGui::SameLine();
+   if (ImGui::SmallButton("Load Music File (NSF/SPC/VGM)..."))
+   {
+      std::string f = open_file_dialog("Open Game Music File",
+         { { "Chiptunes and Audio", "*.nsf;*.nsfe;*.spc;*.vgm;*.vgz;*.gym;*.gbs;*.hes;*.kss;*.wav;*.mp3;*.ogg;*.flac" }, { "All files", "*.*" } },
+         a.settings.rom_path.empty() ? "" : dir_of(a.settings.rom_path));
+      if (!f.empty())
+         load_compare_file(a, f);
    }
    ImGui::SameLine();
    if (ImGui::SmallButton("Load Music Folder / OST..."))
@@ -1827,9 +2159,24 @@ static void ui_mix_and_match(App &a)
       if (ImGui::SmallButton("Swap Target <-> Compare ROM"))
          swap_target_and_compare(a);
       ImGui::PopStyleColor();
+
+      ImGui::SameLine();
+      ImGui::BeginDisabled(a.deep_scan.running);
+      if (ImGui::SmallButton("Deep Scan Compare ROM..."))
+         start_deep_scan(a, true, 64);
+      ImGui::EndDisabled();
    }
    ImGui::SameLine();
    ImGui::TextDisabled("| %zu track(s)", a.compare.songs.size());
+
+   if (a.deep_scan.running && a.deep_scan.is_compare)
+   {
+      ImGui::ProgressBar((float)a.deep_scan.current / (float)a.deep_scan.to, ImVec2(-80, 0),
+         ("Scanning Compare ROM: " + hex(a.deep_scan.current) + "/" + hex(a.deep_scan.to) + " (" + std::to_string(a.deep_scan.found) + " found)").c_str());
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Stop Scan##cmp"))
+         a.deep_scan.current = a.deep_scan.to + 1;
+   }
    ImGui::EndGroup();
 
    ImGui::EndChild();
@@ -2492,20 +2839,48 @@ static void draw_ui(App &a)
    ImGui::BeginChild("toolbar", ImVec2(0, bar_h), false);
    ImGui::Checkbox("Game Screen", &a.show_game_screen);
    ImGui::SameLine();
-   if (a.is_playing)
+   ImGui::Checkbox("Mute Game", &a.mute_emulator);
+   if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Mutes emulator background audio so you only hear auditioned songs");
+   ImGui::SameLine();
+
+   bool audio_active = a.is_playing || a.clip_playing || (a.core.loaded() && !a.paused && !a.mute_emulator);
+   if (audio_active)
    {
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.2f, 0.2f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.3f, 0.3f, 1.0f));
       if (ImGui::Button("Stop Audio"))
          stop_audio(a);
-      ImGui::PopStyleColor();
-      ImGui::SameLine();
+      ImGui::PopStyleColor(2);
    }
+   else
+   {
+      if (ImGui::Button("Stop Audio"))
+         stop_audio(a);
+   }
+   ImGui::SameLine();
    ImGui::SetNextItemWidth(90);
    ImGui::SliderInt("##vol", &a.audio.volume, 0, 100, "%d%%");
    if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Master volume");
 
-   ImGui::SameLine(0, 20);
+   ImGui::SameLine(0, 15);
+   ImGui::SetNextItemWidth(115);
+   static const char *scale_names[] = { "Scale: 100%", "Scale: 125%", "Scale: 140%", "Scale: 160%", "Scale: 200%" };
+   static const float scale_factors[] = { 1.0f, 1.25f, 1.40f, 1.60f, 2.0f };
+   int sel_scale = 1;
+   for (int i = 0; i < 5; i++)
+      if (std::abs(a.settings.ui_scale - scale_factors[i]) < 0.05f) sel_scale = i;
+   if (ImGui::Combo("##uiscale", &sel_scale, scale_names, 5))
+   {
+      a.settings.ui_scale = scale_factors[sel_scale];
+      ImGui::GetIO().FontGlobalScale = a.settings.ui_scale;
+      save_settings(a.settings);
+   }
+   if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Adjust UI and text scaling for readability");
+
+   ImGui::SameLine(0, 15);
    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.58f, 0.28f, 1.0f));
    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.70f, 0.35f, 1.0f));
    if (ImGui::Button("Export to RetroArch (Generate INI & Music)"))
@@ -2702,6 +3077,18 @@ int main(int argc, char **argv)
    io.IniFilename = ini.c_str();
    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
    ImGui::StyleColorsDark();
+
+   ImFontConfig font_cfg;
+   font_cfg.SizePixels = 16.0f;
+   io.Fonts->AddFontDefault(&font_cfg);
+   io.FontGlobalScale = a.settings.ui_scale;
+
+   ImGuiStyle &style = ImGui::GetStyle();
+   style.FramePadding = ImVec2(6, 4);
+   style.ItemSpacing = ImVec2(8, 5);
+   style.WindowPadding = ImVec2(10, 10);
+   style.ScrollbarSize = 16.0f;
+
    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
    ImGui_ImplSDLRenderer2_Init(renderer);
 
@@ -2748,18 +3135,32 @@ int main(int argc, char **argv)
       if (a.clip_playing && a.audio.queued() == 0)
       {
          a.clip_playing = false;
-         a.paused = a.was_paused;
+         a.is_playing = false;
+         a.playing_target_index = -1;
+         a.playing_compare_index = -1;
+         if (!a.show_game_screen)
+            a.paused = true;
+         else
+            a.paused = a.was_paused;
       }
       if (a.clip_playing && a.pad)
       {
          a.audio.clear();
          a.clip_playing = false;
-         a.paused = a.was_paused;
+         a.is_playing = false;
+         a.playing_target_index = -1;
+         a.playing_compare_index = -1;
+         if (!a.show_game_screen)
+            a.paused = true;
+         else
+            a.paused = a.was_paused;
       }
 
       if (a.core.loaded())
       {
-         if (a.analyze.running)
+         if (a.deep_scan.running)
+            deep_scan_step(a);
+         else if (a.analyze.running)
             analyze_step(a);
          else if (a.probe.running)
             probe_step(a);

@@ -118,7 +118,38 @@ static const std::vector<RomPreset> s_presets = {
       true, // latch = 1
       1,
       "APU sound command register ($0100, latch=1).",
-      {}
+      {
+         { 0x01, "Presentiment / Chrono Trigger Theme" },
+         { 0x02, "Morning Glow" },
+         { 0x03, "Peace Days" },
+         { 0x04, "Green Sanity" },
+         { 0x05, "Wind Scene (600 A.D.)" },
+         { 0x06, "Secret of the Forest" },
+         { 0x07, "Battle Theme" },
+         { 0x08, "Courage and Pride" },
+         { 0x09, "Huh?!" },
+         { 0x0A, "Manoria Cathedral" },
+         { 0x0B, "Silent Light" },
+         { 0x0C, "Boss Battle 1" },
+         { 0x0D, "Frog's Theme" },
+         { 0x0E, "Fanfare 1" },
+         { 0x0F, "Kingdom Trial" },
+         { 0x10, "The Hidden Truth" },
+         { 0x11, "A Tight Squeeze" },
+         { 0x12, "Bike Chase" },
+         { 0x13, "Robo's Theme" },
+         { 0x14, "Remains of the Factory" },
+         { 0x15, "Battle 2" },
+         { 0x16, "Fanfare 2" },
+         { 0x17, "Brink of Time (End of Time)" },
+         { 0x18, "Delightful Spekkio" },
+         { 0x19, "Undersea Palace" },
+         { 0x1A, "Magus Castle" },
+         { 0x1B, "Decisive Battle with Magus" },
+         { 0x1C, "Lavos' Theme" },
+         { 0x1D, "World Revolution" },
+         { 0x1E, "To Far Away Times (Ending)" }
+      }
    },
    {
       "Mega Man X",
@@ -129,7 +160,32 @@ static const std::vector<RomPreset> s_presets = {
       true, // latch = 1
       1,
       "Music command register ($0BD7, latch=1).",
-      {}
+      {
+         { 0x01, "Opening Stage (Highway)" },
+         { 0x02, "Stage Select" },
+         { 0x03, "Launch Octopus" },
+         { 0x04, "Sting Chameleon" },
+         { 0x05, "Armored Armadillo" },
+         { 0x06, "Flame Mammoth" },
+         { 0x07, "Storm Eagle" },
+         { 0x08, "Spark Mandrill" },
+         { 0x09, "Boomer Kuwanger" },
+         { 0x0A, "Chill Penguin" },
+         { 0x0B, "Boss Battle" },
+         { 0x0C, "Stage Clear" },
+         { 0x0D, "Weapon Get" },
+         { 0x0E, "Sigma Stage 1" },
+         { 0x0F, "Sigma Stage 2" },
+         { 0x10, "Sigma Stage 3" },
+         { 0x11, "Sigma Stage 4" },
+         { 0x12, "Sigma 1st Battle" },
+         { 0x13, "Sigma 2nd Battle (Wolf)" },
+         { 0x14, "Ending Theme" },
+         { 0x15, "Cast Roll" },
+         { 0x16, "Zero's Theme" },
+         { 0x17, "Password Screen" },
+         { 0x18, "Game Over" }
+      }
    },
    {
       "Donkey Kong Country",
@@ -140,7 +196,28 @@ static const std::vector<RomPreset> s_presets = {
       true, // latch = 1
       1,
       "Music command register ($0513, latch=1).",
-      {}
+      {
+         { 0x01, "Theme / Title" },
+         { 0x02, "Jungle Groove" },
+         { 0x03, "Cave Dweller Concert" },
+         { 0x04, "Aquatic Ambiance" },
+         { 0x05, "Mine Cart Madness" },
+         { 0x06, "Simian Segue (Map)" },
+         { 0x07, "Voices of the Temple" },
+         { 0x08, "Forest Frenzy" },
+         { 0x09, "Treetop Rock" },
+         { 0x0A, "Ice Cave Chant" },
+         { 0x0B, "Northern Hemispheres" },
+         { 0x0C, "Misty Menace" },
+         { 0x0D, "Bad Boss Boogie" },
+         { 0x0E, "Gang-Plank Galleon" },
+         { 0x0F, "Level Complete Fanfare" },
+         { 0x10, "Candy's Love Song" },
+         { 0x11, "Funky's Fugue" },
+         { 0x12, "Cranky's Theme" },
+         { 0x13, "Game Over" },
+         { 0x14, "The Credits Concerto" }
+      }
    },
    {
       "Sonic the Hedgehog",
@@ -192,7 +269,12 @@ static const std::vector<RomPreset> s_presets = {
          { 0x89, "Boss Theme" },
          { 0x8A, "Casino Night (2P)" },
          { 0x8B, "Death Egg Zone" },
-         { 0x8C, "Special Stage" }
+         { 0x8C, "Special Stage" },
+         { 0x8D, "Title Screen" },
+         { 0x8E, "Options Screen" },
+         { 0x8F, "Act Clear" },
+         { 0x90, "Game Over" },
+         { 0x91, "Continue" }
       }
    },
    {
@@ -204,7 +286,26 @@ static const std::vector<RomPreset> s_presets = {
       true, // latch = 1
       1,
       "Sound driver music command register ($F000, latch=1).",
-      {}
+      {
+         { 0x81, "Go Straight (Stage 1-1)" },
+         { 0x82, "In The Bar (Stage 1-2)" },
+         { 0x83, "Never Return Alive (Stage 2-1)" },
+         { 0x84, "Spin On The Bridge (Stage 2-2)" },
+         { 0x85, "Ready Funk (Stage 3-1)" },
+         { 0x86, "Dreamer (Stage 3-2)" },
+         { 0x87, "Alien Power (Stage 4)" },
+         { 0x88, "Under Logic (Stage 5)" },
+         { 0x89, "Slow Moon (Stage 6)" },
+         { 0x8A, "Wave 131 (Stage 7)" },
+         { 0x8B, "Jungle Base (Stage 8)" },
+         { 0x8C, "Back to the Industry (Stage 8-2)" },
+         { 0x8D, "Expander (Stage 8-3)" },
+         { 0x8E, "Boss Theme" },
+         { 0x8F, "Big Boss (Mr. X)" },
+         { 0x90, "Stage Clear" },
+         { 0x91, "Game Over" },
+         { 0x92, "Good Ending" }
+      }
    },
    {
       "Super Mario Bros.",
@@ -221,7 +322,9 @@ static const std::vector<RomPreset> s_presets = {
          { 0x04, "Underwater Theme" },
          { 0x08, "Castle Theme" },
          { 0x10, "Starman" },
-         { 0x20, "Level Clear Fanfare" }
+         { 0x20, "Level Clear Fanfare" },
+         { 0x40, "Castle Clear Fanfare" },
+         { 0x80, "Game Over / Player Down" }
       }
    },
    {
@@ -233,7 +336,20 @@ static const std::vector<RomPreset> s_presets = {
       true, // latch = 1
       1,
       "Music command register ($002C, latch=1).",
-      {}
+      {
+         { 0x01, "Vampire Killer (Stage 1)" },
+         { 0x02, "Stalker (Stage 2)" },
+         { 0x03, "Wicked Child (Stage 3)" },
+         { 0x04, "Walking on the Edge (Stage 4)" },
+         { 0x05, "Heart of Fire (Stage 5)" },
+         { 0x06, "Out of Time (Stage 6)" },
+         { 0x07, "Poison Mind (Boss Battle)" },
+         { 0x08, "Black Night (Dracula Battle)" },
+         { 0x09, "Stage Clear Fanfare" },
+         { 0x0A, "Player Miss (Death)" },
+         { 0x0B, "Game Over" },
+         { 0x0C, "Voyager (Ending)" }
+      }
    },
    {
       "Pokemon Red / Blue",
@@ -244,7 +360,43 @@ static const std::vector<RomPreset> s_presets = {
       false,
       1,
       "Audio bank / current music track register ($C0EE).",
-      {}
+      {
+         { 0x01, "Title Screen" },
+         { 0x02, "Pallet Town" },
+         { 0x03, "Professor Oak" },
+         { 0x04, "Oak's Laboratory" },
+         { 0x05, "Rival Appears" },
+         { 0x06, "Road to Viridian City (Route 1)" },
+         { 0x07, "Battle (Wild Pokemon)" },
+         { 0x08, "Victory (Wild Pokemon)" },
+         { 0x09, "Viridian City / Pewter City" },
+         { 0x0A, "Pokemon Center" },
+         { 0x0B, "Pokemon Gym" },
+         { 0x0C, "Battle (Trainer)" },
+         { 0x0D, "Victory (Trainer)" },
+         { 0x0E, "Route 3 / Route 4" },
+         { 0x0F, "Mt. Moon / Rock Tunnel" },
+         { 0x10, "Cerulean City / Fuchsia City" },
+         { 0x11, "Route 11 / Route 12" },
+         { 0x12, "Vermilion City" },
+         { 0x13, "S.S. Anne" },
+         { 0x14, "Lavender Town" },
+         { 0x15, "Pokemon Tower" },
+         { 0x16, "Celadon City" },
+         { 0x17, "Game Corner" },
+         { 0x18, "Rocket Hideout" },
+         { 0x19, "Silph Co." },
+         { 0x1A, "Cycling" },
+         { 0x1B, "Surfing" },
+         { 0x1C, "Cinnabar Island" },
+         { 0x1D, "Seafoam Islands" },
+         { 0x1E, "Indigo Plateau" },
+         { 0x1F, "Battle (Gym Leader)" },
+         { 0x20, "Victory (Gym Leader)" },
+         { 0x21, "Battle (Champion Rival)" },
+         { 0x22, "Hall of Fame" },
+         { 0x23, "Ending Theme" }
+      }
    }
 };
 
