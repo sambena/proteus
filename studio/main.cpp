@@ -61,6 +61,8 @@ static Settings load_settings()
    if (s.retroarch_dir.empty())
       for (const char *guess : { "D:\\RetroArch", "C:\\RetroArch-Win64", "C:\\RetroArch" })
          if (file_exists(std::string(guess) + "\\retroarch.exe")) { s.retroarch_dir = guess; break; }
+   if (s.retroarch_dir.empty())
+      s.retroarch_dir = "D:\\RetroArch";
    return s;
 }
 
@@ -314,6 +316,25 @@ struct App
    const RomPreset *detected_preset = nullptr;
    std::string detected_header_title;
    std::string detected_platform;
+
+   struct CompareSource
+   {
+      std::string path;
+      std::string name;
+      std::string system;
+      enum Type { TYPE_NONE, TYPE_ROM, TYPE_FOLDER, TYPE_PRESET } type = TYPE_NONE;
+      const RomPreset *preset = nullptr;
+      std::vector<Song> songs;
+      int selected_song = -1;
+      char filter[128] = "";
+   } compare;
+
+   int selected_target_song = 0;
+   int playing_target_index = -1;
+   int playing_compare_index = -1;
+   bool is_playing = false;
+   bool show_game_screen = false;
+   std::string export_status;
 };
 
 static App *g_app = nullptr;
@@ -668,7 +689,10 @@ static void load_game(App &a)
    {
       a.profile.path = system_dir(a) + "\\proteus\\" + content_name(a) + ".ini";
       if (a.detected_preset)
-         a.status = "Preset detected: " + a.detected_preset->name + " (" + a.detected_preset->system + ") - 1-click setup available!";
+      {
+         apply_rom_preset(a, *a.detected_preset);
+         a.status = "Preset loaded: " + a.detected_preset->name + " (" + std::to_string(a.songs.size()) + " songs ready to mix & match)";
+      }
    }
 }
 
@@ -1000,6 +1024,415 @@ static void play_file(App &a, const Song &s)
    play_clip(a, buf, rate);
 }
 
+static void stop_audio(App &a)
+{
+   a.audio.clear();
+   a.clip_playing = false;
+   a.is_playing = false;
+   a.playing_target_index = -1;
+   a.playing_compare_index = -1;
+}
+
+static void capture_and_play_song(App &a, Song &s)
+{
+   if (!a.core.loaded() || !a.profile.have_address)
+      return;
+   std::vector<uint8_t> st = a.core.save_state();
+   if (st.empty())
+   {
+      poke_ram(a, a.profile.address, (uint8_t)s.value);
+      a.paused = false;
+      return;
+   }
+   size_t size = 0;
+   uint8_t *ram = a.core.memory_mut(kMemories[a.profile.memory].id, &size);
+   if (ram && a.profile.address < size)
+      ram[a.profile.address] = (uint8_t)s.value;
+   a.core.set_skip_video(true);
+   a.core.audio().clear();
+   s.clip.clear();
+   for (int f = 0; f < 180; f++)
+   {
+      a.core.run_frame(0);
+      s.clip.insert(s.clip.end(), a.core.audio().begin(), a.core.audio().end());
+      a.core.audio().clear();
+   }
+   a.core.set_skip_video(false);
+   a.core.load_state(st);
+   s.clip_rate = a.core.sample_rate();
+   if (!s.clip.empty())
+      play_clip(a, s.clip, s.clip_rate);
+}
+
+static void play_song_item(App &a, Song &s, bool is_compare, int index)
+{
+   if (a.is_playing && ((is_compare && a.playing_compare_index == index) || (!is_compare && a.playing_target_index == index)))
+   {
+      stop_audio(a);
+      return;
+   }
+
+   stop_audio(a);
+
+   // 1. If song has an audio file that exists, play it
+   if (s.path[0] && file_exists(s.path))
+   {
+      play_file(a, s);
+      a.is_playing = true;
+      if (is_compare) a.playing_compare_index = index;
+      else a.playing_target_index = index;
+      return;
+   }
+
+   // 2. If song has a recorded clip, play it
+   if (!s.clip.empty())
+   {
+      play_clip(a, s.clip, s.clip_rate);
+      a.is_playing = true;
+      if (is_compare) a.playing_compare_index = index;
+      else a.playing_target_index = index;
+      return;
+   }
+
+   // 3. For target song with core loaded: capture / audition live
+   if (!is_compare && a.core.loaded() && a.profile.have_address)
+   {
+      capture_and_play_song(a, s);
+      a.is_playing = true;
+      a.playing_target_index = index;
+      a.status = "Auditioning " + (s.name[0] ? std::string(s.name) : hex(s.value));
+      return;
+   }
+
+   a.status = "No audio available for " + (s.name[0] ? std::string(s.name) : hex(s.value));
+}
+
+static void load_compare_rom(App &a, const std::string &path)
+{
+   a.compare.path = path;
+   a.compare.type = App::CompareSource::TYPE_ROM;
+   a.compare.name = stem_of(path);
+   a.compare.system = "ROM";
+   a.compare.preset = nullptr;
+   a.compare.songs.clear();
+   a.compare.selected_song = -1;
+
+   std::vector<uint8_t> data;
+   if (read_file_bytes(path, data))
+   {
+      std::string sys;
+      detect_rom_header_title(data.data(), data.size(), sys);
+      if (!sys.empty()) a.compare.system = sys;
+      a.compare.preset = detect_preset(data.data(), data.size(), path);
+   }
+
+   if (a.compare.preset)
+   {
+      a.compare.name = a.compare.preset->name;
+      a.compare.system = a.compare.preset->system;
+      for (const auto &ks : a.compare.preset->songs)
+      {
+         Song s;
+         s.value = ks.value;
+         snprintf(s.name, sizeof(s.name), "%s", ks.title.c_str());
+         a.compare.songs.push_back(s);
+      }
+   }
+
+   char found[2048];
+   if (px_engine_find_profile(path.c_str(), system_dir(a).c_str(), found, sizeof(found)))
+   {
+      px_profile p;
+      char err[512];
+      if (px_profile_load(&p, found, err, sizeof(err)))
+      {
+         for (unsigned i = 0; i < p.track_count; i++)
+         {
+            bool exists = false;
+            for (auto &cs : a.compare.songs)
+            {
+               if (cs.value == p.tracks[i].value)
+               {
+                  if (p.tracks[i].action == PX_ACTION_FILE)
+                     snprintf(cs.path, sizeof(cs.path), "%s", p.tracks[i].path);
+                  exists = true;
+                  break;
+               }
+            }
+            if (!exists)
+            {
+               Song s;
+               s.value = p.tracks[i].value;
+               snprintf(s.name, sizeof(s.name), "song 0x%02X", (unsigned)s.value);
+               if (p.tracks[i].action == PX_ACTION_FILE)
+                  snprintf(s.path, sizeof(s.path), "%s", p.tracks[i].path);
+               a.compare.songs.push_back(s);
+            }
+         }
+      }
+   }
+
+   if (a.compare.songs.empty())
+   {
+      for (uint32_t i = 1; i <= 16; i++)
+      {
+         Song s;
+         s.value = i;
+         snprintf(s.name, sizeof(s.name), "Song %s", hex(i).c_str());
+         a.compare.songs.push_back(s);
+      }
+   }
+
+   a.status = "Loaded compare ROM: " + a.compare.name + " (" + std::to_string(a.compare.songs.size()) + " songs)";
+   app_log(a, a.status);
+}
+
+static void load_compare_folder(App &a, const std::string &folder)
+{
+   a.compare.path = folder;
+   a.compare.type = App::CompareSource::TYPE_FOLDER;
+   a.compare.name = file_name(folder);
+   a.compare.system = "Music Folder";
+   a.compare.preset = nullptr;
+   a.compare.songs.clear();
+   a.compare.selected_song = -1;
+
+   std::vector<std::string> files = list_files(folder);
+   std::sort(files.begin(), files.end());
+   for (const auto &f : files)
+   {
+      std::string ext = lower_ext(f);
+      if (ext == "wav" || ext == "mp3" || ext == "ogg" || ext == "flac" ||
+          ext == "spc" || ext == "vgm" || ext == "vgz" || ext == "nsf" ||
+          ext == "nsfe" || ext == "gbs" || ext == "hes" || ext == "kss")
+      {
+         Song s;
+         s.value = (uint32_t)(a.compare.songs.size() + 1);
+         snprintf(s.name, sizeof(s.name), "%s", stem_of(f).c_str());
+         std::string full_path = folder + "\\" + f;
+         snprintf(s.path, sizeof(s.path), "%s", full_path.c_str());
+         s.action = MAP_FILE;
+         a.compare.songs.push_back(s);
+      }
+   }
+
+   a.status = "Loaded compare music folder: " + a.compare.name + " (" + std::to_string(a.compare.songs.size()) + " tracks)";
+   app_log(a, a.status);
+}
+
+static void load_compare_preset(App &a, const RomPreset &p)
+{
+   a.compare.path = p.name;
+   a.compare.type = App::CompareSource::TYPE_PRESET;
+   a.compare.name = p.name;
+   a.compare.system = p.system;
+   a.compare.preset = &p;
+   a.compare.songs.clear();
+   a.compare.selected_song = -1;
+
+   for (const auto &ks : p.songs)
+   {
+      Song s;
+      s.value = ks.value;
+      snprintf(s.name, sizeof(s.name), "%s", ks.title.c_str());
+      a.compare.songs.push_back(s);
+   }
+
+   a.status = "Loaded compare preset: " + a.compare.name + " (" + std::to_string(a.compare.songs.size()) + " songs)";
+   app_log(a, a.status);
+}
+
+static void match_songs(App &a, Song &target, const Song &source)
+{
+   target.action = MAP_FILE;
+   if (source.path[0])
+   {
+      snprintf(target.path, sizeof(target.path), "%s", source.path);
+   }
+   else
+   {
+      std::string game = content_name(a);
+      std::string safe = sanitize_filename(source.name[0] ? source.name : ("track_" + hex(source.value)));
+      std::string sys = system_dir(a);
+      std::string dest = sys + "\\proteus\\music\\" + game + "\\" + hex(target.value) + "_" + safe + ".wav";
+      snprintf(target.path, sizeof(target.path), "%s", dest.c_str());
+      if (!source.clip.empty())
+      {
+         target.clip = source.clip;
+         target.clip_rate = source.clip_rate;
+      }
+   }
+   a.preview_dirty = true;
+   a.status = "Matched: " + (target.name[0] ? std::string(target.name) : hex(target.value)) +
+              " -> " + (source.name[0] ? std::string(source.name) : hex(source.value));
+   app_log(a, a.status);
+}
+
+static void swap_target_and_compare(App &a)
+{
+   if (a.compare.type != App::CompareSource::TYPE_ROM || a.compare.path.empty())
+   {
+      a.status = "Compare source must be a ROM to swap emulation.";
+      return;
+   }
+
+   std::string old_rom = a.settings.rom_path;
+   std::string old_name = content_name(a);
+   std::string old_sys = a.detected_platform;
+   const RomPreset *old_preset = a.detected_preset;
+   std::vector<Song> old_songs = a.songs;
+
+   std::string new_rom = a.compare.path;
+
+   a.compare.path = old_rom;
+   a.compare.name = old_name;
+   a.compare.system = old_sys;
+   a.compare.type = App::CompareSource::TYPE_ROM;
+   a.compare.preset = old_preset;
+   a.compare.songs = old_songs;
+   a.compare.selected_song = -1;
+
+   a.settings.rom_path = new_rom;
+   load_game(a);
+   a.status = "Swapped Target & Compare ROMs. Now editing: " + content_name(a);
+   app_log(a, a.status);
+}
+
+static void auto_match_songs(App &a)
+{
+   if (a.songs.empty() || a.compare.songs.empty())
+      return;
+
+   int count = 0;
+   for (Song &target : a.songs)
+   {
+      std::string tname = to_lower(target.name[0] ? target.name : "");
+      std::string thex = to_lower(hex(target.value));
+
+      int best_idx = -1;
+      int best_score = 0;
+
+      for (size_t j = 0; j < a.compare.songs.size(); j++)
+      {
+         const Song &src = a.compare.songs[j];
+         std::string sname = to_lower(src.name[0] ? src.name : "");
+         int score = 0;
+
+         if (!tname.empty() && sname == tname)
+            score = 100;
+         else if (!tname.empty() && (sname.find(tname) != std::string::npos || tname.find(sname) != std::string::npos))
+            score = 70;
+         else if (sname.find(thex) != std::string::npos || (!thex.empty() && sname.find(thex.substr(2)) != std::string::npos))
+            score = 50;
+
+         if (score > best_score)
+         {
+            best_score = score;
+            best_idx = (int)j;
+         }
+      }
+
+      if (best_idx >= 0 && best_score >= 50)
+      {
+         match_songs(a, target, a.compare.songs[best_idx]);
+         count++;
+      }
+   }
+
+   a.status = "Auto-matched " + std::to_string(count) + " song(s) by title / number.";
+   app_log(a, a.status);
+}
+
+static void match_all_in_order(App &a)
+{
+   if (a.songs.empty() || a.compare.songs.empty())
+      return;
+
+   size_t n = std::min(a.songs.size(), a.compare.songs.size());
+   for (size_t i = 0; i < n; i++)
+      match_songs(a, a.songs[i], a.compare.songs[i]);
+
+   a.status = "Matched " + std::to_string(n) + " song(s) 1:1 in order.";
+   app_log(a, a.status);
+}
+
+static bool export_to_retroarch(App &a, std::string &out_ini, std::string &out_music_dir, int &exported_tracks)
+{
+   std::string game = content_name(a);
+   if (game.empty())
+   {
+      a.status = "Error: No target ROM loaded to export.";
+      return false;
+   }
+
+   std::string sys = system_dir(a);
+   if (sys.empty())
+   {
+      a.status = "Error: RetroArch system folder not configured.";
+      return false;
+   }
+
+   std::string proteus_dir = sys + "\\proteus";
+   std::string music_dir = proteus_dir + "\\music\\" + game;
+   make_dirs(proteus_dir);
+   make_dirs(music_dir);
+
+   out_ini = proteus_dir + "\\" + game + ".ini";
+   out_music_dir = music_dir;
+   exported_tracks = 0;
+
+   for (Song &s : a.songs)
+   {
+      if (s.action != MAP_FILE)
+         continue;
+
+      std::string safe_name = sanitize_filename(s.name[0] ? s.name : ("track_" + hex(s.value)));
+      std::string dest_wav = music_dir + "\\" + hex(s.value) + "_" + safe_name + ".wav";
+
+      if (!s.clip.empty())
+      {
+         if (write_wav(dest_wav, s.clip, (int)s.clip_rate))
+         {
+            snprintf(s.path, sizeof(s.path), "%s", dest_wav.c_str());
+            exported_tracks++;
+         }
+      }
+      else if (s.path[0] && file_exists(s.path))
+      {
+         std::string cur_path = normalize_path(s.path);
+         std::string target_dir_norm = normalize_path(music_dir);
+         if (cur_path.find(target_dir_norm) == std::string::npos)
+         {
+            std::string dest_file = music_dir + "\\" + file_name(s.path);
+            if (copy_file_data(s.path, dest_file))
+            {
+               snprintf(s.path, sizeof(s.path), "%s", dest_file.c_str());
+               exported_tracks++;
+            }
+         }
+         else
+         {
+            exported_tracks++;
+         }
+      }
+   }
+
+   std::string ini_content = profile_text(a, proteus_dir, false);
+   if (!write_text(out_ini, ini_content))
+   {
+      a.status = "Failed to write " + out_ini;
+      return false;
+   }
+
+   std::string opt_written;
+   write_game_options(a, opt_written);
+
+   a.export_status = "Exported " + game + ".ini (" + std::to_string(exported_tracks) + " tracks) to RetroArch!";
+   a.status = a.export_status;
+   app_log(a, a.status);
+   return true;
+}
+
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
@@ -1302,6 +1735,403 @@ static void ui_finder(App &a)
    }
 }
 
+static void ui_mix_and_match(App &a)
+{
+   std::string game = content_name(a);
+   std::string sys = system_dir(a);
+   std::string target_title = a.settings.rom_path.empty() ? "No ROM loaded" : game;
+   if (a.detected_preset)
+      target_title += " (" + a.detected_preset->name + ")";
+
+   std::string cmp_title = a.compare.name.empty() ? "(None loaded)" : a.compare.name;
+   if (!a.compare.system.empty())
+      cmp_title += " [" + a.compare.system + "]";
+
+   // Top header: Source & Target cards
+   ImGui::BeginChild("mix_header", ImVec2(0, 84), true);
+
+   // Left column of header: Target Game
+   ImGui::BeginGroup();
+   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Target Game (Primary ROM): %s", target_title.c_str());
+
+   if (ImGui::SmallButton("Choose Target ROM...##top"))
+   {
+      std::string rom = open_file_dialog("Open Target ROM",
+         { { "ROMs and archives", "*.zip;*.sfc;*.smc;*.nes;*.gb;*.gbc;*.gba;*.md;*.gen;*.bin;*.sms;*.gg;*.pce" }, { "All files", "*.*" } },
+         a.settings.rom_path.empty() ? "" : dir_of(a.settings.rom_path));
+      if (!rom.empty())
+      {
+         a.settings.rom_path = rom;
+         load_game(a);
+      }
+   }
+   if (a.detected_preset)
+   {
+      ImGui::SameLine();
+      if (ImGui::SmallButton(("Apply " + a.detected_preset->name + " Preset##top").c_str()))
+         apply_rom_preset(a, *a.detected_preset);
+   }
+   ImGui::SameLine();
+   ImGui::SetNextItemWidth(140);
+   if (ImGui::BeginCombo("##target_presets", "Target Preset..."))
+   {
+      for (const auto &p : get_rom_presets())
+      {
+         std::string label = p.name + " (" + p.system + ")";
+         if (ImGui::Selectable(label.c_str()))
+            apply_rom_preset(a, p);
+      }
+      ImGui::EndCombo();
+   }
+   ImGui::SameLine();
+   ImGui::TextDisabled("| %zu song(s)", a.songs.size());
+   ImGui::EndGroup();
+
+   ImGui::SameLine(ImGui::GetContentRegionAvail().x * 0.52f);
+
+   // Right column of header: Compare Game / Source
+   ImGui::BeginGroup();
+   ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Compare / Source Songs: %s", cmp_title.c_str());
+
+   if (ImGui::SmallButton("Load Compare ROM..."))
+   {
+      std::string rom = open_file_dialog("Open Compare ROM",
+         { { "ROMs and archives", "*.zip;*.sfc;*.smc;*.nes;*.gb;*.gbc;*.gba;*.md;*.gen;*.bin;*.sms;*.gg;*.pce" }, { "All files", "*.*" } },
+         a.settings.rom_path.empty() ? "" : dir_of(a.settings.rom_path));
+      if (!rom.empty())
+         load_compare_rom(a, rom);
+   }
+   ImGui::SameLine();
+   if (ImGui::SmallButton("Load Music Folder / OST..."))
+   {
+      std::string folder = pick_folder_dialog("Choose Music Folder or OST Directory");
+      if (!folder.empty())
+         load_compare_folder(a, folder);
+   }
+   ImGui::SameLine();
+   ImGui::SetNextItemWidth(140);
+   if (ImGui::BeginCombo("##cmp_presets", "Preset Library..."))
+   {
+      for (const auto &p : get_rom_presets())
+      {
+         std::string label = p.name + " (" + p.system + ")";
+         if (ImGui::Selectable(label.c_str()))
+            load_compare_preset(a, p);
+      }
+      ImGui::EndCombo();
+   }
+   if (a.compare.type == App::CompareSource::TYPE_ROM && !a.compare.path.empty())
+   {
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.28f, 0.42f, 0.70f, 1.0f));
+      if (ImGui::SmallButton("Swap Target <-> Compare ROM"))
+         swap_target_and_compare(a);
+      ImGui::PopStyleColor();
+   }
+   ImGui::SameLine();
+   ImGui::TextDisabled("| %zu track(s)", a.compare.songs.size());
+   ImGui::EndGroup();
+
+   ImGui::EndChild();
+
+   // Action bar
+   ImGui::BeginChild("mix_actions", ImVec2(0, 36), false);
+
+   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.58f, 0.28f, 1.0f));
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.70f, 0.35f, 1.0f));
+   if (ImGui::Button("Export to RetroArch (INI & Music)", ImVec2(230, 0)))
+   {
+      std::string ini, mdir;
+      int n = 0;
+      export_to_retroarch(a, ini, mdir, n);
+   }
+   ImGui::PopStyleColor(2);
+
+   ImGui::SameLine();
+   ImGui::BeginDisabled(a.songs.empty() || a.compare.songs.empty());
+   if (ImGui::Button("Auto-Match by Name/Track #"))
+      auto_match_songs(a);
+   ImGui::SameLine();
+   if (ImGui::Button("Match All 1:1 in Order"))
+      match_all_in_order(a);
+   ImGui::EndDisabled();
+
+   ImGui::SameLine();
+   ImGui::BeginDisabled(a.songs.empty());
+   if (ImGui::Button("Clear All Replacements"))
+   {
+      for (auto &s : a.songs)
+      {
+         s.action = MAP_ORIGINAL;
+         s.path[0] = '\0';
+         s.clip.clear();
+      }
+      a.preview_dirty = true;
+      a.status = "Cleared all replacements. All songs set to original.";
+   }
+   ImGui::EndDisabled();
+
+   ImGui::SameLine();
+   std::string music_dest = sys + "\\proteus\\music" + (game.empty() ? "" : ("\\" + game));
+   if (ImGui::Button("Open Music Folder"))
+   {
+      make_dirs(music_dest);
+      open_folder(music_dest);
+   }
+
+   ImGui::EndChild();
+
+   ImGui::TextDisabled("Output: %s\\proteus\\%s.ini  |  Music: %s",
+         sys.c_str(), game.empty() ? "{game}" : game.c_str(), music_dest.c_str());
+   ImGui::Separator();
+
+   // Main dual-panel area
+   float avail_w = ImGui::GetContentRegionAvail().x;
+   float left_w = (avail_w - 12.0f) * 0.58f;
+   float right_w = avail_w - left_w - 12.0f;
+   float pane_h = ImGui::GetContentRegionAvail().y;
+
+   // -------------------------------------------------------------
+   // LEFT PANEL: Target Game Songs
+   // -------------------------------------------------------------
+   ImGui::BeginChild("target_panel", ImVec2(left_w, pane_h), true);
+   ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Target Songs (%s)", target_title.c_str());
+   ImGui::SameLine();
+   if (ImGui::SmallButton("+ Add Song Slot"))
+   {
+      uint32_t next_val = a.songs.empty() ? 1 : (a.songs.back().value + 1);
+      Song &s = add_song(a, next_val);
+      snprintf(s.name, sizeof(s.name), "Song %s", hex(next_val).c_str());
+   }
+
+   if (a.songs.empty())
+   {
+      ImGui::Spacing();
+      ImGui::TextWrapped("No songs configured for this game yet.");
+      if (a.detected_preset)
+      {
+         if (ImGui::Button(("Apply " + a.detected_preset->name + " Preset (Instant)").c_str()))
+            apply_rom_preset(a, *a.detected_preset);
+      }
+      else
+      {
+         ImGui::TextWrapped("Pick a preset or click '+ Add Song Slot' to start mapping music.");
+      }
+   }
+   else
+   {
+      if (ImGui::BeginTable("target_table", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp))
+      {
+         ImGui::TableSetupScrollFreeze(0, 1);
+         ImGui::TableSetupColumn("Sel", ImGuiTableColumnFlags_WidthFixed, 25);
+         ImGui::TableSetupColumn("Play", ImGuiTableColumnFlags_WidthFixed, 60);
+         ImGui::TableSetupColumn("Target Song", ImGuiTableColumnFlags_WidthFixed, 150);
+         ImGui::TableSetupColumn("Replacement Track", ImGuiTableColumnFlags_WidthStretch);
+         ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 90);
+         ImGui::TableHeadersRow();
+
+         for (size_t i = 0; i < a.songs.size(); i++)
+         {
+            Song &s = a.songs[i];
+            ImGui::PushID((int)i + 20000);
+            ImGui::TableNextRow();
+
+            // Column 1: Select radio
+            ImGui::TableNextColumn();
+            bool is_selected = (a.selected_target_song == (int)i);
+            if (ImGui::RadioButton("##sel", is_selected))
+               a.selected_target_song = (int)i;
+
+            // Column 2: Play Original
+            ImGui::TableNextColumn();
+            bool is_orig_playing = (a.is_playing && a.playing_target_index == (int)i);
+            if (is_orig_playing)
+            {
+               ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+               if (ImGui::SmallButton("Stop"))
+                  stop_audio(a);
+               ImGui::PopStyleColor();
+            }
+            else
+            {
+               ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.3f, 1.0f));
+               if (ImGui::SmallButton("Play"))
+                  play_song_item(a, s, false, (int)i);
+               ImGui::PopStyleColor();
+            }
+
+            // Column 3: Target Song
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", hex(s.value).c_str());
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##name", s.name, sizeof(s.name)))
+               a.preview_dirty = true;
+
+            // Column 4: Replacement
+            ImGui::TableNextColumn();
+            if (s.action == MAP_FILE)
+            {
+               std::string fname = s.path[0] ? file_name(s.path) : "no file";
+               ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.9f, 1.0f), "[File] %s", fname.c_str());
+               ImGui::SameLine();
+               bool is_repl_playing = (a.is_playing && a.playing_target_index == (int)i + 10000);
+               if (is_repl_playing)
+               {
+                  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+                  if (ImGui::SmallButton("Stop##repl"))
+                     stop_audio(a);
+                  ImGui::PopStyleColor();
+               }
+               else
+               {
+                  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.7f, 1.0f));
+                  if (ImGui::SmallButton("Play##repl"))
+                  {
+                     stop_audio(a);
+                     if (s.path[0] && file_exists(s.path))
+                     {
+                        play_file(a, s);
+                        a.is_playing = true;
+                        a.playing_target_index = (int)i + 10000;
+                     }
+                     else if (!s.clip.empty())
+                     {
+                        play_clip(a, s.clip, s.clip_rate);
+                        a.is_playing = true;
+                        a.playing_target_index = (int)i + 10000;
+                     }
+                  }
+                  ImGui::PopStyleColor();
+               }
+               ImGui::SameLine();
+               ImGui::SetNextItemWidth(65);
+               if (ImGui::SliderInt("##v", &s.volume, 0, 200, "%d%%"))
+                  a.preview_dirty = true;
+            }
+            else if (s.action == MAP_SILENCE)
+            {
+               ImGui::TextDisabled("[Silence]");
+            }
+            else
+            {
+               ImGui::TextDisabled("[Original Music]");
+            }
+
+            // Column 5: Action
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(a.compare.songs.empty() || a.compare.selected_song < 0 || a.compare.selected_song >= (int)a.compare.songs.size());
+            if (ImGui::SmallButton("<- Match"))
+            {
+               match_songs(a, s, a.compare.songs[a.compare.selected_song]);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (s.action != MAP_ORIGINAL)
+            {
+               if (ImGui::SmallButton("x##rst"))
+               {
+                  s.action = MAP_ORIGINAL;
+                  s.path[0] = '\0';
+                  s.clip.clear();
+                  a.preview_dirty = true;
+               }
+            }
+            else
+            {
+               if (ImGui::SmallButton("Mute"))
+               {
+                  s.action = MAP_SILENCE;
+                  a.preview_dirty = true;
+               }
+            }
+
+            ImGui::PopID();
+         }
+         ImGui::EndTable();
+      }
+   }
+   ImGui::EndChild();
+
+   ImGui::SameLine();
+
+   // -------------------------------------------------------------
+   // RIGHT PANEL: Compare / Source Songs
+   // -------------------------------------------------------------
+   ImGui::BeginChild("compare_panel", ImVec2(right_w, pane_h), true);
+   ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Source: %s", cmp_title.c_str());
+   ImGui::SetNextItemWidth(-1);
+   ImGui::InputTextWithHint("##cmp_flt", "Search songs / tracks...", a.compare.filter, sizeof(a.compare.filter));
+
+   if (a.compare.songs.empty())
+   {
+      ImGui::Spacing();
+      ImGui::TextWrapped("No compare source loaded. Use the buttons above to load a Compare ROM, a music folder (OST), or pick a Preset.");
+   }
+   else
+   {
+      if (ImGui::BeginTable("compare_table", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp))
+      {
+         ImGui::TableSetupScrollFreeze(0, 1);
+         ImGui::TableSetupColumn("Play", ImGuiTableColumnFlags_WidthFixed, 60);
+         ImGui::TableSetupColumn("Source Song", ImGuiTableColumnFlags_WidthStretch);
+         ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 80);
+         ImGui::TableHeadersRow();
+
+         std::string filter_str = to_lower(a.compare.filter);
+
+         for (size_t i = 0; i < a.compare.songs.size(); i++)
+         {
+            Song &cs = a.compare.songs[i];
+            std::string sname = cs.name[0] ? cs.name : hex(cs.value);
+            if (!filter_str.empty() && to_lower(sname).find(filter_str) == std::string::npos)
+               continue;
+
+            ImGui::PushID((int)i + 50000);
+            ImGui::TableNextRow();
+
+            // Column 1: Play
+            ImGui::TableNextColumn();
+            bool is_cmp_playing = (a.is_playing && a.playing_compare_index == (int)i);
+            if (is_cmp_playing)
+            {
+               ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+               if (ImGui::SmallButton("Stop##cmp"))
+                  stop_audio(a);
+               ImGui::PopStyleColor();
+            }
+            else
+            {
+               ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.3f, 1.0f));
+               if (ImGui::SmallButton("Play##cmp"))
+                  play_song_item(a, cs, true, (int)i);
+               ImGui::PopStyleColor();
+            }
+
+            // Column 2: Song Name (selectable)
+            ImGui::TableNextColumn();
+            bool is_sel = (a.compare.selected_song == (int)i);
+            if (ImGui::Selectable(sname.c_str(), is_sel))
+               a.compare.selected_song = (int)i;
+
+            // Column 3: Assign to Selected Target
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(a.songs.empty() || a.selected_target_song < 0 || a.selected_target_song >= (int)a.songs.size());
+            if (ImGui::SmallButton("<- Use"))
+            {
+               a.compare.selected_song = (int)i;
+               match_songs(a, a.songs[a.selected_target_song], cs);
+            }
+            ImGui::EndDisabled();
+
+            ImGui::PopID();
+         }
+         ImGui::EndTable();
+      }
+   }
+   ImGui::EndChild();
+}
+
 static void ui_songs(App &a)
 {
    ImGui::BeginDisabled(!a.core.loaded());
@@ -1347,10 +2177,21 @@ static void ui_songs(App &a)
       ImGui::SetNextItemWidth(-1);
       if (ImGui::InputTextWithHint("##name", "name", s.name, sizeof(s.name)))
          a.preview_dirty = true;
-      ImGui::BeginDisabled(s.clip.empty());
-      if (ImGui::SmallButton(s.recording ? "recording..." : "Play original"))
-         play_clip(a, s.clip, s.clip_rate);
-      ImGui::EndDisabled();
+      bool is_orig_playing = (a.is_playing && a.playing_target_index == (int)i);
+      if (is_orig_playing)
+      {
+         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+         if (ImGui::SmallButton("Stop"))
+            stop_audio(a);
+         ImGui::PopStyleColor();
+      }
+      else
+      {
+         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.3f, 1.0f));
+         if (ImGui::SmallButton(s.recording ? "recording..." : "Play"))
+            play_song_item(a, s, false, (int)i);
+         ImGui::PopStyleColor();
+      }
       ImGui::SameLine();
       if (ImGui::SmallButton("Re-record"))
       {
@@ -1397,10 +2238,37 @@ static void ui_songs(App &a)
             }
          }
          ImGui::SameLine();
-         ImGui::BeginDisabled(!s.path[0]);
-         if (ImGui::Button("Listen"))
-            play_file(a, s);
-         ImGui::EndDisabled();
+         bool is_repl_playing = (a.is_playing && a.playing_target_index == (int)i + 10000);
+         if (is_repl_playing)
+         {
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+            if (ImGui::Button("Stop##listen"))
+               stop_audio(a);
+            ImGui::PopStyleColor();
+         }
+         else
+         {
+            ImGui::BeginDisabled(!s.path[0] && s.clip.empty());
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.5f, 0.7f, 1.0f));
+            if (ImGui::Button("Play##listen"))
+            {
+               stop_audio(a);
+               if (s.path[0] && file_exists(s.path))
+               {
+                  play_file(a, s);
+                  a.is_playing = true;
+                  a.playing_target_index = (int)i + 10000;
+               }
+               else if (!s.clip.empty())
+               {
+                  play_clip(a, s.clip, s.clip_rate);
+                  a.is_playing = true;
+                  a.playing_target_index = (int)i + 10000;
+               }
+            }
+            ImGui::PopStyleColor();
+            ImGui::EndDisabled();
+         }
          ImGui::TextWrapped("%s", s.path[0] ? file_name(s.path).c_str() : "no file chosen");
          ImGui::SetNextItemWidth(120);
          if (ImGui::SliderInt("volume %", &s.volume, 0, 200)) a.preview_dirty = true;
@@ -1564,6 +2432,16 @@ static void ui_profile(App &a)
       app_log(a, a.status);
    }
    ImGui::SameLine();
+   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.58f, 0.28f, 1.0f));
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.70f, 0.35f, 1.0f));
+   if (ImGui::Button("Export to RetroArch (INI & Music)", ImVec2(240, 0)))
+   {
+      std::string ini, mdir;
+      int n = 0;
+      export_to_retroarch(a, ini, mdir, n);
+   }
+   ImGui::PopStyleColor(2);
+   ImGui::SameLine();
    ImGui::BeginDisabled(e.mute.empty());
    if (ImGui::Button("Save channel mutes for the DSP plugin"))
    {
@@ -1606,65 +2484,100 @@ static void draw_ui(App &a)
    ImGui::Begin("Proteus Studio", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove
          | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
 
+   float bar_h = ImGui::GetFrameHeightWithSpacing() + 6.0f;
    float status_h = ImGui::GetFrameHeightWithSpacing();
-   float avail_h = ImGui::GetContentRegionAvail().y - status_h;
-   float left_w = ImGui::GetContentRegionAvail().x * 0.5f;
+   float avail_h = ImGui::GetContentRegionAvail().y - status_h - bar_h;
 
-   ImGui::BeginChild("game", ImVec2(left_w, avail_h), ImGuiChildFlags_Borders);
-   if (a.game_tex)
+   // Top Toolbar
+   ImGui::BeginChild("toolbar", ImVec2(0, bar_h), false);
+   ImGui::Checkbox("Game Screen", &a.show_game_screen);
+   ImGui::SameLine();
+   if (a.is_playing)
    {
-      float bar_h = ImGui::GetFrameHeightWithSpacing();
-      ImVec2 avail = ImGui::GetContentRegionAvail();
-      avail.y = std::max(10.0f, avail.y - bar_h - 4.0f);
-      float aspect = (float)a.core.aspect();
-      float w = avail.x, h = w / aspect;
-      if (h > avail.y) { h = avail.y; w = h * aspect; }
-      ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + (avail.x - w) / 2, ImGui::GetCursorPosY() + (avail.y - h) / 2));
-      ImGui::Image((ImTextureID)(intptr_t)a.game_tex, ImVec2(w, h));
-
-      ImGui::SetCursorPos(ImVec2(8, ImGui::GetWindowHeight() - bar_h - 4));
-      if (ImGui::Button(a.paused ? "Resume (P)" : "Pause (P)"))
-      {
-         a.paused = !a.paused;
-         a.audio.clear();
-      }
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.8f, 0.2f, 0.2f, 1.0f));
+      if (ImGui::Button("Stop Audio"))
+         stop_audio(a);
+      ImGui::PopStyleColor();
       ImGui::SameLine();
-      if (ImGui::Button("Reset (F1)"))
-      {
-         a.core.reset();
-         a.status = "Game reset";
-         a.audio.clear();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Save (F2)"))
-      {
-         a.quick_state = a.core.save_state();
-         a.status = a.quick_state.empty() ? "Save state failed" : "State saved";
-      }
-      ImGui::SameLine();
-      ImGui::BeginDisabled(a.quick_state.empty());
-      if (ImGui::Button("Load (F4)"))
-      {
-         if (a.core.load_state(a.quick_state)) { a.status = "State loaded"; a.have_current = false; a.audio.clear(); }
-      }
-      ImGui::EndDisabled();
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(90);
-      ImGui::SliderInt("##vol", &a.audio.volume, 0, 100, "%d%%");
-      if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("Master volume");
    }
-   else
-      ImGui::TextDisabled("Choose a core and a ROM in the Setup tab, then Start game.\nYou can also drag and drop a ROM file here.");
+   ImGui::SetNextItemWidth(90);
+   ImGui::SliderInt("##vol", &a.audio.volume, 0, 100, "%d%%");
+   if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Master volume");
+
+   ImGui::SameLine(0, 20);
+   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.58f, 0.28f, 1.0f));
+   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.70f, 0.35f, 1.0f));
+   if (ImGui::Button("Export to RetroArch (Generate INI & Music)"))
+   {
+      std::string ini, mdir;
+      int n = 0;
+      export_to_retroarch(a, ini, mdir, n);
+   }
+   ImGui::PopStyleColor(2);
+
+   if (!a.export_status.empty())
+   {
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "%s", a.export_status.c_str());
+   }
    ImGui::EndChild();
 
-   ImGui::SameLine();
+   if (a.show_game_screen)
+   {
+      float left_w = ImGui::GetContentRegionAvail().x * 0.40f;
+      ImGui::BeginChild("game", ImVec2(left_w, avail_h), ImGuiChildFlags_Borders);
+      if (a.game_tex)
+      {
+         float gbar_h = ImGui::GetFrameHeightWithSpacing();
+         ImVec2 avail = ImGui::GetContentRegionAvail();
+         avail.y = std::max(10.0f, avail.y - gbar_h - 4.0f);
+         float aspect = (float)a.core.aspect();
+         float w = avail.x, h = w / aspect;
+         if (h > avail.y) { h = avail.y; w = h * aspect; }
+         ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + (avail.x - w) / 2, ImGui::GetCursorPosY() + (avail.y - h) / 2));
+         ImGui::Image((ImTextureID)(intptr_t)a.game_tex, ImVec2(w, h));
+
+         ImGui::SetCursorPos(ImVec2(8, ImGui::GetWindowHeight() - gbar_h - 4));
+         if (ImGui::Button(a.paused ? "Resume (P)" : "Pause (P)"))
+         {
+            a.paused = !a.paused;
+            a.audio.clear();
+         }
+         ImGui::SameLine();
+         if (ImGui::Button("Reset (F1)"))
+         {
+            a.core.reset();
+            a.status = "Game reset";
+            a.audio.clear();
+         }
+         ImGui::SameLine();
+         if (ImGui::Button("Save (F2)"))
+         {
+            a.quick_state = a.core.save_state();
+            a.status = a.quick_state.empty() ? "Save state failed" : "State saved";
+         }
+         ImGui::SameLine();
+         ImGui::BeginDisabled(a.quick_state.empty());
+         if (ImGui::Button("Load (F4)"))
+         {
+            if (a.core.load_state(a.quick_state)) { a.status = "State loaded"; a.have_current = false; a.audio.clear(); }
+         }
+         ImGui::EndDisabled();
+      }
+      else
+         ImGui::TextDisabled("Choose a core and a ROM in Setup or Mix & Match to start emulation.\nDrag and drop ROM supported.");
+      ImGui::EndChild();
+      ImGui::SameLine();
+   }
+
    ImGui::BeginChild("tools", ImVec2(0, avail_h), ImGuiChildFlags_Borders);
    if (ImGui::BeginTabBar("tabs"))
    {
+      if (ImGui::BeginTabItem("Mix & Match")) { ui_mix_and_match(a); ImGui::EndTabItem(); }
       if (ImGui::BeginTabItem("Setup")) { ui_setup(a); ImGui::EndTabItem(); }
-      if (ImGui::BeginTabItem("Find address")) { ui_finder(a); ImGui::EndTabItem(); }
       if (ImGui::BeginTabItem("Songs")) { ui_songs(a); ImGui::EndTabItem(); }
+      if (ImGui::BeginTabItem("Find address")) { ui_finder(a); ImGui::EndTabItem(); }
       if (ImGui::BeginTabItem("Channels")) { ui_channels(a); ImGui::EndTabItem(); }
       if (ImGui::BeginTabItem("Analyze")) { ui_analyze(a); ImGui::EndTabItem(); }
       if (ImGui::BeginTabItem("Profile")) { ui_profile(a); ImGui::EndTabItem(); }

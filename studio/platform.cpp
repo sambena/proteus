@@ -167,8 +167,9 @@ std::string stem_of(const std::string &path)
    return dot == std::string::npos ? name : name.substr(0, dot);
 }
 
-static std::string normalize(std::string s)
+std::string normalize_path(const std::string &path)
 {
+   std::string s = path;
    for (char &c : s)
    {
       if (c == '\\')
@@ -182,7 +183,7 @@ static std::string normalize(std::string s)
 
 std::string relative_to(const std::string &base_dir, const std::string &target)
 {
-   std::string b = normalize(base_dir), t = normalize(target);
+   std::string b = normalize_path(base_dir), t = normalize_path(target);
    if (!b.empty() && b.back() != '/')
       b.push_back('/');
    if (t.compare(0, b.size(), b) == 0)
@@ -194,4 +195,84 @@ std::string relative_to(const std::string &base_dir, const std::string &target)
       return rel;
    }
    return target;
+}
+
+bool copy_file_data(const std::string &src, const std::string &dst)
+{
+   FILE *in = px_fopen(src.c_str(), "rb");
+   if (!in)
+      return false;
+   make_dirs(dir_of(dst));
+   FILE *out = px_fopen(dst.c_str(), "wb");
+   if (!out)
+   {
+      fclose(in);
+      return false;
+   }
+   char buf[65536];
+   size_t n;
+   while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+   {
+      if (fwrite(buf, 1, n, out) != n)
+      {
+         fclose(in);
+         fclose(out);
+         return false;
+      }
+   }
+   fclose(in);
+   return fclose(out) == 0;
+}
+
+std::string sanitize_filename(const std::string &name)
+{
+   std::string r;
+   for (char c : name)
+   {
+      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.')
+         r.push_back(c);
+      else if (c == ' ' || c == '(' || c == ')' || c == '[' || c == ']' || c == '/')
+         r.push_back('_');
+   }
+   while (!r.empty() && r.back() == '_')
+      r.pop_back();
+   return r.empty() ? "track" : r;
+}
+
+bool read_file_bytes(const std::string &path, std::vector<uint8_t> &out)
+{
+   FILE *f = px_fopen(path.c_str(), "rb");
+   if (!f)
+      return false;
+   fseek(f, 0, SEEK_END);
+   long size = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   out.resize(size > 0 ? (size_t)size : 0);
+   bool ok = size <= 0 || fread(out.data(), 1, out.size(), f) == out.size();
+   fclose(f);
+   return ok;
+}
+
+std::string lower_ext(const std::string &name)
+{
+   size_t dot = name.find_last_of('.');
+   std::string ext = dot == std::string::npos ? "" : name.substr(dot + 1);
+   for (char &c : ext)
+      c = (char)tolower((unsigned char)c);
+   return ext;
+}
+
+std::string to_lower(const std::string &s)
+{
+   std::string r = s;
+   for (char &c : r)
+      c = (char)tolower((unsigned char)c);
+   return r;
+}
+
+void open_folder(const std::string &path)
+{
+#ifdef _WIN32
+   ShellExecuteW(nullptr, L"open", widen(path).c_str(), nullptr, nullptr, SW_SHOW);
+#endif
 }

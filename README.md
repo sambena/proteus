@@ -80,26 +80,26 @@ to keep them for one game only.
 
 ## Proteus Studio
 
-Proteus Studio (`make studio`) is a companion GUI tool (SDL2 + Dear ImGui) for creating
-and testing game profiles interactively:
+Proteus Studio (`make studio`) is a companion GUI tool (SDL2 + Dear ImGui) for finding,
+auditioning, and replacing game soundtracks without modifying ROMs:
 
-1. **Setup**: Select your RetroArch folder, choose an installed core, and open a ROM
-   or zip archive.
-2. **Find address**:
+1. **Mix & Match** (Default Workspace):
+   - **Target Game (Primary ROM)**: Load your game ROM and retrieve its song list instantly via presets, auto-probe, or existing profiles.
+   - **Compare Source**: Load a Compare ROM, a music folder / OST directory (WAV, MP3, Ogg, FLAC, SPC, NSF, VGM, etc.), or pick from the built-in Preset Library.
+   - **Audition Directly in the Tool**: Click **Play** / **Stop** next to every track on both sides to listen to the original game music or compare/replacement tracks directly in Proteus Studio.
+   - **Flexible Mapping**: Click **<- Use** or **<- Match** to pair songs, or click **Auto-Match by Name/Track #** or **Match All 1:1 in Order** for automatic assignment.
+   - **Swap Emulation**: Click **Swap Target <-> Compare ROM** to switch active core emulation between ROMs with 1 click.
+   - **1-Click Export to RetroArch**: Click **Export to RetroArch (INI & Music)** to generate `system/proteus/{Game}.ini` and place all replacement music into `system/proteus/music/{Game}/` (e.g. `D:\RetroArch\system\proteus\music\{Game}\`). The original ROM remains completely untouched.
+2. **Setup**: Select your RetroArch folder (defaults to `D:\RetroArch`), choose an installed core, and open a ROM.
+3. **Find address**:
    - **ROM Presets**: Built-in ROM header detection (SNES, Genesis, Game Boy, GBA, NES) identifies games like Super Mario World, Super Metroid, A Link to the Past, Sonic the Hedgehog, Chrono Trigger, and more, offering instant 1-click address, latch, and track setup.
    - **Auto-Probe RAM**: Automatically sweeps memory from a save state to detect which addresses trigger music or sound effects, ranking candidate registers by audio divergence in seconds.
    - **Test Poke**: Click **Poke**, **+1**, or **0** on any candidate to inject test values into RAM live and hear if the soundtrack changes immediately.
    - **Manual Marking**: Play the game in Studio; press **M** right after the music changes and **N** when it stays the same to narrow down candidates.
-3. **Songs**: Discovered songs collect automatically with a screenshot thumbnail and a
-   12-second clip of the original music. Assign replacement files, silence, or original music,
-   and test them live inside the game with **Hear replacements in the game**.
-4. **Channels**: Toggle emulator channels live to discover which voices carry music vs sound
-   effects. Checked channels are automatically saved into the profile's `[mute]` section.
-5. **Analyze**: If the game uses a command register, automatically sweep song numbers from a
-   save state to audition and catalog every song in the game without playing through it.
-6. **Profile**: Adjust mix volume and crossfades, save the profile (`.proteus.ini` next to the ROM
-   or in RetroArch's `system/proteus/`), and optionally export channel mutes as RetroArch per-game
-   core options for the DSP plugin.
+4. **Songs**: Discovered songs collect automatically with a screenshot thumbnail and a recorded audio clip. Audition with **Play** / **Stop**, choose replacements, and test them live inside the game with **Hear replacements in the game**.
+5. **Channels**: Toggle emulator channels live to discover which voices carry music vs sound effects. Checked channels are automatically saved into the profile's `[mute]` section.
+6. **Analyze**: If the game uses a command register, automatically sweep song numbers from a save state to audition and catalog every song in the game without playing through it.
+7. **Profile**: Adjust mix volume and crossfades, preview raw profile INI text, and export directly to RetroArch.
 
 Controls:
 - **D-pad**: Arrow keys (or left stick / D-pad on controller)
