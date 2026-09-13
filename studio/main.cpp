@@ -281,6 +281,31 @@ struct App
       bool capturing = false;
    } analyze;
 
+   // Auto-probe: sweep RAM addresses to detect which ones trigger sound changes.
+   struct ProbedRegister
+   {
+      uint32_t address = 0;
+      uint8_t original_val = 0;
+      uint8_t test_val = 0;
+      double score = 0;
+      std::vector<int16_t> clip;
+      double clip_rate = 0;
+   };
+
+   struct
+   {
+      bool running = false;
+      uint32_t start_addr = 0;
+      uint32_t end_addr = 0x1FFF;
+      uint32_t current_addr = 0;
+      int test_val = 2;
+      std::vector<uint8_t> base;
+      std::vector<int16_t> baseline_audio;
+      double baseline_rms = 0;
+      std::vector<ProbedRegister> results;
+      bool capturing = false;
+   } probe;
+
    // Clip playback pauses the game.
    bool clip_playing = false;
    bool was_paused = false;
@@ -584,6 +609,8 @@ static void load_game(App &a)
    a.profile = ProfileEdit();
    a.have_current = false;
    a.analyze.running = false;
+   a.probe.running = false;
+   a.probe.results.clear();
 
    std::string save_dir = app_data_dir() + "\\saves";
    make_dirs(save_dir);
@@ -653,7 +680,7 @@ static void track_songs(App &a)
 static void on_core_audio(int16_t *frames, size_t count)
 {
    App &a = *g_app;
-   if (!a.analyze.capturing)
+   if (!a.analyze.capturing && !a.probe.capturing)
    {
       // Record the original music before any preview is mixed in.
       for (auto &s : a.songs)
@@ -666,7 +693,7 @@ static void on_core_audio(int16_t *frames, size_t count)
       }
    }
 
-   if (a.preview && px_engine_mixing(&a.engine) && !a.analyze.capturing)
+   if (a.preview && px_engine_mixing(&a.engine) && !a.analyze.capturing && !a.probe.capturing)
       px_engine_mix_s16(&a.engine, frames, count);
 }
 
@@ -767,6 +794,147 @@ static void analyze_step(App &a)
    if (!s.name[0])
       snprintf(s.name, sizeof(s.name), "command %s", hex((uint32_t)v).c_str());
    an.found++;
+}
+
+static void poke_ram(App &a, uint32_t address, uint8_t val)
+{
+   size_t size = 0;
+   uint8_t *ram = a.core.memory_mut(kMemories[a.profile.memory].id, &size);
+   if (ram && address < size)
+   {
+      ram[address] = val;
+      a.status = "Poked " + hex(address, 4) + " = " + hex(val);
+      app_log(a, a.status);
+   }
+}
+
+static void start_probe(App &a)
+{
+   if (!a.core.loaded())
+      return;
+   stop_preview(a);
+   auto &pb = a.probe;
+   pb.base = a.core.save_state();
+   if (pb.base.empty())
+   {
+      a.status = "This core cannot save states, so it cannot be auto-probed.";
+      return;
+   }
+   pb.results.clear();
+   pb.baseline_audio.clear();
+
+   size_t ram_size = 0;
+   a.core.memory(kMemories[a.profile.memory].id, &ram_size);
+   if (ram_size == 0)
+   {
+      a.status = "No RAM accessible for this memory region.";
+      return;
+   }
+   if (pb.end_addr >= ram_size)
+      pb.end_addr = (uint32_t)(ram_size - 1);
+   if (pb.start_addr > pb.end_addr)
+      pb.start_addr = 0;
+
+   // 1. Record baseline audio (40 frames with no modifications)
+   a.core.set_skip_video(true);
+   pb.capturing = true;
+   a.core.load_state(pb.base);
+   a.core.audio().clear();
+   for (int f = 0; f < 40; f++)
+   {
+      a.core.run_frame(0);
+      pb.baseline_audio.insert(pb.baseline_audio.end(), a.core.audio().begin(), a.core.audio().end());
+      a.core.audio().clear();
+   }
+   pb.capturing = false;
+
+   double sum = 0;
+   for (int16_t s : pb.baseline_audio)
+      sum += (double)s * s;
+   pb.baseline_rms = pb.baseline_audio.empty() ? 0 : std::sqrt(sum / pb.baseline_audio.size());
+
+   pb.current_addr = pb.start_addr;
+   pb.running = true;
+   a.status = "Auto-probing RAM 0x" + hex(pb.start_addr, 4) + " to 0x" + hex(pb.end_addr, 4) + "...";
+   app_log(a, a.status);
+}
+
+static void probe_step(App &a)
+{
+   auto &pb = a.probe;
+   if (!pb.running)
+      return;
+
+   size_t ram_size = 0;
+   uint8_t *ram = a.core.memory_mut(kMemories[a.profile.memory].id, &ram_size);
+   if (!ram)
+   {
+      pb.running = false;
+      a.core.set_skip_video(false);
+      return;
+   }
+
+   const int kBatch = 8;
+   for (int step = 0; step < kBatch && pb.current_addr <= pb.end_addr; step++, pb.current_addr++)
+   {
+      uint32_t addr = pb.current_addr;
+      if (addr >= ram_size)
+         break;
+
+      uint8_t orig_val = ram[addr];
+      uint8_t tval = (orig_val == (uint8_t)pb.test_val) ? (uint8_t)(pb.test_val + 1) : (uint8_t)pb.test_val;
+
+      a.core.load_state(pb.base);
+      ram[addr] = tval;
+      a.core.audio().clear();
+
+      pb.capturing = true;
+      std::vector<int16_t> clip;
+      for (int f = 0; f < 40; f++)
+      {
+         a.core.run_frame(0);
+         clip.insert(clip.end(), a.core.audio().begin(), a.core.audio().end());
+         a.core.audio().clear();
+      }
+      pb.capturing = false;
+
+      double diff_sum = 0;
+      size_t cmp_len = std::min(clip.size(), pb.baseline_audio.size());
+      for (size_t i = 0; i < cmp_len; i++)
+      {
+         double d = (double)clip[i] - (double)pb.baseline_audio[i];
+         diff_sum += d * d;
+      }
+      double diff_rms = cmp_len ? std::sqrt(diff_sum / cmp_len) : 0;
+
+      if (diff_rms > 120.0)
+      {
+         App::ProbedRegister res;
+         res.address = addr;
+         res.original_val = orig_val;
+         res.test_val = tval;
+         res.score = diff_rms;
+         res.clip = clip;
+         res.clip_rate = a.core.sample_rate();
+         pb.results.push_back(res);
+
+         std::sort(pb.results.begin(), pb.results.end(), [](const App::ProbedRegister &x, const App::ProbedRegister &y) {
+            return x.score > y.score;
+         });
+         if (pb.results.size() > 50)
+            pb.results.pop_back();
+      }
+   }
+
+   if (pb.current_addr > pb.end_addr)
+   {
+      pb.running = false;
+      a.core.set_skip_video(false);
+      a.core.load_state(pb.base);
+      a.core.audio().clear();
+      a.status = "Probe finished: " + std::to_string(pb.results.size()) + " sound register candidate(s) found.";
+      app_log(a, a.status);
+   }
 }
 
 static void play_clip(App &a, const std::vector<int16_t> &clip, double rate)
@@ -872,6 +1040,98 @@ static void ui_setup(App &a)
 
 static void ui_finder(App &a)
 {
+   if (ImGui::CollapsingHeader("Auto-Probe RAM (Fast Register Discovery)", ImGuiTreeNodeFlags_DefaultOpen))
+   {
+      ImGui::TextWrapped("Pokes RAM addresses from a save state to detect which ones trigger music or sound effects. "
+                         "Get to the title screen or gameplay first.");
+      ImGui::SetNextItemWidth(80);
+      ImGui::InputScalar("Start##pb", ImGuiDataType_U32, &a.probe.start_addr, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(80);
+      ImGui::InputScalar("End##pb", ImGuiDataType_U32, &a.probe.end_addr, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal);
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(60);
+      ImGui::InputInt("Test val##pb", &a.probe.test_val, 1, 16);
+      a.probe.test_val = std::clamp(a.probe.test_val, 1, 255);
+
+      ImGui::BeginDisabled(!a.core.loaded() || a.probe.running);
+      if (ImGui::Button(a.probe.running ? "Probing..." : "Start Auto-Probe", ImVec2(150, 0)))
+         start_probe(a);
+      ImGui::EndDisabled();
+
+      if (a.probe.running)
+      {
+         ImGui::SameLine();
+         if (ImGui::Button("Stop Probe"))
+         {
+            a.probe.running = false;
+            a.core.set_skip_video(false);
+            a.core.load_state(a.probe.base);
+            a.status = "Probe stopped.";
+         }
+         float prog = a.probe.end_addr > a.probe.start_addr
+               ? (float)(a.probe.current_addr - a.probe.start_addr) / (float)(a.probe.end_addr - a.probe.start_addr + 1)
+               : 0.0f;
+         ImGui::ProgressBar(prog, ImVec2(-1, 0), (std::to_string(a.probe.results.size()) + " candidate(s) found").c_str());
+      }
+
+      if (!a.probe.results.empty())
+      {
+         ImGui::Text("Found %zu address(es) that actively trigger audio changes:", a.probe.results.size());
+         if (ImGui::BeginTable("probe_res", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH))
+         {
+            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 70);
+            ImGui::TableSetupColumn("Activity", ImGuiTableColumnFlags_WidthFixed, 90);
+            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Poke", ImGuiTableColumnFlags_WidthFixed, 55);
+            ImGui::TableSetupColumn("Listen", ImGuiTableColumnFlags_WidthFixed, 55);
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < a.probe.results.size() && i < 30; i++)
+            {
+               auto &r = a.probe.results[i];
+               ImGui::PushID((int)r.address + 0x2000000);
+               ImGui::TableNextRow();
+               ImGui::TableNextColumn();
+               ImGui::Text("%s", hex(r.address, 4).c_str());
+
+               ImGui::TableNextColumn();
+               float score_bar = std::clamp((float)(r.score / 6000.0), 0.05f, 1.0f);
+               ImGui::ProgressBar(score_bar, ImVec2(-1, 0), (std::to_string((int)r.score)).c_str());
+
+               ImGui::TableNextColumn();
+               if (ImGui::SmallButton("Use"))
+               {
+                  a.profile.address = r.address;
+                  a.profile.have_address = true;
+                  a.profile.memory = 0;
+                  a.profile.size = 1;
+                  a.profile.latch = true;
+                  a.have_current = false;
+                  a.status = "Song address set to " + hex(r.address, 4) + " (command/latch)";
+               }
+               ImGui::SameLine();
+               if (ImGui::SmallButton("Analyze"))
+                  a.analyze.command = r.address;
+
+               ImGui::TableNextColumn();
+               if (ImGui::SmallButton("Poke"))
+                  poke_ram(a, r.address, (uint8_t)a.probe.test_val);
+
+               ImGui::TableNextColumn();
+               ImGui::BeginDisabled(r.clip.empty());
+               if (ImGui::SmallButton("Play"))
+                  play_clip(a, r.clip, r.clip_rate);
+               ImGui::EndDisabled();
+
+               ImGui::PopID();
+            }
+            ImGui::EndTable();
+         }
+      }
+   }
+
+   ImGui::SeparatorText("Manual Change Marking");
    ImGui::TextWrapped("Play the game. Each time the music changes, press M (or the button) right after you hear it. "
          "While walking around with the same music, press N now and then. After a few changes, the song address "
          "is usually one of the few candidates left.");
@@ -893,6 +1153,12 @@ static void ui_finder(App &a)
    ImGui::Text("Marks: %u   Song candidates: %zu   Command candidates: %zu", a.finder.marks(),
          a.finder.marks() ? a.finder.candidate_count() : 0, a.finder.marks() ? a.finder.command_count() : 0);
 
+   static int poke_test_val = 2;
+   ImGui::SetNextItemWidth(70);
+   ImGui::InputInt("Test poke value", &poke_test_val, 1, 16);
+   poke_test_val = std::clamp(poke_test_val, 0, 255);
+   help("Click Poke on any candidate below to inject this value and hear if the song changes.");
+
    for (int kind = 0; kind < 2; kind++)
    {
       bool commands = kind == 1;
@@ -908,9 +1174,9 @@ static void ui_finder(App &a)
       }
       if (ImGui::BeginTable(commands ? "cmd" : "song", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH))
       {
-         ImGui::TableSetupColumn("Address");
-         ImGui::TableSetupColumn("Value now");
-         ImGui::TableSetupColumn("");
+         ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 70);
+         ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthFixed, 50);
+         ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthStretch);
          ImGui::TableHeadersRow();
          for (auto &c : list)
          {
@@ -937,6 +1203,15 @@ static void ui_finder(App &a)
                if (ImGui::SmallButton("Analyze with it"))
                   a.analyze.command = c.address;
             }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Poke"))
+               poke_ram(a, c.address, (uint8_t)poke_test_val);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+1"))
+               poke_ram(a, c.address, (uint8_t)((c.value + 1) & 0xFF));
+            ImGui::SameLine();
+            if (ImGui::SmallButton("0"))
+               poke_ram(a, c.address, 0);
             ImGui::PopID();
          }
          ImGui::EndTable();
@@ -1490,6 +1765,8 @@ int main(int argc, char **argv)
       {
          if (a.analyze.running)
             analyze_step(a);
+         else if (a.probe.running)
+            probe_step(a);
          else if (!a.paused)
          {
             if (a.preview_dirty && a.preview)

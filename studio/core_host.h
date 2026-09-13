@@ -53,6 +53,7 @@ public:
    unsigned frame_width() const { return width_; }
    unsigned frame_height() const { return height_; }
    double aspect() const { return aspect_; }
+   void set_skip_video(bool skip) { skip_video_ = skip; }
 
    double fps() const { return av_.timing.fps; }
    double sample_rate() const { return av_.timing.sample_rate; }
@@ -101,6 +102,7 @@ private:
    std::vector<uint32_t> frame_;
    unsigned width_ = 0, height_ = 0;
    double aspect_ = 4.0 / 3.0;
+   bool skip_video_ = false;
 
    std::vector<int16_t> audio_;
    uint16_t buttons_ = 0;

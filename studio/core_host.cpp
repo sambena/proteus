@@ -348,6 +348,7 @@ void CoreHost::unload()
    width_ = height_ = 0;
    audio_.clear();
    content_data_.clear();
+   skip_video_ = false;
    if (g_host == this)
       g_host = nullptr;
 }
@@ -620,7 +621,7 @@ bool CoreHost::environment(unsigned cmd, void *data)
 
 void CoreHost::video(const void *data, unsigned width, unsigned height, size_t pitch)
 {
-   if (!data || data == RETRO_HW_FRAME_BUFFER_VALID || !width || !height)
+   if (skip_video_ || !data || data == RETRO_HW_FRAME_BUFFER_VALID || !width || !height)
       return;
    width_  = width;
    height_ = height;

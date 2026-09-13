@@ -85,9 +85,10 @@ and testing game profiles interactively:
 
 1. **Setup**: Select your RetroArch folder, choose an installed core, and open a ROM
    or zip archive.
-2. **Find address**: Play the game directly in Studio. Press **M** right after the music
-   changes; press **N** periodically while walking around with unchanged music. The candidate
-   list quickly narrows down the RAM addresses holding the song value or command register.
+2. **Find address**:
+   - **Auto-Probe RAM**: Automatically sweeps memory from a save state to detect which addresses trigger music or sound effects, ranking candidate registers by audio divergence in seconds.
+   - **Test Poke**: Click **Poke**, **+1**, or **0** on any candidate to inject test values into RAM live and hear if the soundtrack changes immediately.
+   - **Manual Marking**: Play the game in Studio; press **M** right after the music changes and **N** when it stays the same to narrow down candidates.
 3. **Songs**: Discovered songs collect automatically with a screenshot thumbnail and a
    12-second clip of the original music. Assign replacement files, silence, or original music,
    and test them live inside the game with **Hear replacements in the game**.
