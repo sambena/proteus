@@ -103,7 +103,15 @@ struct AudioOut
    SDL_AudioDeviceID dev = 0;
    SDL_AudioStream *stream = nullptr;
    int stream_rate = 0;
+   int volume = 100;
+   bool muted = false;
    static constexpr int kRate = 48000;
+
+   ~AudioOut()
+   {
+      if (dev) { SDL_CloseAudioDevice(dev); dev = 0; }
+      if (stream) { SDL_FreeAudioStream(stream); stream = nullptr; }
+   }
 
    void open()
    {
@@ -116,7 +124,7 @@ struct AudioOut
 
    void push(const int16_t *frames, size_t count, double rate)
    {
-      if (!dev || !count)
+      if (!dev || !count || muted || volume <= 0)
          return;
       int r = (int)std::lround(rate);
       if (!stream || r != stream_rate)
@@ -128,7 +136,18 @@ struct AudioOut
       }
       if (!stream)
          return;
-      SDL_AudioStreamPut(stream, frames, (int)(count * 4));
+      if (volume < 100)
+      {
+         static std::vector<int16_t> scaled;
+         scaled.resize(count * 2);
+         float v = volume / 100.0f;
+         for (size_t i = 0; i < count * 2; i++)
+            scaled[i] = (int16_t)std::clamp((int)std::lround(frames[i] * v), -32768, 32767);
+         SDL_AudioStreamPut(stream, scaled.data(), (int)(count * 4));
+      }
+      else
+         SDL_AudioStreamPut(stream, frames, (int)(count * 4));
+
       static std::vector<uint8_t> buf;
       int avail = SDL_AudioStreamAvailable(stream);
       if (avail <= 0)
@@ -142,6 +161,34 @@ struct AudioOut
    Uint32 queued() const { return dev ? SDL_GetQueuedAudioSize(dev) : 0; }
    void clear() { if (dev) SDL_ClearQueuedAudio(dev); if (stream) SDL_AudioStreamClear(stream); }
 };
+
+static bool write_wav(const std::string &path, const std::vector<int16_t> &samples, int rate)
+{
+   FILE *f = px_fopen(path.c_str(), "wb");
+   if (!f)
+      return false;
+   uint32_t data_bytes = (uint32_t)(samples.size() * sizeof(int16_t));
+   uint32_t file_bytes = data_bytes + 36;
+   uint16_t channels = 2, bits_per_sample = 16, block_align = 4;
+   uint32_t byte_rate = (uint32_t)(rate * block_align);
+
+   fwrite("RIFF", 1, 4, f);
+   fwrite(&file_bytes, 4, 1, f);
+   fwrite("WAVEfmt ", 1, 8, f);
+   uint32_t fmt_chunk_size = 16;
+   uint16_t format_tag = 1;
+   fwrite(&fmt_chunk_size, 4, 1, f);
+   fwrite(&format_tag, 2, 1, f);
+   fwrite(&channels, 2, 1, f);
+   fwrite(&rate, 4, 1, f);
+   fwrite(&byte_rate, 4, 1, f);
+   fwrite(&block_align, 2, 1, f);
+   fwrite(&bits_per_sample, 2, 1, f);
+   fwrite("data", 1, 4, f);
+   fwrite(&data_bytes, 4, 1, f);
+   fwrite(samples.data(), 2, samples.size(), f);
+   return fclose(f) == 0;
+}
 
 // ---------------------------------------------------------------------------
 // Songs and the profile being edited
@@ -819,8 +866,8 @@ static void ui_setup(App &a)
 
    ImGui::SeparatorText("Controls");
    ImGui::TextWrapped("Arrows: D-pad   X: A   Z: B   S: X   A: Y   Q/W: L/R   Enter: Start   Right Shift: Select\n"
-         "P: pause   Tab: fast forward   F2/F4: save/load quick state\n"
-         "M: music changed   N: music is the same   (a controller works too)");
+         "P: pause   F1: reset   Tab: fast forward   F2/F4: save/load quick state\n"
+         "M: music changed   N: music is the same   (drag & drop ROMs, controller supported)");
 }
 
 static void ui_finder(App &a)
@@ -923,7 +970,7 @@ static void ui_songs(App &a)
             ImVec2(0, ImGui::GetContentRegionAvail().y)))
       return;
    ImGui::TableSetupScrollFreeze(0, 1);
-   ImGui::TableSetupColumn("Song", ImGuiTableColumnFlags_WidthFixed, 150);
+   ImGui::TableSetupColumn("Song", ImGuiTableColumnFlags_WidthFixed, 200);
    ImGui::TableSetupColumn("Heard at", ImGuiTableColumnFlags_WidthFixed, 110);
    ImGui::TableSetupColumn("Replacement", ImGuiTableColumnFlags_WidthStretch);
    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 30);
@@ -945,6 +992,28 @@ static void ui_songs(App &a)
       ImGui::BeginDisabled(s.clip.empty());
       if (ImGui::SmallButton(s.recording ? "recording..." : "Play original"))
          play_clip(a, s.clip, s.clip_rate);
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Re-record"))
+      {
+         s.clip.clear();
+         s.clip_rate = a.core.sample_rate();
+         s.recording = true;
+         make_thumb(a, s);
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(s.clip.empty());
+      if (ImGui::SmallButton("Save WAV"))
+      {
+         std::string dir = app_data_dir() + "\\clips";
+         make_dirs(dir);
+         std::string out = dir + "\\" + content_name(a) + "_" + hex(s.value) + ".wav";
+         if (write_wav(out, s.clip, (int)s.clip_rate))
+            a.status = "Saved " + out;
+         else
+            a.status = "Failed to write " + out;
+         app_log(a, a.status);
+      }
       ImGui::EndDisabled();
 
       ImGui::TableNextColumn();
@@ -1186,15 +1255,49 @@ static void draw_ui(App &a)
    ImGui::BeginChild("game", ImVec2(left_w, avail_h), ImGuiChildFlags_Borders);
    if (a.game_tex)
    {
+      float bar_h = ImGui::GetFrameHeightWithSpacing();
       ImVec2 avail = ImGui::GetContentRegionAvail();
+      avail.y = std::max(10.0f, avail.y - bar_h - 4.0f);
       float aspect = (float)a.core.aspect();
       float w = avail.x, h = w / aspect;
       if (h > avail.y) { h = avail.y; w = h * aspect; }
       ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + (avail.x - w) / 2, ImGui::GetCursorPosY() + (avail.y - h) / 2));
       ImGui::Image((ImTextureID)(intptr_t)a.game_tex, ImVec2(w, h));
+
+      ImGui::SetCursorPos(ImVec2(8, ImGui::GetWindowHeight() - bar_h - 4));
+      if (ImGui::Button(a.paused ? "Resume (P)" : "Pause (P)"))
+      {
+         a.paused = !a.paused;
+         a.audio.clear();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Reset (F1)"))
+      {
+         a.core.reset();
+         a.status = "Game reset";
+         a.audio.clear();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Save (F2)"))
+      {
+         a.quick_state = a.core.save_state();
+         a.status = a.quick_state.empty() ? "Save state failed" : "State saved";
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(a.quick_state.empty());
+      if (ImGui::Button("Load (F4)"))
+      {
+         if (a.core.load_state(a.quick_state)) { a.status = "State loaded"; a.have_current = false; a.audio.clear(); }
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(90);
+      ImGui::SliderInt("##vol", &a.audio.volume, 0, 100, "%d%%");
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("Master volume");
    }
    else
-      ImGui::TextDisabled("Choose a core and a ROM in the Setup tab, then Start game.");
+      ImGui::TextDisabled("Choose a core and a ROM in the Setup tab, then Start game.\nYou can also drag and drop a ROM file here.");
    ImGui::EndChild();
 
    ImGui::SameLine();
@@ -1270,6 +1373,9 @@ static void handle_key(App &a, SDL_Keycode key)
 {
    switch (key)
    {
+      case SDLK_F1:
+         if (a.core.loaded()) { a.core.reset(); a.status = "Game reset"; a.audio.clear(); }
+         break;
       case SDLK_m: if (a.core.loaded()) { a.finder.mark_changed(); a.status = "Marked: music changed"; } break;
       case SDLK_n: if (a.core.loaded()) { a.finder.mark_same(); a.status = "Marked: music is the same"; } break;
       case SDLK_p: a.paused = !a.paused; a.audio.clear(); break;
@@ -1341,6 +1447,27 @@ int main(int argc, char **argv)
             handle_key(a, ev.key.keysym.sym);
          else if (ev.type == SDL_CONTROLLERDEVICEADDED && !a.controller)
             a.controller = SDL_GameControllerOpen(ev.cdevice.which);
+         else if (ev.type == SDL_CONTROLLERDEVICEREMOVED)
+         {
+            if (a.controller && SDL_GameControllerFromInstanceID(ev.cdevice.which) == a.controller)
+            {
+               SDL_GameControllerClose(a.controller);
+               a.controller = nullptr;
+            }
+         }
+         else if (ev.type == SDL_DROPFILE)
+         {
+            char *dropped = ev.drop.file;
+            if (dropped)
+            {
+               a.settings.rom_path = dropped;
+               SDL_free(dropped);
+               if (!a.settings.core_file.empty())
+                  load_game(a);
+               else
+                  a.status = "ROM selected; choose a core in Setup and start game.";
+            }
+         }
       }
 
       // Games only get input when no text field has the keyboard.
@@ -1395,6 +1522,13 @@ int main(int argc, char **argv)
    stop_preview(a);
    a.core.unload();
    save_settings(a.settings);
+   if (a.game_tex)
+      SDL_DestroyTexture(a.game_tex);
+   for (auto &s : a.songs)
+      if (s.thumb)
+         SDL_DestroyTexture(s.thumb);
+   if (a.controller)
+      SDL_GameControllerClose(a.controller);
    ImGui_ImplSDLRenderer2_Shutdown();
    ImGui_ImplSDL2_Shutdown();
    ImGui::DestroyContext();
