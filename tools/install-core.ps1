@@ -30,8 +30,11 @@ Write-Output "installed $target"
 $innerInfo = Join-Path $InfoDir "${Core}_libretro.info"
 if (Test-Path $innerInfo) {
     # Reuse the inner core's metadata (extensions, firmware, database) under a new name.
+    # "Nintendo - SNES / SFC (Snes9x)" -> "Nintendo - SNES / SFC (Proteus Retune + Snes9x)"
     $lines = Get-Content -LiteralPath $innerInfo -Encoding UTF8 | ForEach-Object {
-        if ($_ -match '^\s*(display_name|corename)\s*=\s*"(.*)"\s*$') {
+        if ($_ -match '^\s*display_name\s*=\s*"(.*)\((.+)\)"\s*$') {
+            "display_name = `"$($Matches[1])(Proteus Retune + $($Matches[2]))`""
+        } elseif ($_ -match '^\s*(display_name|corename)\s*=\s*"(.*)"\s*$') {
             "$($Matches[1]) = `"Proteus Retune ($($Matches[2]))`""
         } else { $_ }
     }

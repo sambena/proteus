@@ -4,6 +4,8 @@
  *
  *   harness gen <dir>                           write the test music files
  *   harness run <core> <test dir> <out.wav>     run the scenarios
+ *   harness probe <core> <rom> <system dir> <frames> <out.wav> [ram offsets...]
+ *                                               run a real game, list options, watch RAM
  */
 #include <math.h>
 #include <stdarg.h>
@@ -27,7 +29,7 @@
 
 #define RATE      32000.0
 #define FPS       60.0
-#define MAX_OPTS  64
+#define MAX_OPTS  256
 #define MAX_FRAME 4096
 
 static struct
@@ -47,6 +49,8 @@ static struct
    bool (*unserialize)(const void*, size_t);
    bool (*load_game)(const struct retro_game_info*);
    void (*unload_game)(void);
+   void *(*get_memory_data)(unsigned);
+   size_t (*get_memory_size)(unsigned);
 } core;
 
 /* Core options as the frontend sees them. */
@@ -221,13 +225,18 @@ static bool open_core(const char *path)
    GET(unserialize, "retro_unserialize");
    GET(load_game, "retro_load_game");
    GET(unload_game, "retro_unload_game");
+   GET(get_memory_data, "retro_get_memory_data");
+   GET(get_memory_size, "retro_get_memory_size");
 #undef GET
    return true;
 }
 
+static void *content_data;
+
 static bool start_session(const char *content, unsigned version)
 {
    struct retro_game_info game = { content, NULL, 0, NULL };
+   struct retro_system_info info;
    opt_count       = 0;
    options_version = version;
    options_updated = false;
@@ -239,6 +248,25 @@ static bool start_session(const char *content, unsigned version)
    core.set_input_state(input_cb);
    core.init();
    audio_frames = 0;
+
+   /* Cores that don't need a path get the ROM in memory, as RetroArch does. */
+   core.get_system_info(&info);
+   if (!info.need_fullpath)
+   {
+      FILE *f = fopen(content, "rb");
+      long size = 0;
+      free(content_data);
+      content_data = NULL;
+      if (f && fseek(f, 0, SEEK_END) == 0 && (size = ftell(f)) > 0 && fseek(f, 0, SEEK_SET) == 0
+            && (content_data = malloc((size_t)size)) && fread(content_data, 1, (size_t)size, f) == (size_t)size)
+      {
+         game.data = content_data;
+         game.size = (size_t)size;
+      }
+      if (f)
+         fclose(f);
+   }
+
    if (!core.load_game(&game))
    {
       printf("load_game failed for %s\n", content);
@@ -430,6 +458,75 @@ static int gen(const char *dir)
 
 #define VGM_HZ (3579545.0 / (32.0 * 224.0))
 
+static int probe(int argc, char **argv)
+{
+   unsigned frames = (unsigned)strtoul(argv[5], NULL, 0);
+   unsigned watch_count = (unsigned)(argc - 7);
+   uint32_t watch[16];
+   int last[16];
+   unsigned proteus_opts = 0;
+   double rms = 0.0;
+   struct retro_system_info info;
+
+   system_dir = argv[4];
+   if (watch_count > 16)
+      watch_count = 16;
+   for (unsigned i = 0; i < watch_count; i++)
+   {
+      watch[i] = (uint32_t)strtoul(argv[7 + i], NULL, 16);
+      last[i]  = -1;
+   }
+   if (!open_core(argv[2]))
+      return 1;
+   core.get_system_info(&info);
+   printf("core: %s %s\n", info.library_name, info.library_version);
+   if (!start_session(argv[3], 2))
+      return 1;
+
+   for (unsigned i = 0; i < opt_count; i++)
+   {
+      if (strncmp(opts[i].key, "proteus_", 8))
+         continue;
+      proteus_opts++;
+      printf("  option %-28s = %-10s values: %.120s\n", opts[i].key, opts[i].value, opts[i].values);
+   }
+   printf("options: %u total, %u from Proteus\n", opt_count, proteus_opts);
+
+   for (unsigned f = 0; f < frames; f++)
+   {
+      const uint8_t *ram = core.get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+      size_t ram_size    = core.get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+      size_t before      = audio_frames;
+      if (f < MAX_FRAME)
+         frame_offsets[f] = before;
+      core.run();
+      for (unsigned i = 0; ram && i < watch_count; i++)
+      {
+         if (watch[i] < ram_size && ram[watch[i]] != last[i])
+         {
+            printf("  frame %5u  ram[0x%04X] = 0x%02X\n", f, (unsigned)watch[i], ram[watch[i]]);
+            last[i] = ram[watch[i]];
+         }
+      }
+      for (size_t s = before; s < audio_frames; s++)
+         rms += (double)audio[s * 2] * audio[s * 2];
+      if ((f + 1) % 60 == 0)
+      {
+         printf("  second %3u rms %6.0f\n", (f + 1) / 60, sqrt(rms / 32040.0));
+         rms = 0.0;
+      }
+   }
+   if (frames < MAX_FRAME)
+      frame_offsets[frames] = audio_frames;
+   /* Tone levels over half-second windows, for checking generated test tracks. */
+   for (unsigned f = 0; f + 30 <= frames && f + 30 < MAX_FRAME; f += 300)
+      printf("  frames %4u-%4u  220 Hz %6.0f  750 Hz %6.0f\n", f, f + 30,
+            tone_level(f, f + 30, 220.0), tone_level(f, f + 30, 750.0));
+   write_wav(argv[6], audio, audio_frames, 32040);
+   end_session();
+   return 0;
+}
+
 int main(int argc, char **argv)
 {
    char content[512];
@@ -440,6 +537,8 @@ int main(int argc, char **argv)
    setvbuf(stdout, NULL, _IONBF, 0);
    if (argc == 3 && !strcmp(argv[1], "gen"))
       return gen(argv[2]);
+   if (argc >= 7 && !strcmp(argv[1], "probe"))
+      return probe(argc, argv);
    if (argc != 5 || strcmp(argv[1], "run"))
    {
       fprintf(stderr, "usage: harness gen <dir> | harness run <core> <test dir> <out.wav>\n");
