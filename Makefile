@@ -112,15 +112,15 @@ $(TESTDIR)/harness$(EXE): test/harness.c | $(TESTDIR)
 $(TESTDIR)/proteus_testcore_libretro.$(EXT): $(CORE) | $(TESTDIR)
 	cp $< $@
 
-$(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini
+$(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini test/latch.proteus.ini
 	$(TESTDIR)/harness$(EXE) gen $(TESTDIR)
 	sox $(TESTDIR)/tone_330.wav $(TESTDIR)/tone_330.ogg
 	sox $(TESTDIR)/tone_550.wav $(TESTDIR)/tone_550.mp3
 	rm $(TESTDIR)/tone_330.wav $(TESTDIR)/tone_550.wav
 	gzip -9 -n -f $(TESTDIR)/tone_500.vgm
 	mv $(TESTDIR)/tone_500.vgm.gz $(TESTDIR)/tone_500.vgz
-	cp test/game.proteus.ini $(TESTDIR)/
-	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $@
+	cp test/game.proteus.ini test/latch.proteus.ini $(TESTDIR)/
+	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $(TESTDIR)/latch.tst $@
 
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP)

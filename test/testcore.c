@@ -16,6 +16,7 @@
 #define FPS      60.0
 #define RAM_SIZE 0x100
 #define SONG_ADDR 0x42
+#define CMD_ADDR  0x43
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -124,7 +125,15 @@ RETRO_API void retro_run(void)
       check_variables();
 
    poll_cb();
-   s.ram[SONG_ADDR] = testcore_song_for_frame(s.frame);
+   uint8_t curr = testcore_song_for_frame(s.frame);
+   uint8_t prev1 = s.frame >= 1 ? testcore_song_for_frame(s.frame - 1) : 0;
+   uint8_t prev2 = s.frame >= 2 ? testcore_song_for_frame(s.frame - 2) : 0;
+   s.ram[SONG_ADDR] = curr;
+   /* Command register pulses the new song ID for 2 frames when it changes, then resets to 0. */
+   if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2))
+      s.ram[CMD_ADDR] = curr;
+   else
+      s.ram[CMD_ADDR] = 0;
 
    s.sample_debt += RATE / FPS;
    frames = (size_t)s.sample_debt;

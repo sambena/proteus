@@ -60,6 +60,7 @@ public:
    const std::string &library_name() const { return library_name_; }
    // Content path in RetroArch's form: "dir/archive.zip#game.sfc" for archives.
    const std::string &content_path() const { return content_path_; }
+   const std::vector<uint8_t> &content_data() const { return content_data_; }
 
    const uint8_t *memory(unsigned id, size_t *size) const;
    uint8_t *memory_mut(unsigned id, size_t *size);

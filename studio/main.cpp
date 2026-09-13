@@ -16,6 +16,7 @@
 
 #include "core_host.h"
 #include "platform.h"
+#include "presets.h"
 #include "song_finder.h"
 
 extern "C" {
@@ -309,6 +310,10 @@ struct App
    // Clip playback pauses the game.
    bool clip_playing = false;
    bool was_paused = false;
+
+   const RomPreset *detected_preset = nullptr;
+   std::string detected_header_title;
+   std::string detected_platform;
 };
 
 static App *g_app = nullptr;
@@ -371,6 +376,31 @@ static Song &add_song(App &a, uint32_t value)
    std::sort(a.songs.begin(), a.songs.end(), [](const Song &x, const Song &y) { return x.value < y.value; });
    a.preview_dirty = true;
    return *find_song(a, value);
+}
+
+static void apply_rom_preset(App &a, const RomPreset &p)
+{
+   a.profile.address = p.address;
+   a.profile.have_address = true;
+   a.profile.memory = p.memory;
+   a.profile.size = p.size;
+   a.profile.latch = p.latch;
+   a.profile.debounce = p.debounce;
+   a.have_current = false;
+   for (const auto &ks : p.songs)
+   {
+      Song *s = find_song(a, ks.value);
+      if (!s)
+      {
+         Song &new_s = add_song(a, ks.value);
+         snprintf(new_s.name, sizeof(new_s.name), "%s", ks.title.c_str());
+      }
+      else if (s->name[0] == '\0')
+      {
+         snprintf(s->name, sizeof(s->name), "%s", ks.title.c_str());
+      }
+   }
+   a.status = "Applied preset: " + p.name + " (" + hex(p.address, 4) + (p.latch ? ", latch" : "") + ")";
 }
 
 // ---------------------------------------------------------------------------
@@ -628,11 +658,18 @@ static void load_game(App &a)
    a.core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
    a.finder.reset(size);
 
+   a.detected_header_title = detect_rom_header_title(a.core.content_data().data(), a.core.content_data().size(), a.detected_platform);
+   a.detected_preset = detect_preset(a.core.content_data().data(), a.core.content_data().size(), a.settings.rom_path);
+
    char found[2048];
    if (px_engine_find_profile(a.core.content_path().c_str(), system_dir(a).c_str(), found, sizeof(found)))
       load_profile_into_ui(a, found);
    else
+   {
       a.profile.path = system_dir(a) + "\\proteus\\" + content_name(a) + ".ini";
+      if (a.detected_preset)
+         a.status = "Preset detected: " + a.detected_preset->name + " (" + a.detected_preset->system + ") - 1-click setup available!";
+   }
 }
 
 static uint32_t read_address(App &a, uint32_t address, int size, bool *ok)
@@ -1032,6 +1069,22 @@ static void ui_setup(App &a)
       load_game(a);
    ImGui::EndDisabled();
 
+   if (a.detected_preset)
+   {
+      ImGui::Spacing();
+      ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.2f, 0.7f, 0.3f, 0.8f));
+      ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+      ImGui::BeginChild("setup_preset_banner", ImVec2(0, 68), true);
+      ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "Preset Detected: %s (%s)",
+                         a.detected_preset->name.c_str(), a.detected_preset->system.c_str());
+      ImGui::TextDisabled("%s", a.detected_preset->description.c_str());
+      if (ImGui::Button(("Apply " + a.detected_preset->name + " Preset (1-Click Setup)").c_str()))
+         apply_rom_preset(a, *a.detected_preset);
+      ImGui::EndChild();
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor();
+   }
+
    ImGui::SeparatorText("Controls");
    ImGui::TextWrapped("Arrows: D-pad   X: A   Z: B   S: X   A: Y   Q/W: L/R   Enter: Start   Right Shift: Select\n"
          "P: pause   F1: reset   Tab: fast forward   F2/F4: save/load quick state\n"
@@ -1040,6 +1093,36 @@ static void ui_setup(App &a)
 
 static void ui_finder(App &a)
 {
+   if (ImGui::CollapsingHeader("ROM Presets (Instant 1-Click Setup)", ImGuiTreeNodeFlags_DefaultOpen))
+   {
+      if (a.detected_preset)
+      {
+         ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "Preset Detected: %s (%s)",
+                            a.detected_preset->name.c_str(), a.detected_preset->system.c_str());
+         ImGui::TextDisabled("%s", a.detected_preset->description.c_str());
+         if (ImGui::Button(("Apply " + a.detected_preset->name + " Preset (1-Click)").c_str(), ImVec2(280, 0)))
+            apply_rom_preset(a, *a.detected_preset);
+      }
+      else
+      {
+         ImGui::TextWrapped("Select a game from the built-in preset library to automatically configure song address, "
+                            "command register latching, and known song names, or run Auto-Probe below.");
+      }
+
+      ImGui::SetNextItemWidth(300);
+      if (ImGui::BeginCombo("##preset_picker", "Choose from preset database..."))
+      {
+         for (const auto &p : get_rom_presets())
+         {
+            std::string label = p.name + " (" + p.system + ") - " + hex(p.address, 4);
+            if (ImGui::Selectable(label.c_str()))
+               apply_rom_preset(a, p);
+         }
+         ImGui::EndCombo();
+      }
+      ImGui::Spacing();
+   }
+
    if (ImGui::CollapsingHeader("Auto-Probe RAM (Fast Register Discovery)", ImGuiTreeNodeFlags_DefaultOpen))
    {
       ImGui::TextWrapped("Pokes RAM addresses from a save state to detect which ones trigger music or sound effects. "
