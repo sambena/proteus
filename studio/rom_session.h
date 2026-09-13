@@ -141,7 +141,7 @@ private:
    void add_song_locked(FoundSong song);
    std::string library_dir() const;
    void load_library();
-   void save_library();
+   void save_library(const SongAddress *numbering = nullptr);
    void log(const std::string &line);
 
    bool open_ = false;

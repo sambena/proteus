@@ -323,12 +323,37 @@ std::string RomSession::library_dir() const
    return app_data_dir() + "\\library\\" + sanitize_filename(game_name_);
 }
 
-void RomSession::save_library()
+// The song numbers belong to one song address; the library records which, so a
+// game reopened later is followed by the address its songs were numbered by.
+static const char kNumberingPrefix[] = "# numbering ";
+
+void RomSession::save_library(const SongAddress *numbering)
 {
    std::string dir = library_dir();
    make_dirs(dir);
+   std::string numbering_line;
+   if (!numbering && !scanning_)
+      numbering = &address;
+   if (numbering && numbering->known)
+   {
+      char buf[128];
+      snprintf(buf, sizeof(buf), "%s%d %u %d %d %d", kNumberingPrefix, numbering->memory,
+            (unsigned)numbering->address, numbering->size, numbering->latch ? 1 : 0, numbering->debounce);
+      numbering_line = buf;
+   }
+   else
+   {
+      // Keep what the file says (a scan is running and owns the numbering).
+      std::string old = read_text(dir + "\\songs.txt");
+      size_t at = old.find(kNumberingPrefix);
+      if (at != std::string::npos)
+         numbering_line = old.substr(at, old.find('\n', at) - at);
+   }
    std::ostringstream out;
-   out << kLibraryHeader << "\n# value\thas_value\tkind\tfile\ttitle\tloudness tail count envelope... brightness...\n";
+   out << kLibraryHeader << "\n";
+   if (!numbering_line.empty())
+      out << numbering_line << "\n";
+   out << "# value\thas_value\tkind\tfile\ttitle\tloudness tail count envelope... brightness...\n";
    std::lock_guard<std::mutex> lock(songs_mutex);
    for (const auto &s : songs)
    {
@@ -356,6 +381,25 @@ void RomSession::load_library()
    songs.clear();
    while (std::getline(in, line))
    {
+      if (line.compare(0, strlen(kNumberingPrefix), kNumberingPrefix) == 0)
+      {
+         int memory = 0, size = 1, latch = 0, debounce = 2;
+         unsigned addr = 0;
+         if (sscanf(line.c_str() + strlen(kNumberingPrefix), "%d %u %d %d %d", &memory, &addr, &size, &latch, &debounce) == 5 &&
+               memory >= 0 && memory < 3 && (!address.known || address.address != addr || address.memory != memory))
+         {
+            log("songs were numbered by $" + hex4(addr) + (address.known ? ", not the profile's $" + hex4(address.address) : "") +
+                  "; following $" + hex4(addr));
+            address.known = true;
+            address.source = "song library";
+            address.memory = memory;
+            address.address = addr;
+            address.size = size;
+            address.latch = latch != 0;
+            address.debounce = debounce;
+         }
+         continue;
+      }
       if (line.empty() || line[0] == '#')
          continue;
       if (line.back() == '\r')
@@ -821,12 +865,48 @@ void RomSession::scan_thread(int first, int last)
       return;
    }
 
+   // Songs must be numbered the way Proteus will see them in the game. If the song
+   // address follows the command, number them by the song address; if it does not
+   // (Super Mario World's $0DDA ignores writes to $1DFB), the command's song byte
+   // becomes the song address, followed as a command register.
+   ScanCommand cmd = scan_command(scan_addr_);
+   uint32_t song_byte = cmd.address + (cmd.bytes.empty() ? 0 : (uint32_t)cmd.offset);
    core.load_state(scan_state_);
    run_settle();
-   bool follow = scan_addr_.known && read_song_value(scan_addr_, baseline_value);
-   ScanCommand cmd = scan_command(scan_addr_);
-   if (follow && cmd.bytes.empty() && cmd.address == scan_addr_.address)
-      follow = false;
+   bool follow = false;
+   if (scan_addr_.known && scan_addr_.address != song_byte && read_song_value(scan_addr_, baseline_value))
+   {
+      static const uint32_t kTrials[] = { 1, 2, 3, 5, 8, 13 };
+      int tried = 0, changed = 0;
+      for (uint32_t v : kTrials)
+      {
+         core.load_state(scan_state_);
+         if (!write_command(cmd, v))
+            break;
+         run_settle();
+         uint32_t now = 0;
+         if (read_song_value(scan_addr_, now))
+         {
+            tried++;
+            changed += now != baseline_value;
+         }
+      }
+      follow = tried > 0 && changed * 2 > tried;
+   }
+   if (!follow && (!scan_addr_.known || scan_addr_.address != song_byte))
+   {
+      if (scan_addr_.known)
+         log("the song address $" + hex4(scan_addr_.address) + " does not change when songs are started, so songs "
+             "are numbered by the music command and profiles will follow $" + hex4(song_byte) + " instead");
+      scan_addr_.known = true;
+      scan_addr_.source = "music command";
+      scan_addr_.memory = cmd.memory;
+      scan_addr_.address = song_byte;
+      scan_addr_.size = cmd.bytes.empty() ? cmd.size : 1;
+      scan_addr_.latch = true;
+      scan_addr_.debounce = 1;
+      scan_addr_changed_ = true;
+   }
 
    scan_total_ = std::max(1, last - first + 1);
    scan_done_ = 0;
@@ -876,7 +956,7 @@ void RomSession::scan_thread(int first, int last)
    core.set_skip_video(false);
    core_lock.unlock();
 
-   save_library();
+   save_library(&scan_addr_);
    std::string summary = (cancel_ ? "Scan stopped: " : "Scan finished: ") + std::to_string((int)scan_found_) + " new songs";
    if (scan_found_ == 0)
       summary += ". Songs loaded later in the game may need Scan from this moment (Advanced).";
