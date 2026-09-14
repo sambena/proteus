@@ -150,15 +150,18 @@ private:
    bool read_song_value(const SongAddress &a, uint32_t &value);
    void set_scan_message(const std::string &message);
    void run_frames(int frames);
-   void run_until_heard(int frames, std::vector<uint8_t> &onset);
+   // Returns the frame (from the start) of the onset, or -1.
+   int run_until_heard(int frames, std::vector<uint8_t> &onset);
    bool choose_song_address(const SongStart &s, bool &by_address);
    int start_score(const SongStart &s, const SongPrint *baseline);
    bool find_song_start(const SongPrint *baseline);
    bool choose_stub_area(const std::vector<uint8_t> &before);
    void add_song_locked(FoundSong song);
    // "same": titles of references that are versions of one song, the first one preferred;
-   // a match to any of them, or nearly as good as one, takes that name.
-   bool name_by_reference(FoundSong &song, const std::vector<uint8_t> *before,
+   // a match to any of them, or nearly as good as one, takes that name. "elapsed": frames the
+   // game ran from "before" to the rip, to tell a song that simply kept playing (the same music,
+   // that much later) from one started again; negative when unknown.
+   bool name_by_reference(FoundSong &song, const std::vector<uint8_t> *before, int elapsed,
          const std::vector<std::string> &same = std::vector<std::string>());
    void load_references_async(bool download);
    std::vector<uint8_t> spc_of_state(const std::vector<uint8_t> &state);
@@ -175,6 +178,8 @@ private:
    bool refs_ready_ = false;
    ReferenceSet pending_refs_;
    std::vector<SongNotes> pending_notes_;
+   std::vector<uint8_t> before_notes_spc_;   // the sound CPU state before_notes_ measures
+   SongNotes before_notes_;
    SongTable pending_table_;
    std::string ref_message_;
    std::vector<uint8_t> scan_before_spc_;   // the sound CPU at the scan start state

@@ -15,7 +15,10 @@ struct SongNotes
    int frames = 0;
 };
 
-// Plays the first seconds of an .spc and measures its notes.
+// Plays the first 30 seconds of an .spc and measures its notes.
 bool spc_notes(const std::vector<uint8_t> &spc, SongNotes &notes, std::string &error);
-// 0 (the same notes) to 1, at the best shift of up to 2 seconds.
-double notes_distance(const SongNotes &a, const SongNotes &b);
+// 0 (the same notes) to 1, at the best alignment of the two (any shift within the 30 seconds).
+// `shift` receives that alignment: a's frame i lines up with b's frame i + shift.
+double notes_distance(const SongNotes &a, const SongNotes &b, int *shift = nullptr);
+// Seconds per notes frame.
+double notes_frame_seconds();

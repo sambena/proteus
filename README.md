@@ -150,9 +150,13 @@ one song holds counts for much.
 
 Some sound drivers (Super Mario World's) load a whole group of songs at once and start one by moving a
 pointer, so little memory tells those songs apart. Studio also listens: it measures how strongly each of
-the 12 notes sounds over a song's first seconds. A weak memory match is kept only when the rip's notes
-rank that song among their closest three, and a rip no memory matches is named when its notes clearly
-match one reference. A scan names each song after its reference and uses the reference's
+the 12 notes sounds over a song's first 30 seconds, and lines the rip up with each reference wherever
+they match best (sets are often dumped seconds into a song). A weak memory match is kept only when the
+rip's notes rank that song among their closest three, and a rip no memory matches is named when its
+notes match one reference almost exactly, well ahead of any other song. A rip that is the music already
+playing, exactly as far along as the time that passed, changed nothing and is not named; the same song
+started over lines up differently and is. Super Mario World's overworld songs are named this way.
+A scan names each song after its reference and uses the reference's
 `.spc`, which plays the song from its start. Songs that match no reference are marked **no match**.
 
 **Song tables.** Many games keep their songs uncompressed in the ROM, with a table of pointers to them.

@@ -685,7 +685,7 @@ void RomSession::list_reference_songs()
 
 // Names a rip after the reference song it matches and keeps the reference's .spc, which
 // plays the song from its start. False when no reference matches.
-bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *before,
+bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *before, int elapsed,
       const std::vector<std::string> &same)
 {
    if (references.empty())
@@ -696,13 +696,33 @@ bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *
    // Some drivers load a whole group of songs at once and start one by moving a pointer, so
    // little memory tells those songs apart. A weak memory match must also sound like its
    // song; without a memory match, a song whose notes clearly match one reference is it.
-   const double kStrongMemory = 4.0, kNotesMatch = 0.1, kNotesLead = 0.02;
+   const double kStrongMemory = 4.0, kNotesMatch = 0.03, kNotesLead = 0.03;
    if ((m.index < 0 || m.score < kStrongMemory) && reference_notes.size() == references.size())
    {
       SongNotes notes;
       std::string err;
       if (!spc_notes(rip, notes, err))
          return false;
+      // What was playing before, still playing exactly as far along as the time that passed:
+      // the number changed nothing. The same song started over lines up elsewhere.
+      if (before)
+      {
+         if (before_notes_spc_ != *before)
+         {
+            before_notes_spc_ = *before;
+            if (!spc_notes(*before, before_notes_, err))
+               before_notes_ = SongNotes();
+         }
+         int shift = 0;
+         if (notes_distance(notes, before_notes_, &shift) < kNotesMatch)
+         {
+            if (elapsed < 0)
+               return false;
+            double expected = elapsed / 60.0 / notes_frame_seconds();
+            if (std::fabs(shift - expected) <= 4)
+               return false;
+         }
+      }
       std::vector<std::pair<double, int>> ranked;
       for (size_t i = 0; i < references.size(); i++)
          ranked.push_back({ notes_distance(notes, reference_notes[i]), (int)i });
@@ -1088,8 +1108,9 @@ void RomSession::run_frames(int frames)
 
 // Runs `frames` frames. When the game falls silent and then sound starts (a song loading,
 // then playing), `onset` receives the state at its first sound.
-void RomSession::run_until_heard(int frames, std::vector<uint8_t> &onset)
+int RomSession::run_until_heard(int frames, std::vector<uint8_t> &onset)
 {
+   int onset_frame = -1;
    onset.clear();
    int quiet = 0;
    for (int f = 0; f < frames; f++)
@@ -1106,10 +1127,14 @@ void RomSession::run_until_heard(int frames, std::vector<uint8_t> &onset)
       else
       {
          if (quiet >= 6)
+         {
             onset = core.save_state();
+            onset_frame = f + 1;
+         }
          quiet = 0;
       }
    }
+   return onset_frame;
 }
 
 // Finds the RAM the game keeps its song number in, by starting a few songs and reading
@@ -1262,7 +1287,7 @@ int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
       if (!rip_state(core.save_state(), v, true, song, err))
          continue;
       // A song from the reference set is certainly a song.
-      if (name_by_reference(song, scan_before_spc_.empty() ? nullptr : &scan_before_spc_))
+      if (name_by_reference(song, scan_before_spc_.empty() ? nullptr : &scan_before_spc_, s.settle_frames))
       {
          if (std::find(named.begin(), named.end(), song.reference) == named.end())
          {
@@ -1678,7 +1703,7 @@ void RomSession::scan_thread(int first, int last)
          break;
       }
       std::vector<uint8_t> onset;
-      run_until_heard(s.settle_frames, onset);
+      int onset_frame = run_until_heard(s.settle_frames, onset);
 
       uint32_t key = (uint32_t)v, now = 0;
       if (by_address && read_song_value(scan_address_, now))
@@ -1703,7 +1728,8 @@ void RomSession::scan_thread(int first, int last)
          if (!same.empty() && song_table.found && key < song_table.versions.size())
             for (int r : song_table.versions[key])
                same.push_back(references.song(r).title);
-         if (name_by_reference(song, scan_before_spc_.empty() ? nullptr : &scan_before_spc_, same))
+         if (name_by_reference(song, scan_before_spc_.empty() ? nullptr : &scan_before_spc_,
+                  onset.empty() ? s.settle_frames : onset_frame, same))
          {
             // Every number of a reference song is kept: the game may play it under several.
             std::lock_guard<std::mutex> lock(songs_mutex);
@@ -1827,7 +1853,8 @@ bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, 
       return false;
    }
    std::vector<uint8_t> before = spc_of_state(command_state_);
-   bool named = name_by_reference(song, before.empty() ? nullptr : &before);
+   // Live rips follow a song change the game made itself.
+   bool named = name_by_reference(song, before.empty() ? nullptr : &before, -1);
    {
       std::lock_guard<std::mutex> lock(songs_mutex);
       for (const auto &s : songs)

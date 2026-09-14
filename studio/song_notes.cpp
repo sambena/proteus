@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "song_notes.h"
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
 #include "gme.h"
 
 static const int kRate = 32000;
-static const int kSeconds = 10;
+static const int kSeconds = 30;
 static const int kFft = 4096;      // 128 ms: separates semitones down to about 100 Hz
 static const int kHop = 1600;      // 50 ms per frame
-static const int kMaxShift = 40;   // frames: 2 seconds
+static const int kProbe = 60;      // frames: 3 seconds of the rip, slid along the reference
+static const int kMinOverlap = 200; // frames: 10 seconds compared at the chosen alignment
 
 static void fft(std::vector<std::complex<double>> &a)
 {
@@ -101,33 +103,79 @@ bool spc_notes(const std::vector<uint8_t> &spc, SongNotes &notes, std::string &e
    return true;
 }
 
-double notes_distance(const SongNotes &a, const SongNotes &b)
+// Mean of (1 - similarity) over frames i of a against i + shift of b; frames silent in both
+// are skipped, and silence against sound counts as fully different.
+static double aligned_distance(const SongNotes &a, int from, int to, const SongNotes &b, int shift, int *counted_out)
 {
-   double best = 1.0;
-   for (int shift = -kMaxShift; shift <= kMaxShift; shift++)
+   double sum = 0;
+   int counted = 0;
+   for (int i = std::max(from, -shift); i < to && i + shift < b.frames; i++)
    {
-      double sum = 0;
-      int counted = 0;
-      for (int i = 0; i < a.frames; i++)
+      const float *x = &a.chroma[12 * i], *y = &b.chroma[12 * (i + shift)];
+      double dot = 0, nx = 0, ny = 0;
+      for (int k = 0; k < 12; k++)
       {
-         int j = i + shift;
-         if (j < 0 || j >= b.frames)
-            continue;
-         const float *x = &a.chroma[12 * i], *y = &b.chroma[12 * j];
-         double dot = 0, nx = 0, ny = 0;
-         for (int k = 0; k < 12; k++)
-         {
-            dot += x[k] * y[k];
-            nx += x[k] * x[k];
-            ny += y[k] * y[k];
-         }
-         if (nx < 0.5 && ny < 0.5)
-            continue;               // both silent
-         sum += 1.0 - dot;          // silent against sound counts as fully different
-         counted++;
+         dot += x[k] * y[k];
+         nx += x[k] * x[k];
+         ny += y[k] * y[k];
       }
-      if (counted >= a.frames / 2)
-         best = std::min(best, sum / counted);
+      if (nx < 0.5 && ny < 0.5)
+         continue;
+      sum += 1.0 - dot;
+      counted++;
+   }
+   *counted_out = counted;
+   return counted ? sum / counted : 1.0;
+}
+
+// References are often dumped seconds into their songs, or after an intro, so the two may be
+// many seconds apart. A few 3-second probes of the rip are slid along the whole reference; the
+// best alignment is then measured over everything the two share.
+double notes_frame_seconds()
+{
+   return (double)kHop / kRate;
+}
+
+double notes_distance(const SongNotes &a, const SongNotes &b, int *shift)
+{
+   if (shift)
+      *shift = 0;
+   if (a.frames < kProbe || b.frames < kProbe)
+      return 1.0;
+   double best = 1.0;
+   for (int probe = 20; probe + kProbe <= a.frames; probe += 140)
+   {
+      // A probe must have sound in most frames to say anything.
+      int loud = 0;
+      for (int i = probe; i < probe + kProbe; i++)
+      {
+         double n = 0;
+         for (int k = 0; k < 12; k++)
+            n += a.chroma[12 * i + k] * a.chroma[12 * i + k];
+         loud += n > 0.5;
+      }
+      if (loud < kProbe * 2 / 3)
+         continue;
+      int best_shift = 0, counted = 0;
+      double probe_best = 1.0;
+      for (int start = 0; start + kProbe <= b.frames; start++)
+      {
+         double d = aligned_distance(a, probe, probe + kProbe, b, start - probe, &counted);
+         if (counted >= kProbe / 2 && d < probe_best)
+         {
+            probe_best = d;
+            best_shift = start - probe;
+         }
+      }
+      if (probe_best >= 0.5)
+         continue;
+      double d = aligned_distance(a, 0, a.frames, b, best_shift, &counted);
+      if (counted >= std::min(kMinOverlap, a.frames / 2) && d < best)
+      {
+         best = d;
+         if (shift)
+            *shift = best_shift;
+      }
    }
    return best;
 }
