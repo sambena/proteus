@@ -25,10 +25,12 @@ param(
     [string] $CoresDir = (Join-Path $RetroArch 'cores'),
     [string] $InfoDir = (Join-Path $RetroArch 'info'),
     [string] $FiltersDir = (Join-Path $RetroArch 'filters\audio'),
-    [string] $Build = (Join-Path $PSScriptRoot '..\build')
+    [string] $Build
 )
 
 $ErrorActionPreference = 'Stop'
+# $PSScriptRoot is empty inside param() defaults on Windows PowerShell 5.1.
+if (-not $Build) { $Build = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\build' }
 if (-not $Core -and -not $Dsp) { throw 'Pass -Core <name>, -Dsp, or both.' }
 
 if ($Core) {
@@ -76,9 +78,10 @@ filter0 = proteus
 # <system folder>/proteus/<ROM name>.ini. Song changes and errors go to
 # <log folder>/proteus.log.
 #
-# The plugin cannot mute the core's own music channels. Set the channel
-# volumes to 0 under Quick Menu > Core Options and choose
-# Manage Core Options > Save Game Options.
+# The plugin cannot change the core's options while a game runs, so it saves
+# the profile's [mute] options as the game's core options
+# (config/<core>/<game>.opt); they apply from the next time the game is loaded.
+# Proteus Studio's Generate INI writes them before the first run.
 #
 # Folders are found from retroarch.cfg; override them here if needed:
 # proteus_system_dir = "C:\RetroArch\system"
