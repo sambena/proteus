@@ -2535,6 +2535,36 @@ void RomSession::movie_thread(std::string movie_path, bool show)
    log("playing " + file_name(movie_path) + " in BizHawk");
    MovieLearner learner(references);
    size_t heard = 0;
+   // A song joins the list as soon as it is heard, without a number; numbers come at the end.
+   auto list_song = [&](int r, bool has_value, uint8_t value) {
+      const ReferenceSong &ref = references.song(r);
+      FoundSong song;
+      song.has_value = has_value;
+      song.value = value;
+      if (!analyze_spc(ref.spc, song.print, err))
+         return false;
+      if (!classify(song.print, song.kind))
+         song.kind = SONG_JINGLE;
+      song.title = ref.title;
+      song.reference = ref.title;
+      song.spc_path.assign((const char *)ref.spc.data(), ref.spc.size());
+      std::lock_guard<std::mutex> lock(songs_mutex);
+      for (auto it = songs.begin(); it != songs.end();)
+      {
+         if (it->reference == ref.title && (!has_value || (it->has_value && it->value == value)))
+            return false;   // listed already
+         // The unnumbered entry gives way to the numbered one.
+         if (has_value && it->reference == ref.title && !it->has_value)
+         {
+            std::remove(it->spc_path.c_str());
+            it = songs.erase(it);
+         }
+         else
+            ++it;
+      }
+      add_song_locked(song);
+      return true;
+   };
    uint32_t last_frame = 0;
    auto last_change = std::chrono::steady_clock::now();
    bool stalled = false;
@@ -2555,7 +2585,11 @@ void RomSession::movie_thread(std::string movie_path, bool show)
          got = true;
          learner.add(d.data(), d.data() + 0x10000, d.size() - 0x10000);
          for (; heard < learner.heard().size(); heard++)
+         {
             log("heard \"" + references.song(learner.heard()[heard]).title + "\" at " + movie_time(frame) + " in the movie");
+            if (list_song(learner.heard()[heard], false, 0))
+               save_library();
+         }
          scan_found_ = (int)heard;
       }
       bool done = run.finished();
@@ -2629,30 +2663,12 @@ void RomSession::movie_thread(std::string movie_path, bool show)
       }
       outcome = std::to_string(learner.heard().size()) + " songs heard; the song address is $" + hex4(res.address) + ".";
    }
-   // The songs heard join the list, numbered when the address is known.
+   // With the song address known, the songs heard get their numbers.
    int added = 0;
    for (int r : learner.heard())
    {
-      const ReferenceSong &ref = references.song(r);
-      FoundSong song;
       auto v = res.found ? res.values.find(r) : res.values.end();
-      song.has_value = v != res.values.end();
-      song.value = song.has_value ? v->second : 0;
-      if (!analyze_spc(ref.spc, song.print, err))
-         continue;
-      if (!classify(song.print, song.kind))
-         song.kind = SONG_JINGLE;
-      song.title = ref.title;
-      song.reference = ref.title;
-      song.spc_path.assign((const char *)ref.spc.data(), ref.spc.size());
-      std::lock_guard<std::mutex> lock(songs_mutex);
-      bool listed = false;
-      for (const auto &s : songs)
-         listed = listed || (s.reference == ref.title && (!song.has_value || (s.has_value && s.value == song.value)));
-      if (listed)
-         continue;
-      add_song_locked(song);
-      added++;
+      added += v != res.values.end() ? list_song(r, true, v->second) : list_song(r, false, 0);
    }
    if (added)
       save_library();
