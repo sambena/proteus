@@ -17,6 +17,7 @@
 #include "backends/imgui_impl_sdlrenderer2.h"
 
 #include "audio_out.h"
+#include "folder_scan.h"
 #include "platform.h"
 #include "profile_export.h"
 #include "rom_session.h"
@@ -34,6 +35,7 @@ struct Settings
    std::string rom[2];
    float ui_scale = 1.0f;
    int volume = 80;
+   std::string scan_folder;
 };
 
 static std::string settings_path() { return app_data_dir() + "/studio.cfg"; }
@@ -60,6 +62,7 @@ static Settings load_settings()
       else if (k == "rom_b") s.rom[1] = v;
       else if (k == "ui_scale") s.ui_scale = std::clamp((float)atof(v.c_str()), 0.8f, 2.5f);
       else if (k == "volume") s.volume = std::clamp(atoi(v.c_str()), 0, 100);
+      else if (k == "scan_folder") s.scan_folder = v;
    }
    if (s.retroarch_dir.empty())
       for (const char *guess : { "D:\\RetroArch", "C:\\RetroArch-Win64", "C:\\RetroArch" })
@@ -73,7 +76,7 @@ static void save_settings(const Settings &s)
    snprintf(scale, sizeof(scale), "%.2f", s.ui_scale);
    write_text(settings_path(), "retroarch_dir=" + s.retroarch_dir + "\ncore=" + s.core_file +
          "\nrom_a=" + s.rom[0] + "\nrom_b=" + s.rom[1] + "\nui_scale=" + scale +
-         "\nvolume=" + std::to_string(s.volume) + "\n");
+         "\nvolume=" + std::to_string(s.volume) + "\nscan_folder=" + s.scan_folder + "\n");
 }
 
 // Reads `key = "value"` from retroarch.cfg, expanding RetroArch's ":" prefix.
@@ -107,7 +110,7 @@ static std::string retroarch_cfg(const std::string &ra, const std::string &key, 
 // ---------------------------------------------------------------------------
 
 enum { TARGET = 0, SOURCE = 1 };
-enum AdvancedTab { TAB_PLAY, TAB_FINDER, TAB_ADDRESS, TAB_CHANNELS, TAB_PROFILE, TAB_LOG };
+enum AdvancedTab { TAB_PLAY, TAB_FINDER, TAB_ADDRESS, TAB_CHANNELS, TAB_PROFILE, TAB_LOG, TAB_MOVIE };
 
 struct Palette
 {
@@ -156,6 +159,17 @@ struct App
 
    std::string last_export;
    bool refs_loading[2] = { false, false };
+
+   // TAS movie tab
+   int movie_speed = 4;        // index into kMovieSpeeds
+   bool show_bizhawk = false;
+   int movie_pick[2] = { 0, 0 };
+
+   // Scan folder window
+   bool show_folder_scan = false;
+   FolderScan folder_scan;
+   bool folder_download_refs = true, folder_movies = false, folder_rescan = false;
+   int folder_filter = 0;
 };
 
 static void set_status(App &a, const std::string &msg, bool error = false)
@@ -593,6 +607,17 @@ static void draw_scan_bar(App &a, int side)
       }
       if (ImGui::IsItemHovered())
          ImGui::SetTooltip("Play this game in Advanced. Each new song is ripped into this list a few seconds after it starts.");
+      ImGui::SameLine();
+      if (ImGui::Button("TAS movie"))
+      {
+         if (a.live != side)
+            select_live(a, side);
+         a.show_advanced = true;
+         a.select_tab = TAB_MOVIE;
+      }
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("Download a movie of the whole game from TASVideos and play it in BizHawk\n"
+               "to hear its songs and learn the song address (Advanced > TAS movie).");
       ImGui::SameLine();
       if (ImGui::Button("Reference songs"))
          ImGui::OpenPopup("references");
@@ -1487,6 +1512,360 @@ static void tab_profile(App &a)
    ImGui::InputTextMultiline("##ini", (char*)text.c_str(), text.size() + 1, ImVec2(-1, -1), ImGuiInputTextFlags_ReadOnly);
 }
 
+static const struct { const char *label; int percent; } kMovieSpeeds[] = {
+   { "1x (real time)", 100 }, { "2x", 200 }, { "4x", 400 }, { "10x", 1000 }, { "As fast as possible", 6400 },
+};
+
+static void tab_movie(App &a)
+{
+   ImGui::AlignTextToFramePadding();
+   ImGui::TextUnformatted("Game");
+   for (int side = 0; side < 2; side++)
+   {
+      RomSession &g = a.sessions[side];
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!g.is_open());
+      std::string label = (g.is_open() ? g.display_name() : std::string(side == TARGET ? "Game to change" : "Music source")) +
+            (side == TARGET ? "  (game to change)" : "  (music source)");
+      ImGui::PushStyleColor(ImGuiCol_CheckMark, col(P.side[side]));
+      ImGui::PushID(side + 100);
+      if (ImGui::RadioButton(label.c_str(), a.live == side) && a.live != side)
+         select_live(a, side);
+      ImGui::PopID();
+      ImGui::PopStyleColor();
+      ImGui::EndDisabled();
+   }
+   RomSession &s = a.sessions[a.live];
+   if (!s.is_open())
+   {
+      ImGui::TextDisabled("Open a ROM first.");
+      return;
+   }
+   ImGui::TextColored(col(P.dim), "A TAS movie from TASVideos plays the whole game in BizHawk, the emulator it was made with. "
+         "The songs it plays are named by the reference songs, and the RAM byte that follows them becomes the song address.");
+
+   bool busy = s.tool_busy();
+   bool running = s.scanning();
+   bool installed = bizhawk_installed(s.app_dir());
+
+   ImGui::SeparatorText("1. BizHawk");
+   if (installed)
+   {
+      ImGui::TextColored(col(P.ok), "Installed");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Open folder##bizhawk"))
+         open_folder(dir_of(bizhawk_exe(s.app_dir())));
+   }
+   else
+   {
+      ImGui::BeginDisabled(busy);
+      if (ImGui::Button("Download BizHawk (about 100 MB)"))
+         s.install_bizhawk();
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+         ImGui::SetTooltip("The latest release from github.com/TASEmulators/BizHawk, unpacked into Proteus Studio's folder.\n"
+               "BizHawk needs .NET Framework 4.8 and the Microsoft Visual C++ runtime, which Windows 10 and 11 usually have.");
+   }
+
+   ImGui::SeparatorText("2. Movie");
+   ImGui::BeginDisabled(busy);
+   if (ImGui::Button("Find movies on TASVideos"))
+      s.find_movies();
+   ImGui::SameLine();
+   if (ImGui::Button("Open movie file..."))
+   {
+      std::string path = open_file_dialog("TAS movie", { { "BizHawk movies", "*.bk2;*.bkm" }, { "All files", "*.*" } }, "");
+      if (!path.empty())
+      {
+         make_dirs(s.movies_dir());
+         if (copy_file_data(path, s.movies_dir() + "\\" + file_name(path)))
+            set_status(a, "Added " + file_name(path) + " to the movies of " + s.display_name() + ".");
+         else
+            set_status(a, "Could not copy " + path, true);
+      }
+   }
+   ImGui::EndDisabled();
+   std::string tool = s.tool_message();
+   if (busy)
+      ImGui::ProgressBar(s.tool_progress(), ImVec2(-1, 0), tool.c_str());
+   else if (!tool.empty())
+      ImGui::TextColored(col(P.dim), "%s", tool.c_str());
+
+   std::vector<TasPublication> list = s.movie_list();
+   if (!list.empty() && ImGui::BeginTable("movies", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp,
+         ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * std::min<float>(5.5f, (float)list.size() + 1.5f))))
+   {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("Movie", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Made with", ImGuiTableColumnFlags_WidthFixed, 130);
+      ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 70);
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 80);
+      ImGui::TableHeadersRow();
+      for (size_t i = 0; i < list.size(); i++)
+      {
+         const TasPublication &p = list[i];
+         ImGui::TableNextRow();
+         ImGui::TableNextColumn();
+         ImGui::TextUnformatted(p.title.c_str());
+         ImGui::TableNextColumn();
+         ImGui::TextColored(col(p.playable() ? P.text : P.dim), "%s", p.emulator.c_str());
+         ImGui::TableNextColumn();
+         ImGui::TextUnformatted(p.duration().c_str());
+         ImGui::TableNextColumn();
+         ImGui::PushID((int)i);
+         ImGui::BeginDisabled(busy || !p.playable());
+         if (ImGui::SmallButton("Download"))
+            s.download_movie(p);
+         ImGui::EndDisabled();
+         if (!p.playable() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Made with %s. BizHawk only keeps its own movies (.bk2) in sync.", p.emulator.c_str());
+         ImGui::PopID();
+      }
+      ImGui::EndTable();
+   }
+
+   std::vector<std::string> movies = s.downloaded_movies();
+   int &pick = a.movie_pick[a.live];
+   if (pick >= (int)movies.size())
+      pick = 0;
+   ImGui::AlignTextToFramePadding();
+   ImGui::TextUnformatted("Movie to play");
+   ImGui::SameLine();
+   ImGui::SetNextItemWidth(-1);
+   if (ImGui::BeginCombo("##moviepick", movies.empty() ? "(none downloaded)" : file_name(movies[pick]).c_str()))
+   {
+      for (size_t i = 0; i < movies.size(); i++)
+         if (ImGui::Selectable(file_name(movies[i]).c_str(), (int)i == pick))
+            pick = (int)i;
+      ImGui::EndCombo();
+   }
+
+   ImGui::SeparatorText("3. Play and find songs");
+   ImGui::AlignTextToFramePadding();
+   ImGui::TextUnformatted("Speed");
+   ImGui::SameLine();
+   ImGui::SetNextItemWidth(170);
+   if (ImGui::BeginCombo("##moviespeed", kMovieSpeeds[a.movie_speed].label))
+   {
+      for (int i = 0; i < (int)(sizeof(kMovieSpeeds) / sizeof(kMovieSpeeds[0])); i++)
+         if (ImGui::Selectable(kMovieSpeeds[i].label, i == a.movie_speed))
+         {
+            a.movie_speed = i;
+            s.set_movie_speed(kMovieSpeeds[i].percent);
+         }
+      ImGui::EndCombo();
+   }
+   if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("BizHawk plays as fast as this computer allows up to the speed chosen;\n"
+            "most SNES games run 5 to 8 times faster than real time. The speed can change while it plays.");
+   ImGui::SameLine();
+   ImGui::Checkbox("Show BizHawk's window", &a.show_bizhawk);
+
+   if (s.references.empty() && !running)
+   {
+      ImGui::TextColored(col(P.danger), "The songs a movie plays are named by the game's reference songs; download them first.");
+      ImGui::SameLine();
+      ImGui::BeginDisabled(s.loading_references());
+      if (ImGui::SmallButton("Download reference songs"))
+         s.download_references();
+      ImGui::EndDisabled();
+   }
+   if (running)
+   {
+      std::string msg = s.scan_message();
+      ImGui::ProgressBar(s.scan_progress(), ImVec2(-90, 0), msg.c_str());
+      ImGui::SameLine();
+      if (ImGui::Button("Stop##movie", ImVec2(-1, 0)))
+         s.stop_scan();
+   }
+   else
+   {
+      bool can = installed && !movies.empty() && !s.references.empty() && !s.loading_references() && !(a.live_running);
+      ImGui::BeginDisabled(!can);
+      if (primary_button("Play movie and find songs", ImVec2(240, 0), P.accent))
+      {
+         a.audio.stop();
+         s.start_movie(movies[pick], kMovieSpeeds[a.movie_speed].percent, a.show_bizhawk);
+      }
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      {
+         if (!installed)
+            ImGui::SetTooltip("Download BizHawk first.");
+         else if (movies.empty())
+            ImGui::SetTooltip("Download a movie first.");
+         else if (s.references.empty())
+            ImGui::SetTooltip("Download the reference songs first.");
+         else if (a.live_running)
+            ImGui::SetTooltip("Pause the game in Play & rip first.");
+         else
+            ImGui::SetTooltip("Plays the movie in BizHawk. Songs heard join the list; the song address is saved\n"
+                  "to the game database when one RAM byte follows the music.");
+      }
+      std::string msg = s.scan_message();
+      if (!msg.empty())
+         ImGui::TextColored(col(P.dim), "%s", msg.c_str());
+   }
+}
+
+// ---------------------------------------------------------------------------
+// Scan folder window
+// ---------------------------------------------------------------------------
+
+static void draw_folder_scan(App &a)
+{
+   if (!a.show_folder_scan)
+      return;
+   ImGui::SetNextWindowSize(ImVec2(900, 560), ImGuiCond_FirstUseEver);
+   if (!ImGui::Begin("Scan folder", &a.show_folder_scan, ImGuiWindowFlags_NoCollapse))
+   {
+      ImGui::End();
+      return;
+   }
+   FolderScan &fs = a.folder_scan;
+   bool running = fs.running();
+
+   ImGui::TextColored(col(P.dim), "Scans every ROM in a folder, one after another: downloads its reference songs, scans its songs, "
+         "and rates it. Easy games have a song address and songs named by reference songs.");
+   ImGui::BeginDisabled(running);
+   static char folder[1024];
+   static bool init = false;
+   if (!init)
+   {
+      snprintf(folder, sizeof(folder), "%s", a.settings.scan_folder.c_str());
+      init = true;
+   }
+   ImGui::SetNextItemWidth(-90);
+   if (ImGui::InputTextWithHint("##scanfolder", "Folder of SNES ROMs", folder, sizeof(folder)))
+      a.settings.scan_folder = folder;
+   ImGui::SameLine();
+   if (ImGui::Button("Browse...##scanfolder", ImVec2(-1, 0)))
+   {
+      std::string dir = pick_folder_dialog("Folder of SNES ROMs");
+      if (!dir.empty())
+      {
+         snprintf(folder, sizeof(folder), "%s", dir.c_str());
+         a.settings.scan_folder = dir;
+      }
+   }
+   ImGui::Checkbox("Download reference songs", &a.folder_download_refs);
+   ImGui::SameLine();
+   bool installed = bizhawk_installed(app_data_dir());
+   ImGui::BeginDisabled(!installed);
+   bool movies = a.folder_movies && installed;
+   if (ImGui::Checkbox("Play TAS movies when the scan cannot number songs", &movies))
+      a.folder_movies = movies;
+   ImGui::EndDisabled();
+   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip(installed ? "Downloads the game's movie from TASVideos and plays it in BizHawk: several minutes per game."
+                                  : "Download BizHawk first (Advanced > TAS movie).");
+   ImGui::SameLine();
+   ImGui::Checkbox("Scan games already in the report again", &a.folder_rescan);
+   ImGui::EndDisabled();
+
+   if (running)
+   {
+      std::string msg = fs.message();
+      ImGui::ProgressBar(fs.total() ? (float)fs.done() / (float)fs.total() : 0, ImVec2(-90, 0), msg.c_str());
+      ImGui::SameLine();
+      if (ImGui::Button("Stop##folder", ImVec2(-1, 0)))
+         fs.stop();
+   }
+   else
+   {
+      ImGui::BeginDisabled(!dir_exists(a.settings.scan_folder) || a.settings.core_file.empty());
+      if (primary_button("Start", ImVec2(120, 0), P.accent))
+      {
+         save_settings(a.settings);
+         FolderScan::Options o;
+         o.folder = a.settings.scan_folder;
+         o.core_path = a.settings.retroarch_dir + "\\cores\\" + a.settings.core_file;
+         o.system_dir = system_dir(a);
+         o.app_dir = app_data_dir();
+         o.download_references = a.folder_download_refs;
+         o.use_movies = a.folder_movies && installed;
+         o.movie_speed = kMovieSpeeds[a.movie_speed].percent;
+         o.rescan = a.folder_rescan;
+         for (int side = 0; side < 2; side++)
+            if (a.sessions[side].is_open())
+               o.skip.push_back(a.sessions[side].rom_path());
+         fs.start(o);
+      }
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      std::string msg = fs.message();
+      ImGui::TextColored(col(P.dim), "%s", msg.empty() ? "Games open in the window are left out. A stopped scan carries on where it left off." : msg.c_str());
+   }
+
+   std::vector<FolderScanRow> rows = fs.rows();
+   int easy = 0, partly = 0, skip = 0;
+   for (const auto &r : rows)
+   {
+      easy += r.verdict == "easy";
+      partly += r.verdict == "partly";
+      skip += r.verdict == "skip";
+   }
+   ImGui::AlignTextToFramePadding();
+   ImGui::Text("%d games: %d easy, %d partly, %d skip.", (int)rows.size(), easy, partly, skip);
+   ImGui::SameLine();
+   ImGui::SetNextItemWidth(120);
+   static const char *kFilters[] = { "All", "Easy", "Partly", "Skip" };
+   ImGui::Combo("##folderfilter", &a.folder_filter, kFilters, 4);
+   if (!fs.report_path().empty())
+   {
+      ImGui::SameLine();
+      if (ImGui::Button("Open report folder"))
+         open_folder(dir_of(fs.report_path()));
+   }
+
+   if (ImGui::BeginTable("folderrows", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable |
+         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerV, ImVec2(0, 0)))
+   {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("Game", ImGuiTableColumnFlags_WidthStretch, 3);
+      ImGui::TableSetupColumn("Rating", ImGuiTableColumnFlags_WidthFixed, 60);
+      ImGui::TableSetupColumn("References", ImGuiTableColumnFlags_WidthFixed, 80);
+      ImGui::TableSetupColumn("Songs", ImGuiTableColumnFlags_WidthFixed, 50);
+      ImGui::TableSetupColumn("Named", ImGuiTableColumnFlags_WidthFixed, 50);
+      ImGui::TableSetupColumn("Song address", ImGuiTableColumnFlags_WidthStretch, 1.5f);
+      ImGui::TableSetupColumn("Note", ImGuiTableColumnFlags_WidthStretch, 4);
+      ImGui::TableHeadersRow();
+      for (size_t i = 0; i < rows.size(); i++)
+      {
+         const FolderScanRow &r = rows[i];
+         if (a.folder_filter && r.verdict != std::string(kFilters[a.folder_filter]) && to_lower(kFilters[a.folder_filter]) != r.verdict)
+            continue;
+         ImGui::TableNextRow();
+         ImGui::TableNextColumn();
+         ImGui::PushID((int)i);
+         if (ImGui::Selectable(r.game.c_str(), false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick) &&
+               ImGui::IsMouseDoubleClicked(0) && !running)
+            open_rom(a, TARGET, a.settings.scan_folder + "\\" + r.rom);
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Double-click to open %s as the game to change.", r.rom.c_str());
+         ImGui::PopID();
+         ImGui::TableNextColumn();
+         ImGui::TextColored(col(r.verdict == "easy" ? P.ok : r.verdict == "partly" ? P.side[0] : P.dim), "%s", r.verdict.c_str());
+         ImGui::TableNextColumn();
+         ImGui::Text("%d%s", r.references, r.table ? " + table" : "");
+         ImGui::TableNextColumn();
+         ImGui::Text("%d", r.songs);
+         ImGui::TableNextColumn();
+         ImGui::Text("%d", r.named);
+         ImGui::TableNextColumn();
+         ImGui::TextUnformatted(r.address.c_str());
+         if (!r.how.empty() && ImGui::IsItemHovered())
+            ImGui::SetTooltip("From: %s", r.how.c_str());
+         ImGui::TableNextColumn();
+         ImGui::TextUnformatted(r.note.c_str());
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", r.note.c_str());
+      }
+      ImGui::EndTable();
+   }
+   ImGui::End();
+}
+
 static void tab_log(App &a)
 {
    if (ImGui::BeginChild("log", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar))
@@ -1508,6 +1887,7 @@ static void draw_advanced(App &a, float height)
    {
       struct { const char *name; int tab; void (*draw)(App &); } tabs[] = {
          { "Play & rip", TAB_PLAY, tab_play },
+         { "TAS movie", TAB_MOVIE, tab_movie },
          { "Find song address", TAB_FINDER, tab_finder },
          { "Game info", TAB_ADDRESS, tab_address },
          { "Channels & mix", TAB_CHANNELS, tab_channels },
@@ -1614,8 +1994,14 @@ static void draw_header(App &a)
 
    float right = ImGui::GetWindowWidth() - 16;
    float w_adv = ImGui::CalcTextSize("Advanced").x + 32, w_set = ImGui::CalcTextSize("Settings").x + 24;
-   ImGui::SameLine(right - w_adv - w_set - 8);
+   float w_folder = ImGui::CalcTextSize("Scan folder").x + 24;
+   ImGui::SameLine(right - w_adv - w_set - w_folder - 16);
    ImGui::PushStyleColor(ImGuiCol_Button, col(a.show_advanced ? P.panel_hi : P.panel));
+   if (ImGui::Button("Scan folder", ImVec2(w_folder, 0)))
+      a.show_folder_scan = true;
+   if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Scan every ROM in a folder and rate which games' songs can be found.");
+   ImGui::SameLine();
    if (ImGui::Button(a.show_advanced ? "Advanced  v" : "Advanced  ^", ImVec2(w_adv, 0)))
       a.show_advanced = !a.show_advanced;
    ImGui::SameLine();
@@ -1656,6 +2042,7 @@ static void draw_ui(App &a)
    ImGui::TextColored(col(a.status_error ? P.danger : P.dim), "%s", a.status.c_str());
 
    draw_settings(a);
+   draw_folder_scan(a);
    ImGui::End();
 }
 

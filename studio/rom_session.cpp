@@ -6,12 +6,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <ctime>
 #include <map>
 #include <sstream>
 
 #include "gme.h"
 #include "platform.h"
+#include "movie_learner.h"
 #include "spc_rip.h"
 
 extern "C" {
@@ -328,6 +330,8 @@ void RomSession::close()
       worker_.join();
    if (ra_thread_.joinable())
       ra_thread_.join();
+   if (tool_thread_.joinable())
+      tool_thread_.join();
    if (ref_thread_.joinable())
       ref_thread_.join();
    if (learn_thread_.joinable())
@@ -2365,4 +2369,294 @@ bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, 
 bool RomSession::rip_now(std::string &message)
 {
    return rip_playing(core.save_state(), false, message);
+}
+
+// ---------------------------------------------------------------------------
+// TAS movies
+// ---------------------------------------------------------------------------
+
+std::string RomSession::movies_dir() const
+{
+   return app_dir_ + "\\movies\\" + hex4(rom_.crc32 >> 16) + hex4(rom_.crc32 & 0xFFFF);
+}
+
+std::vector<std::string> RomSession::downloaded_movies() const
+{
+   std::vector<std::string> out;
+   for (const auto &f : list_files(movies_dir()))
+   {
+      std::string e = lower_ext(f);
+      if (e == "bk2" || e == "bkm")
+         out.push_back(movies_dir() + "\\" + f);
+   }
+   std::sort(out.begin(), out.end());
+   return out;
+}
+
+std::string RomSession::tool_message()
+{
+   std::lock_guard<std::mutex> lock(tool_mutex_);
+   return tool_message_;
+}
+
+void RomSession::set_tool_message(const std::string &message, float progress)
+{
+   std::lock_guard<std::mutex> lock(tool_mutex_);
+   tool_message_ = message;
+   tool_progress_ = progress;
+}
+
+std::vector<TasPublication> RomSession::movie_list()
+{
+   std::lock_guard<std::mutex> lock(tool_mutex_);
+   return movie_list_;
+}
+
+void RomSession::run_tool(std::function<void()> job)
+{
+   if (tool_busy_)
+      return;
+   if (tool_thread_.joinable())
+      tool_thread_.join();
+   tool_busy_ = true;
+   tool_thread_ = std::thread([this, job]() {
+      job();
+      tool_busy_ = false;
+   });
+}
+
+void RomSession::find_movies()
+{
+   std::string name = display_name_;
+   run_tool([this, name]() {
+      set_tool_message("Looking up " + name + " on TASVideos...", 0);
+      // The publication list is the same for every game; fetch it once per run.
+      static std::mutex cache_mutex;
+      static std::vector<TasPublication> cache;
+      std::vector<TasPublication> all;
+      std::string err;
+      {
+         std::lock_guard<std::mutex> lock(cache_mutex);
+         if (cache.empty())
+            tasvideos_snes_publications(cache, err);
+         all = cache;
+      }
+      std::vector<TasPublication> found = tasvideos_for_game(all, name);
+      {
+         std::lock_guard<std::mutex> lock(tool_mutex_);
+         movie_list_ = found;
+      }
+      int playable = 0;
+      for (const auto &p : found)
+         playable += p.playable();
+      if (all.empty())
+         set_tool_message("Could not reach TASVideos: " + err, 0);
+      else if (found.empty())
+         set_tool_message("TASVideos has no movie of " + name + ".", 0);
+      else
+         set_tool_message("TASVideos has " + std::to_string(found.size()) + " movies of " + name + ", " +
+               std::to_string(playable) + " made with BizHawk.", 1);
+   });
+}
+
+void RomSession::download_movie(const TasPublication &pub)
+{
+   std::string dir = movies_dir();
+   run_tool([this, pub, dir]() {
+      set_tool_message("Downloading " + pub.title + "...", 0);
+      std::string path, err;
+      if (tasvideos_download(pub, dir, path, err))
+      {
+         set_tool_message("Downloaded " + file_name(path) + ".", 1);
+         log("downloaded the TAS movie " + file_name(path) + " (" + pub.title + ")");
+      }
+      else
+         set_tool_message("Could not download the movie: " + err, 0);
+   });
+}
+
+void RomSession::install_bizhawk()
+{
+   run_tool([this]() {
+      std::string err;
+      if (!bizhawk_install(app_dir_, [this](const std::string &m, float p) { set_tool_message(m, p); }, nullptr, err))
+         set_tool_message("Could not install BizHawk: " + err, 0);
+   });
+}
+
+void RomSession::start_movie(const std::string &movie_path, int speed, bool show)
+{
+   if (scanning_ || !open_ || loading_refs_)
+      return;
+   if (references.empty())
+   {
+      set_scan_message("Add this game's reference songs first: the songs a movie plays are named by them.");
+      return;
+   }
+   if (worker_.joinable())
+      worker_.join();
+   cancel_ = false;
+   scanning_ = true;
+   scan_done_ = 0;
+   scan_total_ = 1;
+   scan_found_ = 0;
+   scan_address_ = address;
+   scan_start_ = start;
+   scan_address_source_ = address_source;
+   scan_start_source_ = start_source;
+   scan_changed_ = false;
+   movie_speed_ = speed;
+   worker_ = std::thread([this, movie_path, show]() { movie_thread(movie_path, show); });
+}
+
+static std::string movie_time(uint32_t frames)
+{
+   char buf[32];
+   unsigned s = frames / 60;
+   if (s >= 3600)
+      snprintf(buf, sizeof(buf), "%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60);
+   else
+      snprintf(buf, sizeof(buf), "%u:%02u", s / 60, s % 60);
+   return buf;
+}
+
+void RomSession::movie_thread(std::string movie_path, bool show)
+{
+   BizHawkRun run;
+   std::string err;
+   set_scan_message("Starting BizHawk...");
+   int speed = movie_speed_;
+   if (!run.start(app_dir_, rom_path_, movie_path, speed, show, err))
+   {
+      set_scan_message("Could not play the movie: " + err);
+      scanning_ = false;
+      return;
+   }
+   log("playing " + file_name(movie_path) + " in BizHawk");
+   MovieLearner learner(references);
+   size_t heard = 0;
+   uint32_t last_frame = 0;
+   auto last_change = std::chrono::steady_clock::now();
+   bool stalled = false;
+   while (true)
+   {
+      if (cancel_)
+      {
+         run.stop();
+         break;
+      }
+      if (movie_speed_ != speed)
+         run.set_speed(speed = movie_speed_);
+      uint32_t frame = 0;
+      std::vector<uint8_t> d;
+      bool got = false;
+      while (!cancel_ && run.next_dump(frame, d))
+      {
+         got = true;
+         learner.add(d.data(), d.data() + 0x10000, d.size() - 0x10000);
+         for (; heard < learner.heard().size(); heard++)
+            log("heard \"" + references.song(learner.heard()[heard]).title + "\" at " + movie_time(frame) + " in the movie");
+         scan_found_ = (int)heard;
+      }
+      bool done = run.finished();
+      uint32_t f = run.frame(), len = run.length();
+      if (len)
+      {
+         scan_total_ = (int)len;
+         scan_done_ = (int)std::min(f, len);
+      }
+      auto now = std::chrono::steady_clock::now();
+      if (f != last_frame)
+      {
+         last_frame = f;
+         last_change = now;
+      }
+      set_scan_message("Playing the movie in BizHawk: " + movie_time(f) + " of " + movie_time(len) + ", " +
+            std::to_string(heard) + " songs heard");
+      if (done)
+      {
+         while (run.next_dump(frame, d))
+            learner.add(d.data(), d.data() + 0x10000, d.size() - 0x10000);
+         break;
+      }
+      if (now - last_change > std::chrono::seconds(90))
+      {
+         stalled = true;
+         run.stop();
+         break;
+      }
+      if (!got)
+         std::this_thread::sleep_for(std::chrono::milliseconds(250));
+   }
+
+   MovieLearner::Result res = learner.result();
+   std::string outcome;
+   if (stalled && last_frame == 0)
+      outcome = "BizHawk did not start playing the movie. It needs .NET Framework 4.8 and the Microsoft Visual C++ runtime; "
+            "open it from " + dir_of(bizhawk_exe(app_dir_)) + " to see why.";
+   else if (learner.heard().empty())
+      outcome = "No reference song was heard. The movie may be for another version of the game, or fall out of sync.";
+   else if (!res.found)
+   {
+      std::string top;
+      for (size_t i = 0; i < res.top.size() && i < 3; i++)
+         top += (top.empty() ? " (closest: $" : ", $") + hex4(res.top[i].first) + " tells " + std::to_string(res.top[i].second) + " apart";
+      if (!top.empty())
+         top += ")";
+      outcome = std::to_string(learner.heard().size()) + " songs heard, but no RAM byte holds one number per song" + top +
+            ". The game may start songs through a command instead.";
+   }
+   else
+   {
+      SongAddress a;
+      a.known = true;
+      a.address = res.address;
+      a.size = 1;
+      a.debounce = 2;
+      scan_address_ = a;
+      scan_address_source_ = "learned from a TAS movie";
+      scan_changed_ = true;
+      std::string list;
+      for (const auto &v : res.values)
+         list += (list.empty() ? "" : ", ") + references.song(v.first).title + " " + hex2(v.second);
+      log("the music follows $" + hex4(res.address) + " (" + list + ")");
+      if (!res.ties.empty())
+      {
+         std::string ties;
+         for (uint32_t t : res.ties)
+            ties += " $" + hex4(t);
+         log("these bytes follow the music as well:" + ties);
+      }
+      outcome = std::to_string(learner.heard().size()) + " songs heard; the song address is $" + hex4(res.address) + ".";
+   }
+   // The songs heard join the list, numbered when the address is known.
+   int added = 0;
+   for (int r : learner.heard())
+   {
+      const ReferenceSong &ref = references.song(r);
+      FoundSong song;
+      auto v = res.found ? res.values.find(r) : res.values.end();
+      song.has_value = v != res.values.end();
+      song.value = song.has_value ? v->second : 0;
+      if (!analyze_spc(ref.spc, song.print, err))
+         continue;
+      if (!classify(song.print, song.kind))
+         song.kind = SONG_JINGLE;
+      song.title = ref.title;
+      song.reference = ref.title;
+      song.spc_path.assign((const char *)ref.spc.data(), ref.spc.size());
+      std::lock_guard<std::mutex> lock(songs_mutex);
+      bool listed = false;
+      for (const auto &s : songs)
+         listed = listed || (s.reference == ref.title && (!song.has_value || (s.has_value && s.value == song.value)));
+      if (listed)
+         continue;
+      add_song_locked(song);
+      added++;
+   }
+   if (added)
+      save_library();
+   log(outcome);
+   set_scan_message((cancel_ ? "Stopped. " : "") + outcome);
+   scanning_ = false;
 }

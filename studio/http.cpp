@@ -26,7 +26,8 @@ std::string url_encode(const std::string &text)
    return out;
 }
 
-bool http_fetch(const std::string &url, const std::string &post_data, std::string &response, std::string &error)
+static bool fetch(const std::string &url, const std::string &post_data, std::string &response, std::string &error,
+      const std::function<void(size_t, size_t)> *progress, const std::atomic<bool> *cancel)
 {
 #ifdef _WIN32
    const std::string scheme = "https://";
@@ -75,11 +76,27 @@ bool http_fetch(const std::string &url, const std::string &post_data, std::strin
       else
       {
          response.clear();
-         char buf[16384];
+         DWORD total = 0;
+         size = sizeof(total);
+         if (!HttpQueryInfoA(req, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &total, &size, NULL))
+            total = 0;
+         if (total)
+            response.reserve(total);
+         char buf[65536];
          DWORD read = 0;
-         while (InternetReadFile(req, buf, sizeof(buf), &read) && read > 0)
-            response.append(buf, read);
          ok = true;
+         while (InternetReadFile(req, buf, sizeof(buf), &read) && read > 0)
+         {
+            response.append(buf, read);
+            if (progress)
+               (*progress)(response.size(), total);
+            if (cancel && *cancel)
+            {
+               error = "cancelled";
+               ok = false;
+               break;
+            }
+         }
       }
       InternetCloseHandle(req);
    }
@@ -87,8 +104,19 @@ bool http_fetch(const std::string &url, const std::string &post_data, std::strin
    InternetCloseHandle(inet);
    return ok;
 #else
-   (void)url; (void)post_data; (void)response;
+   (void)url; (void)post_data; (void)response; (void)progress; (void)cancel;
    error = "Network access is currently supported on Windows";
    return false;
 #endif
+}
+
+bool http_fetch(const std::string &url, const std::string &post_data, std::string &response, std::string &error)
+{
+   return fetch(url, post_data, response, error, nullptr, nullptr);
+}
+
+bool http_download(const std::string &url, std::string &response, std::string &error,
+      const std::function<void(size_t, size_t)> &progress, const std::atomic<bool> *cancel)
+{
+   return fetch(url, "", response, error, &progress, cancel);
 }

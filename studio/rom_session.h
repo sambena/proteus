@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <map>
 #include <cstdint>
 #include <mutex>
@@ -18,6 +19,7 @@
 #include "reference.h"
 #include "song_notes.h"
 #include "snes_rom.h"
+#include "tas_runner.h"
 
 enum SongKind { SONG_MUSIC, SONG_JINGLE };
 
@@ -145,6 +147,24 @@ public:
    uint32_t last_song_value() const { return last_value_; }
    bool heard_song() const { return have_last_; }
 
+   // TAS movies: a movie from TASVideos plays the whole game in BizHawk, and the songs heard
+   // are named by the reference songs and numbered by the song address they teach. Downloads
+   // run in the background, one at a time.
+   const std::string &app_dir() const { return app_dir_; }
+   std::string movies_dir() const;
+   std::vector<std::string> downloaded_movies() const;   // movie files in movies_dir()
+   void find_movies();                                    // looks the game up on TASVideos
+   void download_movie(const TasPublication &pub);
+   void install_bizhawk();
+   bool tool_busy() const { return tool_busy_; }
+   std::string tool_message();
+   float tool_progress() const { return tool_progress_; }
+   std::vector<TasPublication> movie_list();              // what find_movies() found
+   // Plays a movie like a scan (scanning(), scan_message(), stop_scan(), apply_scan_results()).
+   // `speed` is a percentage of real time; `show` leaves BizHawk's window up.
+   void start_movie(const std::string &movie_path, int speed, bool show);
+   void set_movie_speed(int speed) { movie_speed_ = speed; }
+
    std::vector<std::string> take_log();
 
 private:
@@ -172,6 +192,9 @@ private:
    bool name_by_reference(FoundSong &song, const std::vector<uint8_t> *before, int elapsed,
          const std::vector<std::string> &same = std::vector<std::string>());
    void load_references_async(bool download);
+   void movie_thread(std::string movie_path, bool show);
+   void run_tool(std::function<void()> job);
+   void set_tool_message(const std::string &message, float progress);
    std::vector<uint8_t> spc_of_state(const std::vector<uint8_t> &state);
    std::string library_dir() const;
    void load_library();
@@ -227,6 +250,14 @@ private:
 
    std::atomic<bool> querying_ra_{false};
    std::thread ra_thread_;
+
+   std::thread tool_thread_;
+   std::atomic<bool> tool_busy_{false};
+   std::atomic<float> tool_progress_{0};
+   std::mutex tool_mutex_;
+   std::string tool_message_;
+   std::vector<TasPublication> movie_list_;
+   std::atomic<int> movie_speed_{6400};
 
    // Live song tracking while playing.
    uint32_t candidate_ = 0, last_value_ = 0;

@@ -165,6 +165,40 @@ song numbers from the table (entry 0 is where the game's code reads it). Scan so
 song of the table by name at once, plays the table's song numbers, and checks each one against its
 reference. Chrono Trigger's table is at `$C70D18`: 83 songs, all named by the SNESmusic set.
 
+### TAS movies
+
+Games whose songs a scan cannot start from outside (ActRaiser 2 uploads each song itself) can still
+be worked out by playing them through. [TASVideos](https://tasvideos.org) publishes movies that play
+whole games, and **TAS movie** on either panel (Advanced > **TAS movie**) uses them:
+
+1. **Download BizHawk** installs the latest [BizHawk](https://github.com/TASEmulators/BizHawk) release
+   into `%APPDATA%\ProteusStudio\tools\BizHawk`. Movies only stay in sync on the emulator they
+   were made with: on snes9x, or on libretro's bsnes cores, a movie falls out of step within minutes.
+   BizHawk needs .NET Framework 4.8 and the Microsoft Visual C++ runtime.
+2. **Find movies on TASVideos** lists the game's publications; **Download** saves a BizHawk movie
+   (`.bk2`) to `%APPDATA%\ProteusStudio\movies\<ROM CRC32>`. **Open movie file...** adds one you have.
+   The movie must be for the same version of the ROM.
+3. **Play movie and find songs** plays it in BizHawk, as fast as the computer allows up to the speed
+   chosen (most SNES movies run 5 to 8 times faster than real time). A Lua script saves the sound CPU's
+   memory and work RAM every 2 seconds. Each moment is named against the reference songs, and a moment
+   counts only when the moments on both sides of it name the same song. The work RAM byte that holds one
+   value for each song, and a different value for every song, becomes the song address (saved to the
+   game database), and the songs heard join the list with their numbers.
+
+ActRaiser 2's movie hears all 15 reference songs in six and a half minutes and numbers 13 of them
+by `$0028`. Games that pass songs through a command and keep no song number (Chrono Trigger) have
+their songs named, but no address is found this way.
+
+### Scan folder
+
+**Scan folder** in the header scans every ROM in a folder, one after another: it downloads each game's
+reference songs, runs Scan songs, and, when asked and BizHawk is installed, plays a TAS movie for games the
+scan could not number. Each game is rated **easy** (a song address and at least three songs named by
+reference songs), **partly** (songs or reference songs, but not both working) or **skip**. Results go to
+the song libraries and the game database as a scan in the window would, and to a report in
+`%APPDATA%\ProteusStudio\folder-scans`; a stopped scan carries on where it left off. Double-click a game
+to open it.
+
 ### Game database
 
 What Studio learns about a game is kept in `%APPDATA%\ProteusStudio\games.ini`, one section per
@@ -314,6 +348,10 @@ lose some effects; mute fewer channels for those games.
 | `studio/snes_rom.cpp` | SNES ROM header, CRC32, and CPU address mapping |
 | `studio/reference.cpp` | reference songs: matching rips, finding song tables in the ROM, importing and downloading sets |
 | `studio/song_notes.cpp` | a song's notes over time, for matching songs that memory cannot tell apart |
+| `studio/tas_runner.cpp` | TASVideos lookups and downloads, installing BizHawk, playing a movie in BizHawk with a RAM-saving Lua script |
+| `studio/movie_learner.cpp` | names the songs of a movie's moments and learns the song address from them |
+| `studio/tas_movie.cpp` | reads `.bk2` and `.smv` input movies (`proteus-cli movie`) |
+| `studio/folder_scan.cpp` | Scan folder: every ROM of a folder in turn, with a report |
 | `studio/zip_read.cpp`, `studio/http.cpp` | reading zip archives; HTTPS requests (RetroAchievements, Zophar's Domain) |
 | `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans and downloads without the window |
 | `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |

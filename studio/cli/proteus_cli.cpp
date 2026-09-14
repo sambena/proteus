@@ -7,6 +7,10 @@
 //   proteus-cli list <rom> <snes9x core> [app dir]
 //   proteus-cli import <folder, archive or .spc> <folder>
 //   proteus-cli download "<game name>" <folder> [zophar|snesmusic]
+//   proteus-cli tas <core> <rom> [bizhawk | movies | download N | play <movie> <spc folder> [speed %]]
+//   proteus-cli folder <core> <rom folder> [--movies] [--rescan]
+//   proteus-cli movie <core> <rom> <spc folder> <movie.bk2|.smv> [seconds]   (inputs on a libretro core)
+//   proteus-cli dumps <spc folder> <dump folder>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -18,10 +22,13 @@
 
 #include "platform.h"
 #include "reference.h"
+#include "folder_scan.h"
+#include "movie_learner.h"
 #include "rom_session.h"
 #include "snes_rom.h"
 #include "song_notes.h"
 #include "spc_rip.h"
+#include "tas_movie.h"
 #include "zip_read.h"
 
 static bool load_rom(const std::string &path, SnesRom &rom)
@@ -297,6 +304,255 @@ int main(int argc, char **argv)
       s.play_frame(0);
       flush();
       printf("song address: %s (%s)\n", s.address.known ? describe_song_address(s.address).c_str() : "none", s.address_source.c_str());
+      return 0;
+   }
+   if (cmd == "movie" && argc >= 6)
+   {
+      // proteus-cli movie <core> <rom> <spc folder> <movie> [seconds]: plays a TASVideos movie
+      // (.bk2 or .smv) in Play & rip, learning the song address from the songs heard.
+      TasMovie movie;
+      std::string err;
+      if (!movie.load(argv[5], err))
+      {
+         fprintf(stderr, "%s\n", err.c_str());
+         return 1;
+      }
+      printf("%s movie from %s: %zu frames, %s\n", movie.format.c_str(), movie.core.c_str(), movie.frames.size(), movie.game.c_str());
+      RomSession s;
+      s.set_app_dir(app_data_dir() + "\\cli");
+      if (!s.open(argv[3], argv[2], dir_of(argv[2]), err))
+      {
+         fprintf(stderr, "open: %s\n", err.c_str());
+         return 1;
+      }
+      s.clear_library();
+      int f = 0;
+      auto flush = [&] { for (auto &l : s.take_log()) printf("  [%02d:%02d:%02d] %s\n", f / 216000, f / 3600 % 60, f / 60 % 60, l.c_str()); };
+      auto wait_refs = [&] {
+         while (s.loading_references())
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+         s.apply_reference_results();
+         flush();
+      };
+      wait_refs();
+      s.remove_references();
+      s.import_references(argv[4], err);
+      wait_refs();
+      s.address = SongAddress();
+      long limit = argc > 6 ? (long)(atof(argv[6]) * 60) : (long)movie.frames.size();
+      std::lock_guard<std::mutex> lock(s.core_mutex);
+      s.core.set_skip_video(true);
+      // Movies start at power-on; the session's core has already run and been soft reset.
+      s.core.unload();
+      if (!s.core.load(argv[2], argv[3], dir_of(argv[2]), app_data_dir() + "\\cli\\saves", err))
+      {
+         fprintf(stderr, "load: %s\n", err.c_str());
+         return 1;
+      }
+      auto t0 = std::chrono::steady_clock::now();
+      bool raw = getenv("PROTEUS_MOVIE_RAW") != nullptr;   // just run the core: for cores other than snes9x
+      for (size_t i = 0; i < movie.frames.size() && f < limit; i++)
+      {
+         if (movie.frames[i].flag != TasMovie::PAD)
+         {
+            s.core.reset();
+            continue;
+         }
+         uint16_t held = movie.frames[i].buttons;
+         const char *shots = getenv("PROTEUS_MOVIE_SHOTS");   // folder for a screenshot every 30 seconds
+         int every = getenv("PROTEUS_MOVIE_SHOT_EVERY") ? atoi(getenv("PROTEUS_MOVIE_SHOT_EVERY")) : 1800;
+         bool shot = shots && f % every == every - 1;
+         s.core.set_skip_video(!shot);
+         if (raw)
+            s.core.run_frame(held);
+         else
+            s.play_frame(held);
+         s.core.audio().clear();
+         if (shot && s.core.frame_width())
+         {
+            unsigned w = s.core.frame_width(), h = s.core.frame_height();
+            std::string b = "BM" + std::string(52, '\0');
+            auto put = [&](size_t o, uint32_t v) { for (int i = 0; i < 4; i++) b[o + i] = (char)(v >> (8 * i)); };
+            put(2, 54 + w * h * 4); put(10, 54); put(14, 40); put(18, w); put(22, (uint32_t)-(int32_t)h);
+            b[26] = 1; b[28] = 32;
+            b.append((const char *)s.core.frame().data(), (size_t)w * h * 4);
+            char name[64];
+            snprintf(name, sizeof(name), "\\%07d.bmp", f + 1);
+            write_text(std::string(shots) + name, b);
+         }
+         f++;
+         if (f % 36000 == 0)
+         {
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            printf("[%02d:%02d:00] %.0f fps, %s\n", f / 216000, f / 3600 % 60, f / secs, s.learning_status().c_str());
+         }
+         flush();
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+      s.play_frame(0);
+      flush();
+      printf("song address: %s (%s)\n", s.address.known ? describe_song_address(s.address).c_str() : "none", s.address_source.c_str());
+      return 0;
+   }
+   if (cmd == "folder" && argc >= 4)
+   {
+      // proteus-cli folder <core> <rom folder> [--movies] [--rescan]: Scan folder, as in Studio.
+      FolderScan::Options o;
+      o.core_path = argv[2];
+      o.system_dir = dir_of(argv[2]);
+      o.folder = argv[3];
+      o.app_dir = app_data_dir() + "\\cli";
+      for (int i = 4; i < argc; i++)
+      {
+         o.use_movies = o.use_movies || std::string(argv[i]) == "--movies";
+         o.rescan = o.rescan || std::string(argv[i]) == "--rescan";
+      }
+      FolderScan scan;
+      scan.start(o);
+      std::string last;
+      size_t shown = 0;
+      while (true)
+      {
+         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+         std::vector<FolderScanRow> rows = scan.rows();
+         for (; shown < rows.size(); shown++)
+         {
+            const FolderScanRow &r = rows[shown];
+            printf("%-6s %-40s refs %3d table %d songs %3d named %3d %-10s %s | %s\n", r.verdict.c_str(), r.game.c_str(), r.references,
+                  r.table ? 1 : 0, r.songs, r.named, r.address.c_str(), r.how.c_str(), r.note.c_str());
+         }
+         if (!scan.running())
+            break;
+      }
+      printf("%s\nreport: %s\n", scan.message().c_str(), scan.report_path().c_str());
+      return 0;
+   }
+   if (cmd == "tas" && argc >= 4)
+   {
+      // proteus-cli tas <core> <rom> [bizhawk|movies|download N|play <movie> <spc folder> [speed %]]:
+      // the TAS movie tools of Advanced > TAS movie.
+      RomSession s;
+      s.set_app_dir(app_data_dir() + "\\cli");
+      std::string err, what = argc > 4 ? argv[4] : "movies";
+      if (!s.open(argv[3], argv[2], dir_of(argv[2]), err))
+      {
+         fprintf(stderr, "open: %s\n", err.c_str());
+         return 1;
+      }
+      auto flush = [&] { for (auto &l : s.take_log()) printf("  | %s\n", l.c_str()); };
+      auto wait_tool = [&] {
+         std::string last;
+         while (s.tool_busy())
+         {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::string m = s.tool_message();
+            if (m != last)
+               printf("  %s\n", (last = m).c_str());
+         }
+         printf("%s\n", s.tool_message().c_str());
+         flush();
+      };
+      if (what == "bizhawk")
+      {
+         s.install_bizhawk();
+         wait_tool();
+         return bizhawk_installed(s.app_dir()) ? 0 : 1;
+      }
+      if (what == "movies" || what == "download")
+      {
+         s.find_movies();
+         wait_tool();
+         std::vector<TasPublication> list = s.movie_list();
+         for (size_t i = 0; i < list.size(); i++)
+            printf("  %2zu  %-4s %-9s %-16s %.2f  %s\n", i, list[i].playable() ? "ok" : "-", list[i].duration().c_str(),
+                  list[i].emulator.c_str(), list[i].similarity, list[i].title.c_str());
+         if (what == "download" && argc > 5 && (size_t)atoi(argv[5]) < list.size())
+         {
+            s.download_movie(list[atoi(argv[5])]);
+            wait_tool();
+         }
+         for (const auto &m : s.downloaded_movies())
+            printf("  downloaded: %s\n", m.c_str());
+         return 0;
+      }
+      if (what == "play" && argc >= 7)
+      {
+         auto wait_refs = [&] {
+            while (s.loading_references())
+               std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            s.apply_reference_results();
+            flush();
+         };
+         wait_refs();
+         s.clear_library();
+         s.remove_references();
+         s.import_references(argv[6], err);
+         wait_refs();
+         s.address = SongAddress();
+         s.start_movie(argv[5], argc > 7 ? atoi(argv[7]) : 6400, getenv("PROTEUS_SHOW_BIZHAWK") != nullptr);
+         std::string last;
+         auto t0 = std::chrono::steady_clock::now();
+         while (s.scanning())
+         {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            std::string m = s.scan_message();
+            int secs = (int)std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (m != last && secs % 30 == 0)
+               printf("  [%4ds] %s\n", secs, (last = m).c_str());
+            flush();
+         }
+         flush();
+         printf("%s\n", s.scan_message().c_str());
+         std::lock_guard<std::mutex> lock(s.songs_mutex);
+         for (const auto &song : s.songs)
+            printf("  %s  %s\n", song.has_value ? ("0x" + std::string(song.value < 16 ? "0" : "") + [&] { char b[8]; snprintf(b, 8, "%X", song.value); return std::string(b); }()).c_str() : "  --", song.title.c_str());
+         return 0;
+      }
+      fprintf(stderr, "unknown tas command\n");
+      return 2;
+   }
+   if (cmd == "dumps" && argc >= 4)
+   {
+      // proteus-cli dumps <spc folder> <dump folder>: learns the song address from RAM dumps
+      // (64 KB sound CPU, then game RAM) saved while BizHawk played a movie.
+      ReferenceSet refs;
+      std::string err;
+      refs.load(argv[2], err);
+      MovieLearner learner(refs);
+      std::vector<std::string> files = list_files(argv[3]);
+      std::sort(files.begin(), files.end());
+      int last = -2;
+      for (const auto &name : files)
+      {
+         if (lower_ext(name) != "bin")
+            continue;
+         std::vector<uint8_t> d;
+         if (!read_file_bytes(std::string(argv[3]) + "\\" + name, d) || d.size() <= 0x10000)
+            continue;
+         int r = learner.add(d.data(), d.data() + 0x10000, d.size() - 0x10000);
+         if (r != last)
+         {
+            printf("  %s  %s\n", name.c_str(), r >= 0 ? refs.song(r).title.c_str() : "-");
+            last = r;
+         }
+      }
+      MovieLearner::Result res = learner.result();
+      printf("%d moments, %zu songs heard, %d settled, %d bytes follow the music\n", learner.moments(), learner.heard().size(), res.songs, res.candidates);
+      for (auto &t : res.top)
+      {
+         printf("  $%05X tells %d songs apart\n", t.first, t.second);
+         if (&t - &res.top[0] < 2)
+            printf("%s", learner.describe(t.first).c_str());
+      }
+      if (res.found)
+      {
+         printf("song address $%04X", res.address);
+         for (uint32_t t : res.ties)
+            printf(" (ties $%04X)", t);
+         printf("\n");
+         for (const auto &v : res.values)
+            printf("  %02X  %s\n", v.second, refs.song(v.first).title.c_str());
+      }
       return 0;
    }
    if (cmd == "trace" && argc >= 6)
