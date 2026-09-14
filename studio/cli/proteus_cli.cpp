@@ -21,6 +21,7 @@
 #include "rom_session.h"
 #include "snes_rom.h"
 #include "song_notes.h"
+#include "spc_rip.h"
 #include "zip_read.h"
 
 static bool load_rom(const std::string &path, SnesRom &rom)
@@ -240,6 +241,126 @@ int main(int argc, char **argv)
          put(28, rate * 4, 4); put(32, 4, 2); put(34, 16, 2); put(40, bytes, 4);
          write_text(argv[6], h + std::string((const char*)all.data(), bytes));
          printf("wrote %s (%u Hz)\n", argv[6], rate);
+      }
+      return 0;
+   }
+   if (cmd == "learn" && argc >= 6)
+   {
+      // proteus-cli learn <core> <rom> <spc folder> <seconds>: plays the game in Studio's Play & rip
+      // with random presses, learning the song address from the reference songs heard.
+      RomSession s;
+      s.set_app_dir(app_data_dir() + "\\cli");
+      std::string err;
+      if (!s.open(argv[3], argv[2], dir_of(argv[2]), err))
+      {
+         fprintf(stderr, "open: %s\n", err.c_str());
+         return 1;
+      }
+      s.clear_library();
+      auto flush = [&] { for (auto &l : s.take_log()) printf("  | %s\n", l.c_str()); };
+      auto wait_refs = [&] {
+         while (s.loading_references())
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+         s.apply_reference_results();
+         flush();
+      };
+      wait_refs();
+      s.remove_references();
+      s.import_references(argv[4], err);
+      wait_refs();
+      s.address = SongAddress();
+      int frames = (int)(atof(argv[5]) * 60);
+      uint32_t seed = 7;
+      uint16_t held = 0;
+      int hold = 0;
+      std::lock_guard<std::mutex> lock(s.core_mutex);
+      s.core.set_skip_video(true);
+      for (int f = 0; f < frames; f++)
+      {
+         if (--hold <= 0)
+         {
+            seed = seed * 1103515245 + 12345;
+            int pick = (seed >> 16) % 10;
+            static const int kButtons[] = { RETRO_DEVICE_ID_JOYPAD_START, RETRO_DEVICE_ID_JOYPAD_A, RETRO_DEVICE_ID_JOYPAD_B,
+               RETRO_DEVICE_ID_JOYPAD_RIGHT, RETRO_DEVICE_ID_JOYPAD_RIGHT, RETRO_DEVICE_ID_JOYPAD_LEFT,
+               RETRO_DEVICE_ID_JOYPAD_UP, RETRO_DEVICE_ID_JOYPAD_DOWN, RETRO_DEVICE_ID_JOYPAD_Y, RETRO_DEVICE_ID_JOYPAD_X };
+            held = (uint16_t)(1 << kButtons[pick]);
+            hold = 6 + (int)((seed >> 8) % 60);
+         }
+         s.play_frame(held);
+         s.core.audio().clear();
+         if (f % 600 == 599)
+            printf("[%3ds] %s\n", f / 60, s.learning_status().c_str());
+         flush();
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+      s.play_frame(0);
+      flush();
+      printf("song address: %s (%s)\n", s.address.known ? describe_song_address(s.address).c_str() : "none", s.address_source.c_str());
+      return 0;
+   }
+   if (cmd == "trace" && argc >= 6)
+   {
+      // proteus-cli trace <core> <rom> <spc folder> <seconds>: plays the game tapping Start and
+      // prints each command sent to the sound CPU, and which reference plays every 2 seconds.
+      CoreHost core;
+      std::string err, save = app_data_dir() + "\\cli\\saves";
+      make_dirs(save);
+      if (!core.load(argv[2], argv[3], dir_of(argv[2]), save, err))
+      {
+         fprintf(stderr, "load: %s\n", err.c_str());
+         return 1;
+      }
+      for (int f = 0; f < 60; f++)
+         core.run_frame(0);
+      std::vector<uint8_t> st = core.save_state();
+      spc_calibrate_snes9x(st, [&](const std::vector<uint8_t> &x) { core.load_state(x); return core.save_state(); });
+      core.reset();
+      core.set_skip_video(true);
+      ReferenceSet refs;
+      refs.load(argv[4], err);
+      std::vector<SongNotes> notes(refs.size());
+      for (size_t i = 0; i < refs.size(); i++)
+         spc_notes(refs.song(i).spc, notes[i], err);
+      uint8_t last[4] = { 0, 0, 0, 0 };
+      std::string playing;
+      int frames = (int)(atof(argv[5]) * 60);
+      for (int f = 0; f < frames; f++)
+      {
+         uint16_t buttons = (f > 240 && f % 180 < 6) ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
+         core.run_frame(buttons);
+         core.audio().clear();
+         std::vector<uint8_t> state = core.save_state();
+         uint8_t ports[4];
+         if (spc_snes9x_ports(state, ports) && memcmp(ports, last, 4))
+         {
+            printf("  [%5.1fs] ports %02X %02X %02X %02X\n", f / 60.0, ports[0], ports[1], ports[2], ports[3]);
+            memcpy(last, ports, 4);
+         }
+         if (f % 120 == 119)
+         {
+            std::vector<uint8_t> spc;
+            SongNotes n;
+            std::string name = "(silence)";
+            if (spc_from_snes9x_state(state, SpcTags(), spc, nullptr, err) && spc_notes(spc, n, err))
+            {
+               double best = 1;
+               for (size_t i = 0; i < refs.size(); i++)
+               {
+                  double d = notes_distance(n, notes[i]);
+                  if (d < best)
+                  {
+                     best = d;
+                     name = refs.song(i).title;
+                  }
+               }
+               char buf[32];
+               snprintf(buf, sizeof(buf), " (%.3f)", best);
+               name += buf;
+            }
+            if (name != playing)
+               printf("  [%5.1fs] playing: %s\n", f / 60.0, (playing = name).c_str());
+         }
       }
       return 0;
    }

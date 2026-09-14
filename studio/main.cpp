@@ -1134,6 +1134,17 @@ static void tab_play(App &a)
    }
    else
       ImGui::TextWrapped("Without a song address, press Rip current song whenever new music plays.");
+   if (!s.references.empty())
+   {
+      std::string learning = s.learning_status();
+      ImGui::Spacing();
+      ImGui::TextColored(col(P.dim), "Learning the song address");
+      ImGui::TextWrapped("%s", learning.empty()
+            ? "Play through places with different music. Each reference song heard rules out RAM that does not follow the music."
+            : learning.c_str());
+      if (s.address_source == "learned while playing")
+         ImGui::TextColored(col(P.ok), "Learned: %s", describe_song_address(s.address).c_str());
+   }
    ImGui::EndGroup();
 }
 

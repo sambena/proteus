@@ -194,7 +194,7 @@ The **Advanced** tabs:
 
 | Advanced tab | Use |
 | --- | --- |
-| Play & rip | Play either game. Whenever the game sends the sound CPU a command, or the song address changes, the new song is ripped once it has started (repeats are skipped); **Rip current song** (`R`) rips whatever plays. **Scan from this moment** makes later scans start there, for games that load music per world or level. |
+| Play & rip | Play either game. Whenever the game sends the sound CPU a command, or the song address changes, the new song is ripped once it has started (repeats are skipped); **Rip current song** (`R`) rips whatever plays. **Scan from this moment** makes later scans start there, for games that load music per world or level. With reference songs, play also learns the song address: every 2 seconds the song playing is named, and RAM that does not hold one value per song is ruled out; when one byte is left after three songs or more, it becomes the song address and the rips are numbered by it (A Link to the Past: `$0130` is among the last bytes left after three songs). This is the way for games that choose their music in their own logic and upload each song (ActRaiser 2), which no scan can start. |
 | Find song address | Press **Music changed** (`M`) right after the music changes and **Same music** (`N`) when it does not; the song and command bytes remain. |
 | Game info | The song address, how songs start, and the scan range, saved to the game database. |
 | Channels & mix | The channels muted while replacements play, and the mix volumes. |

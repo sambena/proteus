@@ -330,6 +330,19 @@ void RomSession::close()
       ra_thread_.join();
    if (ref_thread_.joinable())
       ref_thread_.join();
+   if (learn_thread_.joinable())
+      learn_thread_.join();
+   {
+      std::lock_guard<std::mutex> lock(learn_mutex_);
+      learn_songs_.clear();
+      learn_seen_.clear();
+      learn_broken_.clear();
+      learn_candidates_ = -1;
+      learn_left_.clear();
+      learned_ready_ = false;
+      learned_values_.clear();
+   }
+   live_frames_ = 0;
    references.clear();
    reference_notes.clear();
    song_table = SongTable();
@@ -521,7 +534,7 @@ void RomSession::load_references_async(bool download)
 
 bool RomSession::apply_reference_results()
 {
-   if (scanning_)
+   if (scanning_ || learning_busy_)
       return false;
    std::lock_guard<std::mutex> lock(ref_mutex_);
    if (!refs_ready_)
@@ -1272,13 +1285,16 @@ bool RomSession::choose_song_address(const SongStart &s, bool &by_address)
 // Starts each trial song and counts the different songs heard (music 2, jingles 1). With
 // reference songs, only those count (3 each), and only when at least two differ: a game that
 // moves on to its next song by itself plays the same one whatever number was sent.
-int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
+int RomSession::start_score(const SongStart &s, const SongPrint *baseline, const std::vector<uint32_t> *values)
 {
+   std::vector<uint32_t> trials(kTrials, kTrials + sizeof(kTrials) / sizeof(kTrials[0]));
+   if (values)
+      trials = *values;
    std::vector<SongPrint> heard;
    std::vector<std::string> named;
    int score = 0;
    std::string err;
-   for (uint32_t v : kTrials)
+   for (uint32_t v : trials)
    {
       if (cancel_ || !start_song(s, v))
          break;
@@ -1309,6 +1325,305 @@ int RomSession::start_score(const SongStart &s, const SongPrint *baseline)
    if (!references.empty())
       return named.size() >= 2 ? 3 * (int)named.size() : 0;
    return score;
+}
+
+// The reference whose notes clearly match an .spc (versions of a song count as its first), or -1.
+int RomSession::reference_by_notes(const std::vector<uint8_t> &spc)
+{
+   SongNotes notes;
+   std::string err;
+   if (spc.empty() || reference_notes.size() != references.size() || !spc_notes(spc, notes, err))
+      return -1;
+   auto stem = [&](size_t i) {
+      const std::string &t = references.song(i).title;
+      return t.substr(0, t.find(" ("));
+   };
+   std::vector<std::pair<double, size_t>> ranked;
+   for (size_t i = 0; i < references.size(); i++)
+      ranked.push_back({ notes_distance(notes, reference_notes[i]), i });
+   std::sort(ranked.begin(), ranked.end());
+   if (ranked.empty() || ranked[0].first >= 0.05)
+      return -1;
+   for (const auto &r : ranked)
+      if (stem(r.second) != stem(ranked[0].second))
+      {
+         if (r.first - ranked[0].first < 0.03)
+            return -1;
+         break;
+      }
+   for (size_t i = 0; i < references.size(); i++)
+      if (stem(i) == stem(ranked[0].second))
+         return (int)i;
+   return -1;
+}
+
+// Games that upload each song to the sound CPU when their own logic changes the music
+// (ActRaiser 2) start no song from a command written to RAM: the song they want is kept in a
+// variable. With reference songs, play the game for a while noting which reference plays, and
+// keep the RAM bytes that hold one value per song, the same each time that song plays. Each is
+// tried by writing song values at moments of the game; one that starts two different reference
+// songs is how songs start, and scans start from that moment.
+bool RomSession::find_song_variable()
+{
+   if (references.empty() || reference_notes.size() != references.size())
+      return false;
+   set_scan_message("Playing the game to learn which RAM follows its music...");
+   std::vector<uint8_t> resume = core.save_state();
+   core.reset();
+
+   const int kFrames = 5400, kListen = 120, kWindow = 90, kQuiet = 30;
+   struct Moment
+   {
+      int frame;
+      int song;
+      std::vector<uint8_t> ram, state;
+   };
+   // A command to the sound CPU after a quiet spell, with the RAM of the frames before it.
+   struct Event
+   {
+      int frame;
+      std::vector<std::vector<uint8_t>> window;   // oldest first, the event's frame last
+   };
+   std::vector<Moment> moments;
+   std::vector<Event> events;
+   std::vector<std::vector<uint8_t>> ring(kWindow);
+   size_t ram_size = 0;
+   uint8_t last_ports[4] = { 0, 0, 0, 0 };
+   int quiet = 0;
+   scan_total_ = kFrames;
+   scan_done_ = 0;
+   for (int f = 0; f < kFrames && !cancel_; f++, scan_done_++)
+   {
+      uint16_t buttons = (f > 240 && f % 180 < 6) ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
+      core.run_frame(buttons);
+      core.audio().clear();
+      const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+      std::vector<uint8_t> state = core.save_state();
+      if (!ram || state.empty())
+         break;
+      ring[f % kWindow].assign(ram, ram + ram_size);
+      uint8_t ports[4];
+      if (spc_snes9x_ports(state, ports))
+      {
+         bool changed = memcmp(ports, last_ports, 4) != 0;
+         if (changed && quiet >= kQuiet && f >= kWindow && events.size() < 32)
+         {
+            Event e;
+            e.frame = f;
+            for (int k = 1; k <= kWindow; k++)
+               e.window.push_back(ring[(f + k) % kWindow]);
+            events.push_back(std::move(e));
+         }
+         quiet = changed ? 0 : quiet + 1;
+         memcpy(last_ports, ports, 4);
+      }
+      if (f % kListen != kListen - 1)
+         continue;
+      Moment m;
+      m.frame = f;
+      m.state = std::move(state);
+      m.ram.assign(ram, ram + ram_size);
+      m.song = reference_by_notes(spc_of_state(m.state));
+      moments.push_back(std::move(m));
+   }
+   std::vector<int> songs;
+   std::string heard;
+   for (const auto &m : moments)
+      if (m.song >= 0 && std::find(songs.begin(), songs.end(), m.song) == songs.end())
+      {
+         songs.push_back(m.song);
+         heard += (heard.empty() ? "" : ", ") + references.song(m.song).title;
+      }
+   log("while playing, heard: " + (heard.empty() ? std::string("no reference songs") : heard));
+   if (cancel_ || songs.size() < 2)
+   {
+      core.load_state(resume);
+      return false;
+   }
+
+   struct Candidate
+   {
+      uint32_t address;
+      int songs;
+      int changes;
+      std::map<int, uint8_t> value_of;
+   };
+   std::vector<Candidate> candidates;
+
+   // Request bytes: set just before the music changes (and perhaps cleared once handled), with
+   // one value per song that follows.
+   auto song_at = [&](int frame, bool after) {
+      int found = -1;
+      for (const auto &m : moments)
+         if (after ? m.frame >= frame + 180 : m.frame <= frame)
+         {
+            found = m.song;
+            if (after)
+               break;
+         }
+      return found;
+   };
+   std::vector<std::pair<const Event *, int>> changes_to;   // event, the song after it
+   for (const auto &e : events)
+   {
+      int before = song_at(e.frame, false), after = song_at(e.frame, true);
+      if (after >= 0 && after != before)
+         changes_to.push_back({ &e, after });
+   }
+   std::vector<Candidate> requests;
+   if (changes_to.size() >= 2)
+      for (uint32_t at = 0; at < ram_size; at++)
+      {
+         std::map<int, uint8_t> value_of;
+         bool ok = true;
+         for (const auto &c : changes_to)
+         {
+            const auto &w = c.first->window;
+            uint8_t start = w.front()[at];
+            int written = -1;
+            for (size_t k = w.size(); k-- > 1;)
+               if (w[k][at] != start)
+               {
+                  written = w[k][at];
+                  break;
+               }
+            if (written <= 0)
+            {
+               ok = false;
+               break;
+            }
+            auto it = value_of.find(c.second);
+            if (it == value_of.end())
+               value_of[c.second] = (uint8_t)written;
+            else if (it->second != written)
+            {
+               ok = false;
+               break;
+            }
+         }
+         if (!ok || value_of.size() < 2)
+            continue;
+         std::vector<uint8_t> values;
+         for (const auto &v : value_of)
+            values.push_back(v.second);
+         std::sort(values.begin(), values.end());
+         if (std::unique(values.begin(), values.end()) == values.end())
+            requests.push_back({ at, (int)value_of.size(), 0, value_of });
+      }
+   std::sort(requests.begin(), requests.end(), [](const Candidate &a, const Candidate &b) {
+      return a.songs != b.songs ? a.songs > b.songs : a.address < b.address;
+   });
+   if (requests.size() > 16)
+      requests.resize(16);
+   log(std::to_string(changes_to.size()) + " music changes seen; RAM set before them:" + [&] {
+      std::string s;
+      for (const auto &c : requests)
+         s += " $" + hex4(c.address);
+      return s.empty() ? std::string(" none") : s;
+   }());
+
+   // Bytes holding one value per song, a different one for each song.
+   for (uint32_t at = 0; at < ram_size; at++)
+   {
+      std::map<int, uint8_t> value_of;
+      bool ok = true;
+      int changes = 0;
+      for (size_t i = 0; i < moments.size() && ok; i++)
+      {
+         if (i > 0 && moments[i].ram[at] != moments[i - 1].ram[at])
+            changes++;
+         if (moments[i].song < 0)
+            continue;
+         auto it = value_of.find(moments[i].song);
+         if (it == value_of.end())
+            value_of[moments[i].song] = moments[i].ram[at];
+         else
+            ok = it->second == moments[i].ram[at];
+      }
+      if (!ok || value_of.size() < 2)
+         continue;
+      std::vector<uint8_t> values;
+      for (const auto &v : value_of)
+         values.push_back(v.second);
+      std::sort(values.begin(), values.end());
+      if (std::unique(values.begin(), values.end()) != values.end())
+         continue;
+      candidates.push_back({ at, (int)value_of.size(), changes, value_of });
+   }
+   // Most songs followed, then the fewest changes: a song variable changes only with the music.
+   std::sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
+      if (a.songs != b.songs)
+         return a.songs > b.songs;
+      if (a.changes != b.changes)
+         return a.changes < b.changes;
+      return a.address < b.address;
+   });
+   if (candidates.size() > 16)
+      candidates.resize(16);
+   candidates.insert(candidates.begin(), requests.begin(), requests.end());
+   log("RAM following the music: " + [&] {
+      std::string s;
+      for (const auto &c : candidates)
+         s += " $" + hex4(c.address);
+      return s.empty() ? std::string(" none") : s;
+   }());
+
+   // One moment per song heard to try from: the middle of its first stretch.
+   std::vector<size_t> starts;
+   for (int song : songs)
+   {
+      size_t first = moments.size(), last = 0;
+      for (size_t i = 0; i < moments.size(); i++)
+         if (moments[i].song == song)
+         {
+            first = std::min(first, i);
+            last = i;
+            if (i + 1 < moments.size() && moments[i + 1].song != song)
+               break;
+         }
+      if (first < moments.size())
+         starts.push_back((first + last) / 2);
+   }
+
+   std::vector<uint8_t> keep_state = scan_state_, keep_before = scan_before_spc_;
+   scan_total_ = (int)(candidates.size() * starts.size());
+   scan_done_ = 0;
+   for (const auto &c : candidates)
+      for (size_t st : starts)
+      {
+         if (cancel_)
+            break;
+         scan_done_++;
+         SongStart s;
+         s.kind = SongStart::RAM;
+         s.address = c.address;
+         s.settle_frames = kRoutineSettle;
+         std::vector<uint32_t> values;
+         for (const auto &v : c.value_of)
+            if (v.second != moments[st].ram[c.address])
+               values.push_back(v.second);
+         for (uint32_t extra : { 1u, 2u, 3u })
+            if (std::find(values.begin(), values.end(), extra) == values.end() && extra != moments[st].ram[c.address])
+               values.push_back(extra);
+         set_scan_message("Trying $" + hex4(c.address) + " from " + std::to_string(moments[st].frame / 60) + " seconds in...");
+         scan_state_ = moments[st].state;
+         scan_before_spc_ = spc_of_state(scan_state_);
+         if (start_score(s, nullptr, &values) >= 6)
+         {
+            scan_start_ = s;
+            scan_start_source_ = "scan (reference songs)";
+            scan_changed_ = true;
+            log("songs start with " + describe_song_start(s) + " from " + std::to_string(moments[st].frame / 60) +
+                " seconds into the game; scans start there");
+            core.load_state(scan_state_);
+            return true;
+         }
+      }
+   scan_state_ = keep_state;
+   scan_before_spc_ = keep_before;
+   core.load_state(resume);
+   log("no RAM that follows the music starts songs when written");
+   return false;
 }
 
 // Watches the game start up and finds how it starts songs: first a RAM block it copies
@@ -1658,6 +1973,15 @@ void RomSession::scan_thread(int first, int last)
       if (!usable)
          log(describe_song_start(scan_start_) + " starts no songs");
    }
+   if (!usable && !cancel_ && !references.empty() && find_song_variable())
+   {
+      usable = true;
+      // Scans now start from a later moment: what plays there is the new baseline.
+      core.load_state(scan_state_);
+      run_frames(kRoutineSettle);
+      have_baseline = rip_state(core.save_state(), 0, false, baseline, err);
+      base_print = have_baseline ? &baseline.print : nullptr;
+   }
    if (!usable && !cancel_)
       usable = find_song_start(base_print);
    if (!usable)
@@ -1800,6 +2124,15 @@ void RomSession::play_frame(uint16_t buttons)
    core.run_frame(buttons);
    std::vector<uint8_t> state = core.save_state();
 
+   adopt_learned_address();
+   if (++live_frames_ % 120 == 0 && !references.empty() && !learning_busy_ && !state.empty())
+   {
+      size_t size = 0;
+      const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &size);
+      if (ram)
+         learn_moment(spc_of_state(state), std::vector<uint8_t>(ram, ram + size));
+   }
+
    // Any command the game sends the sound CPU may start a song: once the ports
    // have been quiet long enough for it to start, rip what plays.
    uint8_t ports[4];
@@ -1834,6 +2167,150 @@ void RomSession::play_frame(uint16_t buttons)
       if (rip_playing(state, true, message))
          log(message);
    }
+}
+
+void RomSession::learn_moment(std::vector<uint8_t> spc, std::vector<uint8_t> ram)
+{
+   if (learn_thread_.joinable())
+      learn_thread_.join();
+   learning_busy_ = true;
+   learn_thread_ = std::thread([this, spc = std::move(spc), ram = std::move(ram)]() {
+      int song = reference_by_notes(spc);
+      if (song >= 0)
+      {
+         std::lock_guard<std::mutex> lock(learn_mutex_);
+         size_t n = ram.size();
+         if (learn_broken_.size() != n)
+         {
+            learn_broken_.assign(n, 0);
+            learn_seen_.clear();
+            learn_songs_.clear();
+         }
+         size_t row = std::find(learn_songs_.begin(), learn_songs_.end(), song) - learn_songs_.begin();
+         bool new_song = row == learn_songs_.size();
+         if (new_song)
+         {
+            learn_songs_.push_back(song);
+            learn_seen_.push_back(std::vector<int16_t>(n, -1));
+         }
+         std::vector<int16_t> &seen = learn_seen_[row];
+         for (size_t a = 0; a < n; a++)
+         {
+            if (learn_broken_[a])
+               continue;
+            if (seen[a] < 0)
+               seen[a] = ram[a];
+            else if (seen[a] != ram[a])
+               learn_broken_[a] = 1;
+         }
+         if (new_song)
+            log("heard \"" + references.song(song).title + "\" while playing");
+
+         // Bytes still following the music: one value per song, a different one for each.
+         if (learn_songs_.size() >= 2)
+         {
+            std::vector<uint32_t> left;
+            for (size_t a = 0; a < n; a++)
+            {
+               if (learn_broken_[a])
+                  continue;
+               bool used[256] = { false };
+               bool unique = true;
+               for (size_t r = 0; r < learn_seen_.size() && unique; r++)
+               {
+                  uint8_t v = (uint8_t)learn_seen_[r][a];
+                  unique = !used[v];
+                  used[v] = true;
+               }
+               if (unique)
+                  left.push_back((uint32_t)a);
+            }
+            learn_left_ = left.size() <= 8 ? left : std::vector<uint32_t>();
+            if ((int)left.size() != learn_candidates_)
+            {
+               learn_candidates_ = (int)left.size();
+               log(std::to_string(left.size()) + " RAM bytes follow the music after " + std::to_string(learn_songs_.size()) + " songs");
+            }
+            if (left.size() == 1 && learn_songs_.size() >= 3 && (!learned_ready_ || learned_address_ != left[0]))
+            {
+               learned_address_ = left[0];
+               learned_values_.clear();
+               for (size_t r = 0; r < learn_songs_.size(); r++)
+                  learned_values_[learn_songs_[r]] = (uint8_t)learn_seen_[r][left[0]];
+               learned_ready_ = true;
+            }
+         }
+      }
+      learning_busy_ = false;
+   });
+}
+
+std::string RomSession::learning_status()
+{
+   std::lock_guard<std::mutex> lock(learn_mutex_);
+   if (learn_songs_.empty())
+      return "";
+   std::string s = std::to_string(learn_songs_.size()) + " songs heard";
+   if (learn_candidates_ >= 0)
+      s += ", " + std::to_string(learn_candidates_) + " RAM bytes follow the music";
+   if (!learn_left_.empty())
+   {
+      s += ":";
+      for (uint32_t a : learn_left_)
+         s += " $" + hex4(a);
+   }
+   return s;
+}
+
+// On the thread that plays: makes a learned song address the one Proteus follows, and numbers
+// the reference songs already ripped.
+void RomSession::adopt_learned_address()
+{
+   std::map<int, uint8_t> values;
+   uint32_t at;
+   {
+      std::lock_guard<std::mutex> lock(learn_mutex_);
+      if (!learned_ready_)
+         return;
+      learned_ready_ = false;
+      at = learned_address_;
+      values = learned_values_;
+   }
+   if (address.known && address.memory == 0 && address.bytes.empty() && address.address == at)
+      return;
+   address = SongAddress();
+   address.known = true;
+   address.address = at;
+   address.size = 1;
+   address.debounce = 2;
+   address_source = "learned while playing";
+   have_last_ = false;
+   std::string list;
+   for (const auto &v : values)
+      list += (list.empty() ? "" : ", ") + references.song(v.first).title + " " + hex2(v.second);
+   log("the music follows $" + hex4(at) + " (" + list + "); Proteus will follow it");
+   save_to_game_db("learned while playing");
+   {
+      std::lock_guard<std::mutex> lock(songs_mutex);
+      for (auto &s : songs)
+      {
+         if (s.has_value || s.reference.empty())
+            continue;
+         for (const auto &v : values)
+            if (references.song(v.first).title == s.reference && !find_song(v.second))
+            {
+               s.has_value = true;
+               s.value = v.second;
+               break;
+            }
+      }
+      std::stable_sort(songs.begin(), songs.end(), [](const FoundSong &a, const FoundSong &b) {
+         if (a.has_value != b.has_value)
+            return a.has_value;
+         return a.value < b.value;
+      });
+   }
+   save_library();
 }
 
 bool RomSession::rip_playing(const std::vector<uint8_t> &state, bool automatic, std::string &message)

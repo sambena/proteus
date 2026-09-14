@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -137,6 +138,10 @@ public:
    void play_frame(uint16_t buttons);   // core_mutex held by the caller
    // Rips whatever the game is playing now; core_mutex held by the caller.
    bool rip_now(std::string &message);
+   // With reference songs, play also learns the song address: every 2 seconds the song playing is
+   // named, and RAM bytes that do not hold one value per song are ruled out. When one byte is left
+   // after three or more songs, it becomes the song address and rips are numbered by it.
+   std::string learning_status();
    uint32_t last_song_value() const { return last_value_; }
    bool heard_song() const { return have_last_; }
 
@@ -153,8 +158,11 @@ private:
    // Returns the frame (from the start) of the onset, or -1.
    int run_until_heard(int frames, std::vector<uint8_t> &onset);
    bool choose_song_address(const SongStart &s, bool &by_address);
-   int start_score(const SongStart &s, const SongPrint *baseline);
+   // "values": song numbers to try instead of the usual few.
+   int start_score(const SongStart &s, const SongPrint *baseline, const std::vector<uint32_t> *values = nullptr);
    bool find_song_start(const SongPrint *baseline);
+   bool find_song_variable();
+   int reference_by_notes(const std::vector<uint8_t> &spc);
    bool choose_stub_area(const std::vector<uint8_t> &before);
    void add_song_locked(FoundSong song);
    // "same": titles of references that are versions of one song, the first one preferred;
@@ -184,6 +192,22 @@ private:
    std::string ref_message_;
    std::vector<uint8_t> scan_before_spc_;   // the sound CPU at the scan start state
    std::vector<uint8_t> command_state_;     // the game when it last sent the sound CPU a command
+
+   // Learning the song address while playing.
+   void learn_moment(std::vector<uint8_t> spc, std::vector<uint8_t> ram);
+   void adopt_learned_address();
+   std::thread learn_thread_;
+   std::atomic<bool> learning_busy_{false};
+   std::mutex learn_mutex_;
+   int live_frames_ = 0;
+   std::vector<int> learn_songs_;                  // reference per row of learn_seen_
+   std::vector<std::vector<int16_t>> learn_seen_;  // per song heard, per RAM byte: its value, or -1
+   std::vector<uint8_t> learn_broken_;             // bytes that held two values during one song
+   int learn_candidates_ = -1;
+   std::vector<uint32_t> learn_left_;              // the bytes left, when few
+   bool learned_ready_ = false;
+   uint32_t learned_address_ = 0;
+   std::map<int, uint8_t> learned_values_;         // reference -> song value
    std::string rom_path_, game_name_, display_name_, profile_path_;
    SnesRom rom_;
 
