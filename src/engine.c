@@ -279,7 +279,8 @@ static void apply_song(px_engine *e, uint32_t value, bool announce)
    e->have_applied = true;
    e->applied      = value;
 
-   if (announce && e->cfg.notify)
+   /* Song changes are always logged; notifications only shows them on screen. */
+   if (announce)
    {
       static const char *names[] = { "", "silence", "original music", "keep playing" };
       const char *what = c.action == PX_ACTION_FILE ? c.path : names[c.action];
@@ -288,7 +289,8 @@ static void apply_song(px_engine *e, uint32_t value, bool announce)
          name--;
       elog(e, RETRO_LOG_INFO, "song 0x%X -> %s%s", (unsigned)value, what,
             c.mapped ? "" : " (unmapped)");
-      enotify(e, "Proteus: song 0x%X%s: %s", (unsigned)value, c.mapped ? "" : " (unmapped)", name);
+      if (e->cfg.notify)
+         enotify(e, "Proteus: song 0x%X%s: %s", (unsigned)value, c.mapped ? "" : " (unmapped)", name);
    }
 
    switch (c.action)

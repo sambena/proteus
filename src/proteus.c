@@ -17,6 +17,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <strings.h>
+#include <time.h>
 
 #include "libretro.h"
 #include "engine.h"
@@ -95,6 +96,10 @@ static struct
    size_t scratch_frames;
 } st;
 
+/* <system>/proteus/proteus.log: RetroArch's own log is often off, and this is where
+ * profiles live. */
+static char log_path[PX_PATH_MAX];
+
 static void px_log(enum retro_log_level level, const char *fmt, ...)
 {
    char msg[1024];
@@ -106,6 +111,19 @@ static void px_log(enum retro_log_level level, const char *fmt, ...)
       fe_log(level, "[Proteus] %s\n", msg);
    else
       fprintf(stderr, "[Proteus] %s\n", msg);
+   if (log_path[0])
+   {
+      static const char *names[] = { "DEBUG", "INFO", "WARN", "ERROR" };
+      FILE *f = px_fopen(log_path, "ab");
+      if (f)
+      {
+         char stamp[32];
+         time_t now = time(NULL);
+         strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+         fprintf(f, "%s [%s] %s\n", stamp, names[level <= RETRO_LOG_ERROR ? level : RETRO_LOG_ERROR], msg);
+         fclose(f);
+      }
+   }
 }
 
 static void px_notify(const char *fmt, ...)
@@ -442,8 +460,12 @@ static void load_profile_for(const char *content_path)
 
    if (fe_env)
       fe_env(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_dir);
+   /* Written only when the folder exists: that is where profiles are. */
+   if (system_dir && *system_dir)
+      snprintf(log_path, sizeof(log_path), "%s/proteus/proteus.log", system_dir);
    if (!px_engine_find_profile(content_path, system_dir, path, sizeof(path)))
-      px_log(RETRO_LOG_INFO, "no profile for this game, passing audio through");
+      px_log(RETRO_LOG_INFO, "no profile for %s (looked for <ROM name>.proteus.ini next to it and %s/proteus/<ROM name>.ini); passing audio through",
+            content_path ? content_path : "this game", system_dir ? system_dir : "<system>");
    else
       px_engine_load(&engine, path);
 

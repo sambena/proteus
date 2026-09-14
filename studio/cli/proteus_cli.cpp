@@ -173,6 +173,76 @@ int main(int argc, char **argv)
          printf("  %02X  %-40s %s\n", song.value, song.title.c_str(), song.reference.empty() ? "no match" : "");
       return 0;
    }
+   if (cmd == "play" && argc >= 6)
+   {
+      // proteus-cli play <core> <rom> <system dir> <seconds> [out.wav]: runs a core (the Proteus
+      // wrapper, say) as RetroArch would, tapping Start now and then, and prints its log.
+      CoreHost core;
+      std::string err, save = app_data_dir() + "\\cli\\saves";
+      make_dirs(save);
+      if (!core.load(argv[2], argv[3], argv[4], save, err))
+      {
+         fprintf(stderr, "load: %s\n", err.c_str());
+         return 1;
+      }
+      // PROTEUS_OPTIONS=key=value,key=value: core options, as set in RetroArch's Quick Menu.
+      if (const char *o = getenv("PROTEUS_OPTIONS"))
+      {
+         std::string opts = o;
+         for (size_t p = 0; p < opts.size();)
+         {
+            size_t comma = opts.find(',', p), eq = opts.find('=', p);
+            if (comma == std::string::npos)
+               comma = opts.size();
+            if (eq != std::string::npos && eq < comma)
+               core.set_option(opts.substr(p, eq - p), opts.substr(eq + 1, comma - eq - 1));
+            p = comma + 1;
+         }
+      }
+      int frames = (int)(atof(argv[5]) * 60);
+      // PROTEUS_WATCH=1DFB,0DDA: print work RAM bytes whenever they change.
+      std::vector<uint32_t> watch;
+      if (const char *w = getenv("PROTEUS_WATCH"))
+         for (const char *p = w; *p;)
+         {
+            char *end;
+            watch.push_back((uint32_t)strtoul(p, &end, 16));
+            p = *end ? end + 1 : end;
+         }
+      std::vector<int> last(watch.size(), -1);
+      std::vector<int16_t> all;
+      for (int f = 0; f < frames; f++)
+      {
+         uint16_t buttons = (f > 240 && f % 180 < 6) ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
+         core.run_frame(buttons);
+         size_t ram_size = 0;
+         const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+         for (size_t i = 0; i < watch.size() && ram; i++)
+            if (watch[i] < ram_size && ram[watch[i]] != last[i])
+            {
+               printf("  [%5.1fs] $%04X = %02X\n", f / 60.0, watch[i], ram[watch[i]]);
+               last[i] = ram[watch[i]];
+            }
+         if (argc > 6)
+            all.insert(all.end(), core.audio().begin(), core.audio().end());
+         core.audio().clear();
+         for (auto &l : core.log())
+            printf("  [%5.1fs] %s", f / 60.0, l.c_str());
+         core.log().clear();
+      }
+      if (argc > 6)
+      {
+         // 16-bit stereo WAV
+         uint32_t rate = (uint32_t)core.sample_rate(), bytes = (uint32_t)(all.size() * 2);
+         std::string h = "RIFF    WAVEfmt                     data    ";
+         auto put = [&](size_t at, uint32_t v, int n) { for (int i = 0; i < n; i++) h[at + i] = (char)(v >> (8 * i)); };
+         put(4, 36 + bytes, 4); put(16, 16, 4); put(20, 1, 2); put(22, 2, 2); put(24, rate, 4);
+         put(28, rate * 4, 4); put(32, 4, 2); put(34, 16, 2); put(40, bytes, 4);
+         write_text(argv[6], h + std::string((const char*)all.data(), bytes));
+         printf("wrote %s (%u Hz)\n", argv[6], rate);
+      }
+      return 0;
+   }
    if (cmd == "sound" && argc >= 4)
    {
       // proteus-cli sound <spc folder> <rip.spc>...: references ranked by how the rip sounds.
