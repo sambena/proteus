@@ -4,7 +4,10 @@
 //   proteus-cli table <rom> <spc folder>
 //   proteus-cli match <spc folder> <rip.spc> [before.spc]
 //   proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system <dir>] [--refs <spc folder>] [--first N] [--last N] [--keep-rips dir]
-//   proteus-cli download "<game name>" <folder>
+//   proteus-cli list <rom> <snes9x core> [app dir]
+//   proteus-cli import <folder, archive or .spc> <folder>
+//   proteus-cli download "<game name>" <folder> [zophar|snesmusic]
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +20,7 @@
 #include "reference.h"
 #include "rom_session.h"
 #include "snes_rom.h"
+#include "song_notes.h"
 #include "zip_read.h"
 
 static bool load_rom(const std::string &path, SnesRom &rom)
@@ -169,10 +173,44 @@ int main(int argc, char **argv)
          printf("  %02X  %-40s %s\n", song.value, song.title.c_str(), song.reference.empty() ? "no match" : "");
       return 0;
    }
-   if (cmd == "download" && argc == 4)
+   if (cmd == "sound" && argc >= 4)
+   {
+      // proteus-cli sound <spc folder> <rip.spc>...: references ranked by how the rip sounds.
+      ReferenceSet refs;
+      std::string err;
+      refs.load(argv[2], err);
+      std::vector<SongNotes> notes(refs.size());
+      for (size_t i = 0; i < refs.size(); i++)
+         spc_notes(refs.song(i).spc, notes[i], err);
+      for (int a = 3; a < argc; a++)
+      {
+         std::vector<uint8_t> rip;
+         SongNotes n;
+         if (!read_file_bytes(argv[a], rip) || !spc_notes(rip, n, err))
+            continue;
+         std::vector<std::pair<double, size_t>> ranked;
+         for (size_t i = 0; i < refs.size(); i++)
+            ranked.push_back({ notes_distance(n, notes[i]), i });
+         std::sort(ranked.begin(), ranked.end());
+         printf("%s", file_name(argv[a]).c_str());
+         for (size_t k = 0; k < 3 && k < ranked.size(); k++)
+            printf("\t%s\t%.3f", refs.song(ranked[k].second).title.c_str(), ranked[k].first);
+         printf("\n");
+      }
+      return 0;
+   }
+   if (cmd == "import" && argc == 4)
    {
       std::string err;
-      int n = download_reference_songs(argv[2], argv[3], [](const std::string &m) { printf("  %s\n", m.c_str()); }, err);
+      int n = import_reference_songs(argv[2], argv[3], err);
+      printf("%d songs%s\n", n, err.empty() ? "" : (": " + err).c_str());
+      return n > 0 ? 0 : 1;
+   }
+   if (cmd == "download" && argc >= 4)
+   {
+      std::string err, from = argc > 4 ? argv[4] : "";
+      int sources = from == "zophar" ? REFERENCES_ZOPHAR : from == "snesmusic" ? REFERENCES_SNESMUSIC : REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC;
+      int n = download_reference_songs({ argv[2] }, argv[3], [](const std::string &m) { printf("  %s\n", m.c_str()); }, err, sources);
       printf("%d songs%s\n", n, err.empty() ? "" : (": " + err).c_str());
       return n > 0 ? 0 : 1;
    }
@@ -180,6 +218,8 @@ int main(int argc, char **argv)
          "  proteus-cli table <rom> <spc folder>\n"
          "  proteus-cli match <spc folder> <rip.spc> [before.spc]\n"
          "  proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system dir] [--refs spc folder] [--first N] [--last N] [--keep-rips dir]\n"
-         "  proteus-cli download \"<game name>\" <folder>\n");
+         "  proteus-cli list <rom> <snes9x core> [app dir]\n"
+         "  proteus-cli import <folder, archive or .spc> <folder>\n"
+         "  proteus-cli download \"<game name>\" <folder> [zophar|snesmusic]\n");
    return 2;
 }

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -11,6 +12,13 @@
 #include "http.h"
 #include "platform.h"
 #include "zip_read.h"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 static const size_t kSpcRam = 0x100;
 static const size_t kSpcMin = 0x10100;
@@ -492,23 +500,127 @@ static int import_zip(const std::vector<uint8_t> &zip, const std::string &dir, s
    return ok ? count : -1;
 }
 
+// ---------------------------------------------------------------------------
+// RAR and 7z archives, through 7-Zip
+// ---------------------------------------------------------------------------
+
+std::string find_7zip()
+{
+#ifdef _WIN32
+   char found[MAX_PATH];
+   if (SearchPathA(nullptr, "7z.exe", nullptr, sizeof(found), found, nullptr))
+      return found;
+   for (const char *var : { "ProgramW6432", "ProgramFiles", "ProgramFiles(x86)" })
+   {
+      const char *base = getenv(var);
+      if (base && file_exists(std::string(base) + "\\7-Zip\\7z.exe"))
+         return std::string(base) + "\\7-Zip\\7z.exe";
+   }
+#endif
+   return "";
+}
+
+#ifdef _WIN32
+static std::wstring widen_utf8(const std::string &s)
+{
+   int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+   std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+   if (n > 1)
+      MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+   return w;
+}
+
+static std::string temp_folder()
+{
+   wchar_t base[MAX_PATH];
+   GetTempPathW(MAX_PATH, base);
+   char name[64];
+   snprintf(name, sizeof(name), "proteus_refs_%lu_%lu", (unsigned long)GetCurrentProcessId(), (unsigned long)GetTickCount());
+   int n = WideCharToMultiByte(CP_UTF8, 0, base, -1, nullptr, 0, nullptr, nullptr);
+   std::string dir(n > 0 ? n - 1 : 0, '\0');
+   if (n > 1)
+      WideCharToMultiByte(CP_UTF8, 0, base, -1, &dir[0], n, nullptr, nullptr);
+   return dir + name;
+}
+
+static void remove_folder(const std::string &dir)
+{
+   for (const auto &f : list_files(dir))
+      DeleteFileW(widen_utf8(dir + "\\" + f).c_str());
+   RemoveDirectoryW(widen_utf8(dir).c_str());
+}
+#endif
+
+// Extracts the .spc files of any archive 7-Zip opens (SNESmusic.org's .rsn sets are RAR) into `dir`.
+static int import_with_7zip(const std::string &archive, const std::string &dir, std::string &error)
+{
+#ifdef _WIN32
+   std::string seven = find_7zip();
+   if (seven.empty())
+   {
+      error = file_name(archive) + " needs 7-Zip to open. Install 7-Zip (7-zip.org), or extract it yourself and import the folder.";
+      return -1;
+   }
+   std::string tmp = temp_folder();
+   make_dirs(tmp);
+   // e: flat, -y: no prompts, -r: .spc files in subfolders too
+   std::wstring cmd = L"\"" + widen_utf8(seven) + L"\" e -y -r \"-o" + widen_utf8(tmp) + L"\" \"" +
+         widen_utf8(archive) + L"\" *.spc";
+   STARTUPINFOW si{};
+   si.cb = sizeof(si);
+   PROCESS_INFORMATION pi{};
+   std::vector<wchar_t> line(cmd.begin(), cmd.end());
+   line.push_back(0);
+   if (!CreateProcessW(nullptr, line.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+   {
+      error = "could not run 7-Zip (error " + std::to_string(GetLastError()) + ")";
+      remove_folder(tmp);
+      return -1;
+   }
+   WaitForSingleObject(pi.hProcess, 120000);
+   DWORD code = 1;
+   GetExitCodeProcess(pi.hProcess, &code);
+   CloseHandle(pi.hProcess);
+   CloseHandle(pi.hThread);
+   int count = 0;
+   if (code != 0)
+      error = "7-Zip could not extract " + file_name(archive) + " (exit code " + std::to_string(code) + ")";
+   else
+   {
+      make_dirs(dir);
+      for (const auto &f : list_files(tmp))
+         if (lower_ext(f) == "spc" && copy_file_data(tmp + "\\" + f, dir + "\\" + f))
+            count++;
+   }
+   remove_folder(tmp);
+   return code == 0 ? count : -1;
+#else
+   (void)dir;
+   error = file_name(archive) + " needs 7-Zip to open; extract it yourself and import the folder.";
+   return -1;
+#endif
+}
+
 int import_reference_songs(const std::string &source, const std::string &dir, std::string &error)
 {
    int count = 0;
    std::string ext = lower_ext(source);
+   auto is_archive = [](const std::string &e) { return e == "rsn" || e == "rar" || e == "7z"; };
    if (dir_exists(source))
    {
       make_dirs(dir);
       for (const auto &f : list_files(source))
       {
-         std::string from = source + "\\" + f;
-         if (lower_ext(f) == "zip")
+         std::string from = source + "\\" + f, e = lower_ext(f);
+         if (e == "zip")
          {
             std::vector<uint8_t> zip;
             int n = read_file_bytes(from, zip) ? import_zip(zip, dir, error) : -1;
             count += std::max(0, n);
          }
-         else if (lower_ext(f) == "spc" && copy_file_data(from, dir + "\\" + f))
+         else if (is_archive(e))
+            count += std::max(0, import_with_7zip(from, dir, error));
+         else if (e == "spc" && copy_file_data(from, dir + "\\" + f))
             count++;
       }
    }
@@ -530,21 +642,25 @@ int import_reference_songs(const std::string &source, const std::string &dir, st
       if (copy_file_data(source, dir + "\\" + file_name(source)))
          count = 1;
    }
-   else if (ext == "rsn" || ext == "rar" || ext == "7z")
+   else if (is_archive(ext))
    {
-      error = file_name(source) + " is a " + (ext == "7z" ? "7-Zip" : "RAR") +
-              " archive, which Proteus Studio cannot open. Extract it first (7-Zip opens it), then import the folder.";
-      return -1;
+      count = import_with_7zip(source, dir, error);
+      if (count < 0)
+         return -1;
    }
    else
    {
-      error = "choose a folder, a .zip archive or .spc files";
+      error = "choose a folder, a .zip, .rsn, .rar or .7z archive, or .spc files";
       return -1;
    }
    if (count == 0 && error.empty())
       error = "no .spc files in " + file_name(source);
    return count;
 }
+
+// ---------------------------------------------------------------------------
+// Finding a game's set by name
+// ---------------------------------------------------------------------------
 
 // "Addams Family, The (USA) [!]" -> "Addams Family, The"
 static std::string plain_name(const std::string &name)
@@ -583,6 +699,120 @@ std::string zophar_slug(const std::string &game_name)
    return slug;
 }
 
+// The words that identify a game: lowercase, without punctuation or articles.
+static std::vector<std::string> name_words(const std::string &name)
+{
+   static const char *kSkip[] = { "the", "a", "an", "of", "and", "to", "in", "no" };
+   std::vector<std::string> words;
+   std::string w;
+   std::string text = plain_name(name) + " ";
+   for (char c : text)
+   {
+      unsigned char u = (unsigned char)c;
+      if (c == '\'')
+         continue;
+      if (isalnum(u))
+         w += (char)tolower(u);
+      else if (!w.empty())
+      {
+         bool skip = false;
+         for (const char *s : kSkip)
+            skip = skip || w == s;
+         if (!skip && std::find(words.begin(), words.end(), w) == words.end())
+            words.push_back(w);
+         w.clear();
+      }
+   }
+   return words;
+}
+
+// How alike two names are, 0..1: shared words over all words.
+double game_name_similarity(const std::string &a, const std::string &b)
+{
+   std::vector<std::string> x = name_words(a), y = name_words(b);
+   if (x.empty() || y.empty())
+      return 0;
+   size_t common = 0;
+   for (const auto &w : x)
+      common += std::find(y.begin(), y.end(), w) != y.end();
+   return (double)common / (double)(x.size() + y.size() - common);
+}
+
+// Spellings archives use for the same name: "Legend of Zelda - A Link to the Past, The" is
+// "Legend of Zelda, The - A Link to the Past" and "The Legend of Zelda - A Link to the Past".
+static std::vector<std::string> name_variants(const std::vector<std::string> &names)
+{
+   std::vector<std::string> out;
+   auto add = [&](const std::string &n) {
+      if (!n.empty() && std::find(out.begin(), out.end(), n) == out.end())
+         out.push_back(n);
+   };
+   for (const auto &raw : names)
+   {
+      std::string n = plain_name(raw);
+      add(n);
+      const std::string suffix = ", The";
+      std::string base = n;
+      if (n.size() > suffix.size() && n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0)
+      {
+         base = n.substr(0, n.size() - suffix.size());
+         size_t dash = base.find(" - ");
+         if (dash == std::string::npos)
+            dash = base.find(": ");
+         if (dash != std::string::npos)
+            add(base.substr(0, dash) + ", The" + base.substr(dash));
+         add("The " + base);
+         add(base);
+      }
+      else if (n.compare(0, 4, "The ") == 0)
+      {
+         base = n.substr(4);
+         size_t dash = base.find(" - ");
+         if (dash == std::string::npos)
+            dash = base.find(": ");
+         add(dash != std::string::npos ? base.substr(0, dash) + ", The" + base.substr(dash) : base + ", The");
+         add(base);
+      }
+      // "Name: Subtitle" and "Name - Subtitle" are written both ways.
+      for (const std::string &sep : { std::string(": "), std::string(" - ") })
+      {
+         size_t at = base.find(sep);
+         if (at != std::string::npos)
+            add(base.substr(0, at) + (sep == ": " ? " - " : ": ") + base.substr(at + sep.size()));
+      }
+   }
+   return out;
+}
+
+static std::string html_text(std::string s)
+{
+   const std::pair<const char *, const char *> entities[] = { { "&amp;", "&" }, { "&#039;", "'" }, { "&#39;", "'" }, { "&quot;", "\"" } };
+   for (const auto &e : entities)
+      for (size_t at; (at = s.find(e.first)) != std::string::npos;)
+         s.replace(at, strlen(e.first), e.second);
+   return s;
+}
+
+static std::string percent_decode(const std::string &s)
+{
+   std::string out;
+   for (size_t i = 0; i < s.size(); i++)
+   {
+      if (s[i] == '%' && i + 2 < s.size())
+      {
+         out += (char)strtol(s.substr(i + 1, 2).c_str(), nullptr, 16);
+         i += 2;
+      }
+      else
+         out += s[i];
+   }
+   return out;
+}
+
+static const double kNameMatch = 0.75;
+
+// ---- Zophar's Domain: zips at /music/nintendo-snes-spc/<slug>
+
 // The link to the page's emulated-format (.spc) archive.
 static std::string find_emu_zip(const std::string &html)
 {
@@ -602,36 +832,65 @@ static std::string find_emu_zip(const std::string &html)
    return "";
 }
 
-int download_reference_songs(const std::string &game_name, const std::string &dir,
+static int download_from_zophar(const std::vector<std::string> &variants, const std::string &dir,
       const std::function<void(const std::string &)> &progress, std::string &error)
 {
-   const std::string site = "https://www.zophar.net";
-   std::string name = plain_name(game_name);
-   std::string page_url = site + "/music/nintendo-snes-spc/" + zophar_slug(name);
-   std::string html, err;
-   progress("Looking for " + name + " on Zophar's Domain...");
-   std::string link = http_fetch(page_url, "", html, err) ? find_emu_zip(html) : "";
+   const std::string site = "https://www.zophar.net", section = "/music/nintendo-snes-spc/";
+   std::string html, err, link, page_url;
+   progress("Looking for " + variants.front() + " on Zophar's Domain...");
+   for (const auto &v : variants)
+   {
+      page_url = site + section + zophar_slug(v);
+      if (http_fetch(page_url, "", html, err) && !(link = find_emu_zip(html)).empty())
+         break;
+   }
    if (link.empty())
    {
-      // Not under the expected address: search for it.
-      std::string results;
-      if (!http_fetch(site + "/search?search=" + url_encode(name), "", results, err))
+      // Search with the identifying words, and with each part of a "Name - Subtitle" name,
+      // then take the result whose name is most like the game's.
+      std::vector<std::string> queries;
+      for (const auto &v : variants)
       {
-         error = "Zophar's Domain search failed: " + err;
+         std::string q;
+         for (const auto &w : name_words(v))
+            q += (q.empty() ? "" : " ") + w;
+         if (std::find(queries.begin(), queries.end(), q) == queries.end())
+            queries.push_back(q);
+      }
+      double best = 0;
+      std::string best_url;
+      for (size_t qi = 0; qi < queries.size() && qi < 4 && best < 0.99; qi++)
+      {
+         std::string results;
+         if (!http_fetch(site + "/search?search=" + url_encode(queries[qi]), "", results, err))
+            continue;
+         for (size_t at = 0; (at = results.find(section, at)) != std::string::npos; at += section.size())
+         {
+            size_t href = results.rfind("href=\"", at), endq = results.find('"', at);
+            if (href == std::string::npos || endq == std::string::npos || href + 6 > at)
+               continue;
+            std::string url = results.substr(href + 6, endq - href - 6);
+            std::string slug = url.substr(url.find(section) + section.size());
+            if (slug.size() > 5 && slug.compare(slug.size() - 5, 5, ".html") == 0)
+               slug.resize(slug.size() - 5);
+            std::string spaced = slug;
+            std::replace(spaced.begin(), spaced.end(), '-', ' ');
+            double score = 0;
+            for (const auto &v : variants)
+               score = std::max(score, game_name_similarity(v, spaced));
+            if (score > best)
+            {
+               best = score;
+               best_url = url[0] == '/' ? site + url : url;
+            }
+         }
+      }
+      if (best < kNameMatch)
+      {
+         error = "Zophar's Domain has no SNES soundtrack named like \"" + variants.front() + "\"";
          return -1;
       }
-      // Result links are absolute or site-relative: href=".../music/nintendo-snes-spc/<name>.html"
-      size_t at = results.find("/music/nintendo-snes-spc/");
-      size_t href = at == std::string::npos ? at : results.rfind("href=\"", at);
-      if (href == std::string::npos)
-      {
-         error = "Zophar's Domain has no SNES soundtrack named like \"" + name + "\". Download a set yourself and import it.";
-         return -1;
-      }
-      size_t endq = results.find('"', href + 6);
-      page_url = results.substr(href + 6, endq - href - 6);
-      if (page_url[0] == '/')
-         page_url = site + page_url;
+      page_url = best_url;
       progress("Opening " + page_url + "...");
       if (!http_fetch(page_url, "", html, err) || (link = find_emu_zip(html)).empty())
       {
@@ -643,22 +902,11 @@ int download_reference_songs(const std::string &game_name, const std::string &di
       link = "https:" + link;
    else if (link[0] == '/')
       link = site + link;
-   std::string file;
-   for (size_t i = link.rfind('/') + 1; i < link.size(); i++)
-   {
-      if (link[i] == '%' && i + 2 < link.size())
-      {
-         file += (char)strtol(link.substr(i + 1, 2).c_str(), nullptr, 16);
-         i += 2;
-      }
-      else
-         file += link[i];
-   }
-   progress("Downloading " + file + "...");
+   progress("Downloading " + percent_decode(link.substr(link.rfind('/') + 1)) + " from Zophar's Domain...");
    std::string body;
    if (!http_fetch(link, "", body, err))
    {
-      error = "download failed: " + err;
+      error = "download from Zophar's Domain failed: " + err;
       return -1;
    }
    std::vector<uint8_t> zip(body.begin(), body.end());
@@ -666,4 +914,142 @@ int download_reference_songs(const std::string &game_name, const std::string &di
    if (count == 0 && error.empty())
       error = "the archive from " + page_url + " has no .spc files";
    return count;
+}
+
+// ---- SNESmusic.org: sets listed by first letter, .rsn (RAR) archives
+
+static int download_from_snesmusic(const std::vector<std::string> &variants, const std::string &dir,
+      const std::function<void(const std::string &)> &progress, std::string &error)
+{
+   const std::string site = "https://www.snesmusic.org/v2/";
+   if (find_7zip().empty())
+   {
+      error = "SNESmusic.org sets need 7-Zip to open; install 7-Zip (7-zip.org)";
+      return -1;
+   }
+   progress("Looking for " + variants.front() + " on SNESmusic.org...");
+   std::vector<std::string> letters;
+   for (const auto &v : variants)
+   {
+      std::string n = plain_name(v);
+      if (n.compare(0, 4, "The ") == 0)
+         n = n.substr(4);
+      if (n.empty())
+         continue;
+      unsigned char c = (unsigned char)n[0];
+      std::string letter = isdigit(c) ? "n1-9" : std::string(1, (char)toupper(c));
+      if (isalnum(c) && std::find(letters.begin(), letters.end(), letter) == letters.end())
+         letters.push_back(letter);
+   }
+   double best = 0;
+   std::string best_id, best_name, err;
+   // Each letter's list comes 30 sets a page (limit=0, 30, 60...).
+   for (size_t li = 0; li < letters.size() && best < 0.99; li++)
+   for (int page = 0; page < 80 && best < 0.99; page++)
+   {
+      const std::string &letter = letters[li];
+      std::string list;
+      if (!http_fetch(site + "select.php?view=sets&char=" + letter + "&limit=" + std::to_string(page * 30), "", list, err))
+         break;
+      // <a href='profile.php?profile=set&amp;selected=1494'>Legend of Zelda: A Link to the Past</a>
+      const std::string key = "profile=set&amp;selected=";
+      if (list.find(key) == std::string::npos)
+         break;
+      // A page past the end repeats nothing new: stop when the next page link is missing.
+      bool more = list.find("limit=" + std::to_string((page + 1) * 30)) != std::string::npos;
+      for (size_t at = 0; (at = list.find(key, at)) != std::string::npos; at += key.size())
+      {
+         size_t id_end = list.find('\'', at);
+         size_t name_end = id_end == std::string::npos ? id_end : list.find("</a>", id_end);
+         if (name_end == std::string::npos)
+            continue;
+         std::string id = list.substr(at + key.size(), id_end - at - key.size());
+         std::string name = html_text(list.substr(id_end + 2, name_end - id_end - 2));
+         double score = 0;
+         for (const auto &v : variants)
+            score = std::max(score, game_name_similarity(v, name));
+         if (score > best)
+         {
+            best = score;
+            best_id = id;
+            best_name = name;
+         }
+      }
+      if (!more)
+         break;
+   }
+   if (best < kNameMatch)
+   {
+      error = err.empty() ? "SNESmusic.org has no set named like \"" + variants.front() + "\"" : "SNESmusic.org: " + err;
+      return -1;
+   }
+   std::string profile;
+   if (!http_fetch(site + "profile.php?profile=set&selected=" + best_id, "", profile, err))
+   {
+      error = "SNESmusic.org: " + err;
+      return -1;
+   }
+   const std::string dl = "download.php?spcNow=";
+   size_t at = profile.find(dl);
+   if (at == std::string::npos)
+   {
+      error = "SNESmusic.org has no download for " + best_name;
+      return -1;
+   }
+   size_t end = at + dl.size();
+   while (end < profile.size() && (isalnum((unsigned char)profile[end]) || profile[end] == '_' || profile[end] == '-'))
+      end++;
+   std::string url = site + profile.substr(at, end - at);
+   progress("Downloading " + best_name + " from SNESmusic.org...");
+   std::string body;
+   if (!http_fetch(url, "", body, err))
+   {
+      error = "download from SNESmusic.org failed: " + err;
+      return -1;
+   }
+#ifdef _WIN32
+   std::string tmp = temp_folder();
+   make_dirs(tmp);
+   std::string archive = tmp + "\\set.rsn";
+   write_text(archive, body);
+   int count = import_with_7zip(archive, dir, error);
+   DeleteFileW(widen_utf8(archive).c_str());
+   RemoveDirectoryW(widen_utf8(tmp).c_str());
+   if (count == 0 && error.empty())
+      error = "the SNESmusic.org set for " + best_name + " has no .spc files";
+   return count;
+#else
+   error = "SNESmusic.org downloads are supported on Windows";
+   return -1;
+#endif
+}
+
+int download_reference_songs(const std::vector<std::string> &names, const std::string &dir,
+      const std::function<void(const std::string &)> &progress, std::string &error, int sources)
+{
+   std::vector<std::string> variants = name_variants(names);
+   if (variants.empty())
+   {
+      error = "the game has no name to look for";
+      return -1;
+   }
+   std::string errors;
+   if (sources & REFERENCES_ZOPHAR)
+   {
+      std::string e;
+      int count = download_from_zophar(variants, dir, progress, e);
+      if (count > 0)
+         return count;
+      errors = e;
+   }
+   if (sources & REFERENCES_SNESMUSIC)
+   {
+      std::string e;
+      int count = download_from_snesmusic(variants, dir, progress, e);
+      if (count > 0)
+         return count;
+      errors += (errors.empty() ? "" : "; ") + e;
+   }
+   error = errors + ". Download a set yourself and import it.";
+   return -1;
 }

@@ -15,6 +15,7 @@
 #include "game_db.h"
 #include "ra_client.h"
 #include "reference.h"
+#include "song_notes.h"
 #include "snes_rom.h"
 
 enum SongKind { SONG_MUSIC, SONG_JINGLE };
@@ -85,6 +86,7 @@ public:
    // reference they match, and a song table found in the ROM lists every song by number.
    // Replaced only by apply_reference_results(), never while scanning (UI thread).
    ReferenceSet references;
+   std::vector<SongNotes> reference_notes;   // each reference's notes, for songs memory cannot tell apart
    SongTable song_table;
    std::string reference_dir() const;
    // Copies .spc files (a folder, zip or .spc) into this game's reference folder and reloads.
@@ -172,6 +174,7 @@ private:
    std::mutex ref_mutex_;
    bool refs_ready_ = false;
    ReferenceSet pending_refs_;
+   std::vector<SongNotes> pending_notes_;
    SongTable pending_table_;
    std::string ref_message_;
    std::vector<uint8_t> scan_before_spc_;   // the sound CPU at the scan start state
@@ -209,4 +212,5 @@ private:
 
 // Renders the first seconds of an .spc and measures it.
 bool analyze_spc(const std::vector<uint8_t> &spc, SongPrint &print, std::string &error);
+double song_distance(const SongPrint &a, const SongPrint &b);
 bool same_song(const SongPrint &a, const SongPrint &b);

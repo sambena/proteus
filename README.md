@@ -132,10 +132,12 @@ A game's soundtrack as `.spc` files, from an archive such as [SNESmusic.org](htt
 `.spc` holds the sound CPU's memory while its song plays, including the song's data. Add them per game
 with **Reference songs**:
 
-- **Download from Zophar's Domain** finds the game's set by name and downloads it.
-- **Import folder...** or **Import .zip or .spc...** copies a set you downloaded. Dropping a folder, a
-  `.zip` of `.spc` files or `.spc` files on a panel does the same. SNESmusic.org's `.rsn` files are RAR archives:
-  extract them first (7-Zip opens them).
+- **Download** finds the game's set on Zophar's Domain, or else on SNESmusic.org, by the ROM's file name and
+  the game's title. Names are compared by their words, so "Legend of Zelda - A Link to the Past, The (USA)"
+  finds "Legend of Zelda: A Link to the Past".
+- **Import folder...** or **Import archive or .spc...** copies a set you downloaded. Dropping a folder, an
+  archive or `.spc` files on a panel does the same. SNESmusic.org's `.rsn` sets, and `.rar` and `.7z` archives,
+  are opened with [7-Zip](https://www.7-zip.org), which must be installed.
 - **List reference songs** adds every reference to the list without playing the game. That is all a
   music source needs.
 
@@ -144,7 +146,13 @@ Sets are kept in `%APPDATA%\ProteusStudio\reference\<ROM CRC32>`.
 **Naming rips.** A rip is compared with every reference, counting only the sound CPU memory that changed
 since the song was started, so what an earlier song left behind does not count. Data that many
 references hold (instrument samples, which load wherever there is room) counts for little; data only
-one song holds counts for much. A scan names each song after its reference and uses the reference's
+one song holds counts for much.
+
+Some sound drivers (Super Mario World's) load a whole group of songs at once and start one by moving a
+pointer, so little memory tells those songs apart. Studio also listens: it measures how strongly each of
+the 12 notes sounds over a song's first seconds. A weak memory match is kept only when the rip's notes
+rank that song among their closest three, and a rip no memory matches is named when its notes clearly
+match one reference. A scan names each song after its reference and uses the reference's
 `.spc`, which plays the song from its start. Songs that match no reference are marked **no match**.
 
 **Song tables.** Many games keep their songs uncompressed in the ROM, with a table of pointers to them.
@@ -301,6 +309,7 @@ lose some effects; mute fewer channels for those games.
 | `studio/game_db.cpp` | the game database (`games.ini`) |
 | `studio/snes_rom.cpp` | SNES ROM header, CRC32, and CPU address mapping |
 | `studio/reference.cpp` | reference songs: matching rips, finding song tables in the ROM, importing and downloading sets |
+| `studio/song_notes.cpp` | a song's notes over time, for matching songs that memory cannot tell apart |
 | `studio/zip_read.cpp`, `studio/http.cpp` | reading zip archives; HTTPS requests (RetroAchievements, Zophar's Domain) |
 | `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans and downloads without the window |
 | `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |

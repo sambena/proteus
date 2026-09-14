@@ -108,13 +108,13 @@ bool analyze_spc(const std::vector<uint8_t> &spc, SongPrint &print, std::string 
    return true;
 }
 
-// The same song ripped a moment earlier or later has the same loudness and
-// brightness over time, shifted. Different songs rarely match in both.
-bool same_song(const SongPrint &a, const SongPrint &b)
+// How differently two prints sound, 0 (the same) to 1, at the best shift of up to 2 seconds:
+// the worse of the loudness and brightness distances.
+double song_distance(const SongPrint &a, const SongPrint &b)
 {
    int n = (int)std::min({ a.envelope.size(), b.envelope.size(), a.brightness.size(), b.brightness.size() });
    if (n < 60)
-      return false;
+      return 1.0;
    const int kMaxShift = 20;   // windows: 2 seconds
    auto distance = [&](const std::vector<float> &x, const std::vector<float> &y, int shift) {
       double diff = 0, total = 0;
@@ -125,10 +125,17 @@ bool same_song(const SongPrint &a, const SongPrint &b)
       }
       return total <= 1 ? 0.0 : diff / total;
    };
+   double best = 1.0;
    for (int shift = -kMaxShift; shift <= kMaxShift; shift++)
-      if (distance(a.envelope, b.envelope, shift) < 0.05 && distance(a.brightness, b.brightness, shift) < 0.05)
-         return true;
-   return false;
+      best = std::min(best, std::max(distance(a.envelope, b.envelope, shift), distance(a.brightness, b.brightness, shift)));
+   return best;
+}
+
+// The same song ripped a moment earlier or later has the same loudness and
+// brightness over time, shifted. Different songs rarely match in both.
+bool same_song(const SongPrint &a, const SongPrint &b)
+{
+   return song_distance(a, b) < 0.05;
 }
 
 // Music keeps playing to the end of the print; jingles start loud and stop.
@@ -324,6 +331,7 @@ void RomSession::close()
    if (ref_thread_.joinable())
       ref_thread_.join();
    references.clear();
+   reference_notes.clear();
    song_table = SongTable();
    {
       std::lock_guard<std::mutex> lock(ref_mutex_);
@@ -454,8 +462,9 @@ void RomSession::load_references_async(bool download)
    if (ref_thread_.joinable())
       ref_thread_.join();
    loading_refs_ = true;
-   std::string dir = reference_dir(), name = game_name_;
-   ref_thread_ = std::thread([this, dir, name, download]() {
+   std::string dir = reference_dir();
+   std::vector<std::string> names = { game_name_, display_name_ };
+   ref_thread_ = std::thread([this, dir, names, download]() {
       auto say = [this](const std::string &m) {
          std::lock_guard<std::mutex> lock(ref_mutex_);
          ref_message_ = m;
@@ -463,7 +472,7 @@ void RomSession::load_references_async(bool download)
       std::string err;
       if (download)
       {
-         int n = download_reference_songs(name, dir, say, err);
+         int n = download_reference_songs(names, dir, say, err);
          if (n <= 0)
          {
             say(err);
@@ -476,11 +485,16 @@ void RomSession::load_references_async(bool download)
       ReferenceSet refs;
       refs.load(dir, err);
       SongTable table;
+      std::vector<SongNotes> notes;
       std::string summary;
       if (!refs.empty())
       {
          say("Looking for the song table in the ROM...");
          table = refs.find_song_table(rom_);
+         say("Listening to the reference songs...");
+         notes.resize(refs.size());
+         for (size_t i = 0; i < refs.size(); i++)
+            spc_notes(refs.song(i).spc, notes[i], err);
          summary = std::to_string(refs.size()) + " reference songs";
          if (table.found)
          {
@@ -498,6 +512,7 @@ void RomSession::load_references_async(bool download)
       std::lock_guard<std::mutex> lock(ref_mutex_);
       pending_refs_ = std::move(refs);
       pending_table_ = table;
+      pending_notes_.swap(notes);
       refs_ready_ = true;
       ref_message_ = summary;
       loading_refs_ = false;
@@ -514,6 +529,8 @@ bool RomSession::apply_reference_results()
    refs_ready_ = false;
    references = std::move(pending_refs_);
    song_table = pending_table_;
+   reference_notes.swap(pending_notes_);
+   pending_notes_.clear();
    pending_refs_.clear();
 
    // Songs listed before the references came are named from the ROM song table, which
@@ -575,6 +592,7 @@ void RomSession::remove_references()
       std::remove(p.c_str());
    }
    references.clear();
+   reference_notes.clear();
    song_table = SongTable();
    std::lock_guard<std::mutex> lock(ref_mutex_);
    ref_message_.clear();
@@ -674,6 +692,54 @@ bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *
       return false;
    std::vector<uint8_t> rip(song.spc_path.begin(), song.spc_path.end());
    ReferenceSet::Match m = references.match_spc(rip, before);
+
+   // Some drivers load a whole group of songs at once and start one by moving a pointer, so
+   // little memory tells those songs apart. A weak memory match must also sound like its
+   // song; without a memory match, a song whose notes clearly match one reference is it.
+   const double kStrongMemory = 4.0, kNotesMatch = 0.1, kNotesLead = 0.02;
+   if ((m.index < 0 || m.score < kStrongMemory) && reference_notes.size() == references.size())
+   {
+      SongNotes notes;
+      std::string err;
+      if (!spc_notes(rip, notes, err))
+         return false;
+      std::vector<std::pair<double, int>> ranked;
+      for (size_t i = 0; i < references.size(); i++)
+         ranked.push_back({ notes_distance(notes, reference_notes[i]), (int)i });
+      std::sort(ranked.begin(), ranked.end());
+      auto stem = [&](int i) {
+         const std::string &t = references.song(i).title;
+         return t.substr(0, t.find(" ("));
+      };
+      if (m.index >= 0)
+      {
+         bool heard = false;
+         for (size_t k = 0; k < 3 && k < ranked.size(); k++)
+            for (int c : m.close)
+               heard = heard || stem(ranked[k].second) == stem(c);
+         if (!heard)
+            return false;
+      }
+      else
+      {
+         if (ranked.empty() || ranked[0].first >= kNotesMatch)
+            return false;
+         double next = 1.0;
+         for (const auto &r : ranked)
+            if (stem(r.second) != stem(ranked[0].second))
+            {
+               next = r.first;
+               break;
+            }
+         if (next - ranked[0].first < kNotesLead)
+            return false;
+         m.index = ranked[0].second;
+         m.close.clear();
+         for (const auto &r : ranked)
+            if (stem(r.second) == stem(ranked[0].second))
+               m.close.push_back(r.second);
+      }
+   }
    if (m.index < 0)
       return false;
    if (!same.empty())

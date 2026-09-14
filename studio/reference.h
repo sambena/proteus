@@ -78,13 +78,20 @@ const uint8_t *spc_ram(const std::vector<uint8_t> &spc);
 // The ID666 song title, trimmed; empty when there is none.
 std::string spc_song_title(const std::vector<uint8_t> &spc);
 
-// Copies the .spc files from `source` (a folder, a zip archive or a single .spc) into `dir`.
-// Returns how many were copied.
+// Copies the .spc files from `source` (a folder, a zip archive, an .rsn/.rar/.7z archive through
+// 7-Zip, or a single .spc) into `dir`. Returns how many were copied.
 int import_reference_songs(const std::string &source, const std::string &dir, std::string &error);
+// 7z.exe, or empty when 7-Zip is not installed.
+std::string find_7zip();
 
-// Downloads a game's SPC set from Zophar's Domain into `dir`, finding it by name.
+// Downloads a game's SPC set into `dir`, finding it by any of `names` (the ROM file name, the
+// game's title): from Zophar's Domain, else from SNESmusic.org (needs 7-Zip).
 // `progress` receives messages while it works.
-int download_reference_songs(const std::string &game_name, const std::string &dir,
-      const std::function<void(const std::string &)> &progress, std::string &error);
+enum { REFERENCES_ZOPHAR = 1, REFERENCES_SNESMUSIC = 2 };
+int download_reference_songs(const std::vector<std::string> &names, const std::string &dir,
+      const std::function<void(const std::string &)> &progress, std::string &error,
+      int sources = REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC);
+// How alike two game names are, 0..1, ignoring case, punctuation, articles and region tags.
+double game_name_similarity(const std::string &a, const std::string &b);
 // The name Zophar's Domain uses in its addresses: "Addams Family, The (USA)" -> "addams-family-the".
 std::string zophar_slug(const std::string &game_name);

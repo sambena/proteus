@@ -601,20 +601,22 @@ static void draw_scan_bar(App &a, int side)
       if (ImGui::BeginPopup("references"))
       {
          bool busy = s.loading_references();
-         if (ImGui::MenuItem("Download from Zophar's Domain", nullptr, false, !busy))
+         if (ImGui::MenuItem("Download", nullptr, false, !busy))
          {
             s.download_references();
-            set_status(a, "Looking for " + s.display_name() + " on Zophar's Domain...");
+            set_status(a, "Looking for " + s.display_name() + " on Zophar's Domain and SNESmusic.org...");
          }
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Finds the game's SPC set by name on Zophar's Domain, or on SNESmusic.org (needs 7-Zip).");
          if (ImGui::MenuItem("Import folder...", nullptr, false, !busy))
          {
             std::string dir = pick_folder_dialog("Folder with the game's .spc files");
             if (!dir.empty())
                import_references(a, side, dir);
          }
-         if (ImGui::MenuItem("Import .zip or .spc...", nullptr, false, !busy))
+         if (ImGui::MenuItem("Import archive or .spc...", nullptr, false, !busy))
          {
-            std::string path = open_file_dialog("Reference songs", { { "SPC sets", "*.zip;*.spc;*.rsn" }, { "All files", "*.*" } }, "");
+            std::string path = open_file_dialog("Reference songs", { { "SPC sets", "*.zip;*.rsn;*.rar;*.7z;*.spc" }, { "All files", "*.*" } }, "");
             if (!path.empty())
                import_references(a, side, path);
          }
@@ -1930,7 +1932,7 @@ int main(int argc, char **argv)
             SDL_free(ev.drop.file);
             int side = (mx - wx) < ww / 2 ? TARGET : SOURCE;
             std::string ext = lower_ext(path);
-            if (dir_exists(path) || ext == "spc" || ext == "rsn" || is_spc_archive(path))
+            if (dir_exists(path) || ext == "spc" || ext == "rsn" || ext == "rar" || ext == "7z" || is_spc_archive(path))
                import_references(a, side, path);
             else
                open_rom(a, side, path);

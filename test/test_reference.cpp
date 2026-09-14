@@ -162,6 +162,10 @@ static void test_names()
    TEST(zophar_slug("Addams Family, The") == "addams-family-the", "article after a comma");
    TEST(zophar_slug("Kirby's Dream Course [!]") == "kirbys-dream-course", "apostrophes dropped");
    TEST(zophar_slug("Super Mario World 2 - Yoshi's Island") == "super-mario-world-2-yoshis-island", "punctuation becomes one dash");
+   TEST(game_name_similarity("Legend of Zelda - A Link to the Past, The (USA)", "Legend of Zelda: A Link to the Past") == 1.0,
+        "names match despite articles and punctuation");
+   TEST(game_name_similarity("Addams Family, The", "Addams Family Values") < 0.75, "different games stay apart");
+   TEST(game_name_similarity("Super Mario World", "Super Mario World 2: Yoshi's Island") < 0.75, "sequels stay apart");
 }
 
 static void put16(std::vector<uint8_t> &v, uint16_t x) { v.push_back((uint8_t)x); v.push_back((uint8_t)(x >> 8)); }
@@ -214,8 +218,7 @@ static void test_import(const std::string &work)
    TEST(refs.size() == 2 && refs.song(0).title == "First" && refs.song(1).title == "Second", "titles from the files");
 
    err.clear();
-   TEST(import_reference_songs(work + "/set.rsn", dir, err) < 0 && err.find("RAR") != std::string::npos,
-        "RAR sets are refused with advice");
+   TEST(import_reference_songs(work + "/missing.rsn", dir, err) < 0 && !err.empty(), "a missing .rsn set fails with a reason");
 }
 
 int main(int argc, char **argv)
