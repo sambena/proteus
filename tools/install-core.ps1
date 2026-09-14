@@ -30,7 +30,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 # $PSScriptRoot is empty inside param() defaults on Windows PowerShell 5.1.
-if (-not $Build) { $Build = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\build' }
+if (-not $Build) {
+    # A source checkout keeps the DLLs in build\; a release zip keeps them next to this script.
+    $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $Build = Join-Path $here '..\build'
+    if (-not (Test-Path (Join-Path $Build 'proteus_dsp.dll'))) { $Build = $here }
+}
 if (-not $Core -and -not $Dsp) { throw 'Pass -Core <name>, -Dsp, or both.' }
 
 if ($Core) {

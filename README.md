@@ -26,6 +26,12 @@ Proteus comes in two forms that share profiles and music files:
 When the wrapper core is running, the plugin stands aside. Games without a profile
 play exactly as they would without Proteus.
 
+## Download
+
+Windows builds are on the [Releases page](https://github.com/sambena/proteus/releases). Unzip,
+close RetroArch, and run the installer from the unzipped folder (see [Install](#install));
+`READ ME FIRST.txt` has the commands. No games, ROMs or music are included.
+
 ## Build
 
 From an MSYS2 **UCRT64** shell (`pacman -S make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-SDL2`):
@@ -43,10 +49,14 @@ so they only need Windows' own runtime libraries.
 
 ## Install
 
+Close RetroArch, then from the release folder (or `tools\` in a source checkout):
+
 ```powershell
-.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Dsp            # plugin
-.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core snes9x    # wrapper core
+powershell -ExecutionPolicy Bypass -File .\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Dsp            # plugin
+powershell -ExecutionPolicy Bypass -File .\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core snes9x    # wrapper core
 ```
+
+`tools/package-release.sh <version>` builds everything and packs the release zip.
 
 **Plugin:** copies `proteus_dsp.dll` and a `Proteus.dsp` preset to `filters\audio`.
 Select it under Settings → Audio → DSP Plugin. It finds the running core inside
