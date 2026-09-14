@@ -47,8 +47,8 @@ endif
 
 CORE     := $(BUILD)/proteus_libretro.$(EXT)
 DSP      := $(BUILD)/proteus_dsp.$(EXT)
-SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/options.c src/util.c
-DSP_SRC  := src/dsp.c src/engine.c src/profile.c src/music.c src/decoders.c src/util.c
+SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/options.c src/util.c src/game_options.c
+DSP_SRC  := src/dsp.c src/engine.c src/profile.c src/music.c src/decoders.c src/util.c src/game_options.c
 GME_SRC  := $(wildcard deps/gme/*.cpp)
 GME_OBJ  := $(GME_SRC:%.cpp=$(OBJ)/%.o) $(OBJ)/deps/gme/ext/emu2413.o
 OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ)

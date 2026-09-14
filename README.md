@@ -19,7 +19,7 @@ Proteus comes in two forms that share profiles and music files:
 | --- | --- | --- |
 | Use with | any core, unchanged — keep choosing Snes9x | a separate core entry, e.g. "Proteus Retune + Snes9x" |
 | Turn on | Settings → Audio → DSP Plugin → `Proteus.dsp` (or a per-core/per-game override) | load the game with the wrapper core |
-| Muting the original music | for the whole game, via the core's channel volumes saved as game options | song by song, automatically |
+| Muting the original music | for the whole game: the profile's `[mute]` options are saved as RetroArch game options (by **Generate INI**, or by the plugin the first time the game runs, which then needs the game loaded again) | song by song, automatically |
 | Settings | the profile; song changes are logged to `logs/proteus.log` | Quick Menu → Core Options → Proteus Retune, with per-song pickers and on-screen song values |
 | Save states | music follows the song detected after loading | music position is saved in the state |
 

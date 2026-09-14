@@ -17,6 +17,8 @@
 #include "backends/imgui_impl_sdlrenderer2.h"
 
 #include "audio_out.h"
+#include "game_options.h"
+#include "util.h"
 #include "folder_scan.h"
 #include "platform.h"
 #include "profile_export.h"
@@ -1001,9 +1003,32 @@ static void generate_profile(App &a)
    int mapped = 0;
    for (auto &as : a.assignments)
       mapped += as.second.kind != Assignment::ORIGINAL;
-   set_status(a, "Wrote " + path + " with " + std::to_string(mapped) + " replaced songs (" +
+   std::string msg = "Wrote " + path + " with " + std::to_string(mapped) + " replaced songs (" +
          std::to_string(copied) + " music files copied)." +
-         (file_exists(path + ".bak") ? " Your earlier profile is saved as " + file_name(path) + ".bak." : ""));
+         (file_exists(path + ".bak") ? " Your earlier profile is saved as " + file_name(path) + ".bak." : "");
+
+   // The DSP plugin cannot change the core's options, so the mutes go into RetroArch's game options.
+   std::string ra = a.settings.retroarch_dir;
+   std::string dsp = retroarch_cfg(ra, "audio_dsp_plugin", "");
+   if (!a.options.mute.empty() && to_lower(dsp).find("proteus") != std::string::npos && !t.core.library_name().empty())
+   {
+      std::string config = retroarch_cfg(ra, "rgui_config_directory", ra + "\\config");
+      char opt[PX_PATH_MAX * 2];
+      px_game_options_path(config.c_str(), t.core.library_name().c_str(), t.core.content_path().c_str(), opt, sizeof(opt));
+      std::string global = config + "/" + t.core.library_name() + "/" + t.core.library_name() + ".opt";
+      std::vector<const char *> keys, values;
+      for (const auto &m : a.options.mute)
+      {
+         keys.push_back(m.first.c_str());
+         values.push_back(m.second.c_str());
+      }
+      int changed = px_game_options_set(opt, global.c_str(), keys.data(), values.data(), (unsigned)keys.size());
+      if (changed < 0)
+         msg += " Could not save the channel mutes to " + std::string(opt) + ".";
+      else if (changed > 0)
+         msg += " The DSP plugin's channel mutes are saved as the game's core options.";
+   }
+   set_status(a, msg);
 }
 
 static void draw_footer(App &a, float height)

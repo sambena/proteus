@@ -6,8 +6,9 @@
  *   - the running core is the loaded module exporting the libretro API; its
  *     retro_get_memory_data gives the song address,
  *   - the running game is the newest entry in RetroArch's content history.
- * It cannot change the core's options, so muting the original music is left to
- * per-game core options (or the wrapper core, which mutes song by song).
+ * It cannot change the core's options while the game runs, so it saves the profile's
+ * [mute] options as RetroArch game options, which mute the original music from the next
+ * time the game is loaded (the wrapper core mutes song by song instead).
  */
 #include <stdarg.h>
 #include <stdbool.h>
@@ -20,6 +21,7 @@
 
 #include "libretro_dspfilter.h"
 #include "engine.h"
+#include "game_options.h"
 #include "util.h"
 
 #ifdef _WIN32
@@ -43,6 +45,8 @@ typedef struct
    char system_dir[PX_PATH_MAX];
    char history_path[PX_PATH_MAX];
    char log_path[PX_PATH_MAX];
+   char config_dir[PX_PATH_MAX];
+   bool game_options; /* RetroArch loads per-game core options */
 
 #ifdef _WIN32
    HMODULE core;
@@ -56,7 +60,6 @@ typedef struct
    char history_core[PX_PATH_MAX];
    char content[PX_PATH_MAX];        /* newest history entry */
    char loaded_content[PX_PATH_MAX]; /* content whose profile is loaded */
-   bool warned_mute;
 } proteus_dsp;
 
 /* ---------------------------------------------------------------------------
@@ -159,10 +162,16 @@ static void config_string(const struct dspfilter_config *config, void *userdata,
 static void find_folders(proteus_dsp *d, const struct dspfilter_config *config, void *userdata)
 {
    char base[PX_PATH_MAX - 64] = "", cfg[PX_PATH_MAX], playlists[PX_PATH_MAX - 64], logs[PX_PATH_MAX - 64];
+   char flag[16];
 
+   d->game_options = true;
    if (exe_dir(base, sizeof(base)))
    {
       snprintf(cfg, sizeof(cfg), "%s/retroarch.cfg", base);
+      if (!cfg_value(cfg, base, "rgui_config_directory", d->config_dir, sizeof(d->config_dir)))
+         snprintf(d->config_dir, sizeof(d->config_dir), "%s/config", base);
+      if (cfg_value(cfg, base, "game_specific_options", flag, sizeof(flag)))
+         d->game_options = strcmp(flag, "false") != 0;
       if (!cfg_value(cfg, base, "system_directory", d->system_dir, sizeof(d->system_dir)))
          snprintf(d->system_dir, sizeof(d->system_dir), "%s/system", base);
 
@@ -345,6 +354,52 @@ static void drop_core(proteus_dsp *d)
    d->loaded_content[0] = '\0';
 }
 
+/* Saves the profile's [mute] options as the game's core options. */
+static void save_mutes(proteus_dsp *d)
+{
+#ifdef _WIN32
+   typedef void (*system_info_t)(struct retro_system_info *);
+   system_info_t get_info = d->core ? (system_info_t)(void*)GetProcAddress(d->core, "retro_get_system_info") : NULL;
+#else
+   void *get_info = NULL;
+#endif
+   struct retro_system_info info;
+   char path[PX_PATH_MAX * 2], global[PX_PATH_MAX * 2];
+   const char *keys[PX_MAX_MUTE], *values[PX_MAX_MUTE];
+   const px_profile *p = &d->engine.profile;
+   int changed;
+
+   if (!p->mute_count || !d->config_dir[0])
+      return;
+   memset(&info, 0, sizeof(info));
+#ifdef _WIN32
+   if (get_info)
+      get_info(&info);
+#endif
+   if (!info.library_name || !*info.library_name)
+   {
+      dlog(d, RETRO_LOG_WARN, "the profile's [mute] options need the core's name; set them in Quick Menu > Core Options "
+            "and choose Save Game Options, or use the Proteus wrapper core");
+      return;
+   }
+   for (unsigned i = 0; i < p->mute_count; i++)
+   {
+      keys[i]   = p->mute[i].key;
+      values[i] = p->mute[i].value;
+   }
+   px_game_options_path(d->config_dir, info.library_name, d->content, path, sizeof(path));
+   snprintf(global, sizeof(global), "%s/%s/%s.opt", d->config_dir, info.library_name, info.library_name);
+   changed = px_game_options_set(path, global, keys, values, p->mute_count);
+   if (changed < 0)
+      dlog(d, RETRO_LOG_WARN, "could not save the profile's [mute] options to %s", path);
+   else if (changed > 0)
+      dlog(d, RETRO_LOG_INFO, "saved the profile's [mute] options as this game's core options (%s); "
+            "close the game and load it again to mute the original music", path);
+   if (!d->game_options)
+      dlog(d, RETRO_LOG_WARN, "RetroArch's game-specific core options are turned off (game_specific_options), "
+            "so the original music is not muted; turn them on or use the Proteus wrapper core");
+}
+
 static void refresh(proteus_dsp *d)
 {
    char profile[PX_PATH_MAX * 2];
@@ -375,12 +430,8 @@ static void refresh(proteus_dsp *d)
    px_engine_unload(&d->engine);
    if (!px_engine_find_profile(d->content, d->system_dir, profile, sizeof(profile)))
       return;
-   if (px_engine_load(&d->engine, profile) && d->engine.profile.mute_count && !d->warned_mute)
-   {
-      d->warned_mute = true;
-      dlog(d, RETRO_LOG_INFO, "the DSP plugin cannot apply [mute] options; set them per game in "
-            "Quick Menu > Core Options and choose Save Game Options, or use the Proteus wrapper core");
-   }
+   if (px_engine_load(&d->engine, profile))
+      save_mutes(d);
 }
 
 /* ---------------------------------------------------------------------------
