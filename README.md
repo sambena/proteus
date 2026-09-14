@@ -171,6 +171,9 @@ Games whose songs a scan cannot start from outside (ActRaiser 2 uploads each son
 be worked out by playing them through. [TASVideos](https://tasvideos.org) publishes movies that play
 whole games, and **TAS movie** on either panel (Advanced > **TAS movie**) uses them:
 
+**Play movie and find songs** does every step that is missing, in order; the steps can also be done
+one at a time:
+
 1. **Download BizHawk** installs the latest [BizHawk](https://github.com/TASEmulators/BizHawk) release
    into `%APPDATA%\ProteusStudio\tools\BizHawk`. Movies only stay in sync on the emulator they
    were made with: on snes9x, or on libretro's bsnes cores, a movie falls out of step within minutes.
@@ -228,7 +231,8 @@ The **Advanced** tabs:
 
 | Advanced tab | Use |
 | --- | --- |
-| Play & rip | Play either game. Whenever the game sends the sound CPU a command, or the song address changes, the new song is ripped once it has started (repeats are skipped); **Rip current song** (`R`) rips whatever plays. **Scan from this moment** makes later scans start there, for games that load music per world or level. With reference songs, play also learns the song address: every 2 seconds the song playing is named, and RAM that does not hold one value per song is ruled out; when one byte is left after three songs or more, it becomes the song address and the rips are numbered by it (A Link to the Past: `$0130` is among the last bytes left after three songs). This is the way for games that choose their music in their own logic and upload each song (ActRaiser 2), which no scan can start. |
+| Play & rip | Play either game. Whenever the game sends the sound CPU a command, or the song address changes, the new song is ripped once it has started (repeats are skipped); **Rip current song** (`R`) rips whatever plays. **Scan from this moment** makes later scans start there, for games that load music per world or level. With reference songs, play also learns the song address: every 2 seconds the song playing is named, and RAM that does not hold one value per song is ruled out; when one byte is left after three songs or more, it becomes the song address and the rips are numbered by it (A Link to the Past: `$0130` is among the last bytes left after three songs). For games that choose their music in their own logic and upload each song (ActRaiser 2), which no scan can start, this or **TAS movie** is the way. |
+| TAS movie | Play a TASVideos movie of the whole game in BizHawk to hear its songs and learn the song address (see [TAS movies](#tas-movies)). **Play movie and find songs** does every missing step. |
 | Find song address | Press **Music changed** (`M`) right after the music changes and **Same music** (`N`) when it does not; the song and command bytes remain. |
 | Game info | The song address, how songs start, and the scan range, saved to the game database. |
 | Channels & mix | The channels muted while replacements play, and the mix volumes. |
@@ -240,7 +244,7 @@ Game controls in Advanced: arrow keys or a controller; `Z`/`X` B/A, `A`/`S` Y/X,
 A RAM command only finds songs whose music data is loaded at the scan's starting moment; a music
 routine loads each song itself. Games whose songs start some other way (Super Metroid and
 ActRaiser queue them; Mega Man X was not found either) cannot be scanned yet: play them with
-**Play & rip**, or add a `start` line to the game database once it is known.
+**Play & rip** or **TAS movie**, or add a `start` line to the game database once it is known.
 
 ## Game profiles
 
@@ -350,10 +354,9 @@ lose some effects; mute fewer channels for those games.
 | `studio/song_notes.cpp` | a song's notes over time, for matching songs that memory cannot tell apart |
 | `studio/tas_runner.cpp` | TASVideos lookups and downloads, installing BizHawk, playing a movie in BizHawk with a RAM-saving Lua script |
 | `studio/movie_learner.cpp` | names the songs of a movie's moments and learns the song address from them |
-| `studio/tas_movie.cpp` | reads `.bk2` and `.smv` input movies (`proteus-cli movie`) |
 | `studio/folder_scan.cpp` | Scan folder: every ROM of a folder in turn, with a report |
-| `studio/zip_read.cpp`, `studio/http.cpp` | reading zip archives; HTTPS requests (RetroAchievements, Zophar's Domain) |
-| `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans and downloads without the window |
+| `studio/zip_read.cpp`, `studio/http.cpp` | reading zip archives; HTTPS requests (RetroAchievements, Zophar's Domain, SNESmusic.org, TASVideos, GitHub) |
+| `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans, TAS movies, folder scans and downloads without the window |
 | `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |
 | `studio/profile_export.cpp` | writes the profile and copies the music |
 | `studio/core_host.cpp` | minimal libretro frontend; runs up to four cores at once |
@@ -371,10 +374,19 @@ own licenses:
 | Library | License |
 | --- | --- |
 | `deps/gme` — libgme 0.6.5 | LGPL-2.1-or-later (`deps/gme/LICENSE`); `ext/emu2413` is MIT |
-| `deps/imgui` — Dear ImGui 1.91.x | MIT (`deps/imgui/LICENSE.txt`) |
+| `deps/imgui` — Dear ImGui 1.92.x | MIT (`deps/imgui/LICENSE.txt`) |
 | `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
+| `studio/md5.cpp` | follows RFC 1321; derived from the RSA Data Security, Inc. MD5 Message-Digest Algorithm |
+
+Proteus Retune includes no games, ROMs, soundtracks or movies. Studio downloads, only when asked,
+SPC sets from Zophar's Domain and SNESmusic.org, input movies from TASVideos, and BizHawk (MIT) from
+its GitHub releases; they keep their own terms, and are kept in your `%APPDATA%\ProteusStudio`
+folder, not in this repository. Use ROMs you own.
+
+Proteus Retune is not affiliated with Nintendo, Libretro/RetroArch, TASVideos, BizHawk, Zophar's
+Domain, SNESmusic.org or RetroAchievements. Game titles are trademarks of their owners.
 
 ## Roadmap
 

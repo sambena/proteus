@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
+// MD5 as specified by RFC 1321, following its reference implementation: derived from the
+// RSA Data Security, Inc. MD5 Message-Digest Algorithm.
 #include "md5.h"
 
 #include <cstdio>

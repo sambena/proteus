@@ -9,7 +9,6 @@
 //   proteus-cli download "<game name>" <folder> [zophar|snesmusic]
 //   proteus-cli tas <core> <rom> [bizhawk | movies | download N | play <movie> <spc folder> [speed %]]
 //   proteus-cli folder <core> <rom folder> [--movies] [--rescan]
-//   proteus-cli movie <core> <rom> <spc folder> <movie.bk2|.smv> [seconds]   (inputs on a libretro core)
 //   proteus-cli dumps <spc folder> <dump folder>
 #include <algorithm>
 #include <chrono>
@@ -28,7 +27,6 @@
 #include "snes_rom.h"
 #include "song_notes.h"
 #include "spc_rip.h"
-#include "tas_movie.h"
 #include "zip_read.h"
 
 static bool load_rom(const std::string &path, SnesRom &rom)
@@ -298,94 +296,6 @@ int main(int argc, char **argv)
          s.core.audio().clear();
          if (f % 600 == 599)
             printf("[%3ds] %s\n", f / 60, s.learning_status().c_str());
-         flush();
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-      s.play_frame(0);
-      flush();
-      printf("song address: %s (%s)\n", s.address.known ? describe_song_address(s.address).c_str() : "none", s.address_source.c_str());
-      return 0;
-   }
-   if (cmd == "movie" && argc >= 6)
-   {
-      // proteus-cli movie <core> <rom> <spc folder> <movie> [seconds]: plays a TASVideos movie
-      // (.bk2 or .smv) in Play & rip, learning the song address from the songs heard.
-      TasMovie movie;
-      std::string err;
-      if (!movie.load(argv[5], err))
-      {
-         fprintf(stderr, "%s\n", err.c_str());
-         return 1;
-      }
-      printf("%s movie from %s: %zu frames, %s\n", movie.format.c_str(), movie.core.c_str(), movie.frames.size(), movie.game.c_str());
-      RomSession s;
-      s.set_app_dir(app_data_dir() + "\\cli");
-      if (!s.open(argv[3], argv[2], dir_of(argv[2]), err))
-      {
-         fprintf(stderr, "open: %s\n", err.c_str());
-         return 1;
-      }
-      s.clear_library();
-      int f = 0;
-      auto flush = [&] { for (auto &l : s.take_log()) printf("  [%02d:%02d:%02d] %s\n", f / 216000, f / 3600 % 60, f / 60 % 60, l.c_str()); };
-      auto wait_refs = [&] {
-         while (s.loading_references())
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-         s.apply_reference_results();
-         flush();
-      };
-      wait_refs();
-      s.remove_references();
-      s.import_references(argv[4], err);
-      wait_refs();
-      s.address = SongAddress();
-      long limit = argc > 6 ? (long)(atof(argv[6]) * 60) : (long)movie.frames.size();
-      std::lock_guard<std::mutex> lock(s.core_mutex);
-      s.core.set_skip_video(true);
-      // Movies start at power-on; the session's core has already run and been soft reset.
-      s.core.unload();
-      if (!s.core.load(argv[2], argv[3], dir_of(argv[2]), app_data_dir() + "\\cli\\saves", err))
-      {
-         fprintf(stderr, "load: %s\n", err.c_str());
-         return 1;
-      }
-      auto t0 = std::chrono::steady_clock::now();
-      bool raw = getenv("PROTEUS_MOVIE_RAW") != nullptr;   // just run the core: for cores other than snes9x
-      for (size_t i = 0; i < movie.frames.size() && f < limit; i++)
-      {
-         if (movie.frames[i].flag != TasMovie::PAD)
-         {
-            s.core.reset();
-            continue;
-         }
-         uint16_t held = movie.frames[i].buttons;
-         const char *shots = getenv("PROTEUS_MOVIE_SHOTS");   // folder for a screenshot every 30 seconds
-         int every = getenv("PROTEUS_MOVIE_SHOT_EVERY") ? atoi(getenv("PROTEUS_MOVIE_SHOT_EVERY")) : 1800;
-         bool shot = shots && f % every == every - 1;
-         s.core.set_skip_video(!shot);
-         if (raw)
-            s.core.run_frame(held);
-         else
-            s.play_frame(held);
-         s.core.audio().clear();
-         if (shot && s.core.frame_width())
-         {
-            unsigned w = s.core.frame_width(), h = s.core.frame_height();
-            std::string b = "BM" + std::string(52, '\0');
-            auto put = [&](size_t o, uint32_t v) { for (int i = 0; i < 4; i++) b[o + i] = (char)(v >> (8 * i)); };
-            put(2, 54 + w * h * 4); put(10, 54); put(14, 40); put(18, w); put(22, (uint32_t)-(int32_t)h);
-            b[26] = 1; b[28] = 32;
-            b.append((const char *)s.core.frame().data(), (size_t)w * h * 4);
-            char name[64];
-            snprintf(name, sizeof(name), "\\%07d.bmp", f + 1);
-            write_text(std::string(shots) + name, b);
-         }
-         f++;
-         if (f % 36000 == 0)
-         {
-            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            printf("[%02d:%02d:00] %.0f fps, %s\n", f / 216000, f / 3600 % 60, f / secs, s.learning_status().c_str());
-         }
          flush();
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1500));
