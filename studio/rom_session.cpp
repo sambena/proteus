@@ -515,6 +515,29 @@ bool RomSession::apply_reference_results()
    references = std::move(pending_refs_);
    song_table = pending_table_;
    pending_refs_.clear();
+
+   // Songs listed before the references came are named from the ROM song table, which
+   // numbers songs the way the game's music command does. Titles someone typed are kept.
+   int named = 0;
+   if (song_table.found)
+   {
+      std::lock_guard<std::mutex> songs_lock(songs_mutex);
+      for (auto &s : songs)
+      {
+         if (!s.has_value || !s.reference.empty() || s.value >= song_table.entries.size() || song_table.entries[s.value] < 0)
+            continue;
+         const std::string &title = references.song(song_table.entries[s.value]).title;
+         if (s.title == default_title(s.value, SONG_MUSIC) || s.title == default_title(s.value, SONG_JINGLE))
+            s.title = title;
+         s.reference = title;
+         named++;
+      }
+   }
+   if (named)
+   {
+      save_library();
+      log("named " + std::to_string(named) + " listed songs from the ROM song table");
+   }
    return true;
 }
 
@@ -1413,7 +1436,8 @@ bool RomSession::find_song_start(const SongPrint *baseline)
 
 void RomSession::start_scan(int first, int last)
 {
-   if (scanning_ || !open_)
+   // A scan uses the references it starts with; wait for ones still loading.
+   if (scanning_ || !open_ || loading_refs_)
       return;
    if (worker_.joinable())
       worker_.join();

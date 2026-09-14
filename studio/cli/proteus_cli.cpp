@@ -148,6 +148,27 @@ int main(int argc, char **argv)
       return cmd_match(argv[2], argv[3], argc > 4 ? argv[4] : nullptr);
    if (cmd == "scan" && argc >= 3)
       return cmd_scan(argc, argv);
+   if (cmd == "list" && argc >= 4)
+   {
+      // proteus-cli list <rom> <snes9x core> [app dir]: the song list as Studio shows it on opening.
+      RomSession s;
+      s.set_app_dir(argc > 4 ? argv[4] : app_data_dir() + "\\cli");
+      std::string err;
+      if (!s.open(argv[2], argv[3], dir_of(argv[3]), err))
+      {
+         fprintf(stderr, "open: %s\n", err.c_str());
+         return 1;
+      }
+      while (s.loading_references())
+         std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      s.apply_reference_results();
+      for (auto &l : s.take_log())
+         printf("  | %s\n", l.c_str());
+      std::lock_guard<std::mutex> lock(s.songs_mutex);
+      for (const auto &song : s.songs)
+         printf("  %02X  %-40s %s\n", song.value, song.title.c_str(), song.reference.empty() ? "no match" : "");
+      return 0;
+   }
    if (cmd == "download" && argc == 4)
    {
       std::string err;

@@ -155,6 +155,7 @@ struct App
    std::vector<uint8_t> quick_state;
 
    std::string last_export;
+   bool refs_loading[2] = { false, false };
 };
 
 static void set_status(App &a, const std::string &msg, bool error = false)
@@ -558,7 +559,7 @@ static void draw_scan_bar(App &a, int side)
    }
    else
    {
-      ImGui::BeginDisabled(a.live == side && a.live_running);
+      ImGui::BeginDisabled((a.live == side && a.live_running) || s.loading_references());
       if (primary_button("Scan songs", ImVec2(120, 0), P.side[side]))
       {
          a.audio.stop();
@@ -569,6 +570,8 @@ static void draw_scan_bar(App &a, int side)
       {
          if (a.live == side && a.live_running)
             ImGui::SetTooltip("Pause the game in Advanced to scan.");
+         else if (s.loading_references())
+            ImGui::SetTooltip("Waiting for the reference songs to load.");
          else if (s.song_table.found)
             ImGui::SetTooltip("Lists the %d songs of the ROM song table, then plays each song number\n"
                   "to check it against the reference songs.", (int)s.song_table.entries.size());
@@ -1939,6 +1942,16 @@ int main(int argc, char **argv)
       for (int side = 0; side < 2; side++)
       {
          a.sessions[side].apply_scan_results();
+         // Report how loading (or downloading) reference songs ended.
+         bool loading = a.sessions[side].loading_references();
+         if (a.refs_loading[side] && !loading)
+         {
+            std::string msg = a.sessions[side].reference_message();
+            if (!msg.empty())
+               set_status(a, a.sessions[side].display_name() + ": " + msg,
+                     a.sessions[side].references.empty() && msg.find("reference songs") == std::string::npos);
+         }
+         a.refs_loading[side] = loading;
          a.sessions[side].apply_reference_results();
          for (auto &line : a.sessions[side].take_log())
             a.log.push_back(line);
