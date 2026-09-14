@@ -2454,7 +2454,7 @@ void RomSession::find_movies()
       else if (found.empty())
          set_tool_message("TASVideos has no movie of " + name + ".", 0);
       else
-         set_tool_message("TASVideos has " + std::to_string(found.size()) + " movies of " + name + ", " +
+         set_tool_message("TASVideos has " + std::to_string(found.size()) + (found.size() == 1 ? " movie" : " movies") + " of " + name + ", " +
                std::to_string(playable) + " made with BizHawk.", 1);
    });
 }

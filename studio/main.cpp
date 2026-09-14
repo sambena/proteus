@@ -164,6 +164,9 @@ struct App
    int movie_speed = 4;        // index into kMovieSpeeds
    bool show_bizhawk = false;
    int movie_pick[2] = { 0, 0 };
+   // One click does every step: 0 idle, then 1 reference songs, 2 BizHawk, 3 find, 4 download, 5 play.
+   int movie_step[2] = { 0, 0 };
+   bool movie_tried[2][6] = {};
 
    // Scan folder window
    bool show_folder_scan = false;
@@ -1592,34 +1595,43 @@ static void tab_movie(App &a)
       ImGui::TextColored(col(P.dim), "%s", tool.c_str());
 
    std::vector<TasPublication> list = s.movie_list();
-   if (!list.empty() && ImGui::BeginTable("movies", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp,
-         ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * std::min<float>(5.5f, (float)list.size() + 1.5f))))
+   if (!list.empty() && ImGui::BeginTable("movies", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+         ImVec2(-1, ImGui::GetTextLineHeightWithSpacing() * std::min<float>(5.5f, (float)list.size() + 1.5f))))
    {
       ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn("Made with", ImGuiTableColumnFlags_WidthFixed);
+      ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed);
       ImGui::TableSetupColumn("Movie", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Made with", ImGuiTableColumnFlags_WidthFixed, 130);
-      ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, 70);
-      ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 80);
       ImGui::TableHeadersRow();
+      std::vector<std::string> have = s.downloaded_movies();
       for (size_t i = 0; i < list.size(); i++)
       {
          const TasPublication &p = list[i];
+         bool downloaded = false;
+         for (const auto &m : have)
+            downloaded = downloaded || file_name(m) == sanitize_filename(p.file);
          ImGui::TableNextRow();
          ImGui::TableNextColumn();
-         ImGui::TextUnformatted(p.title.c_str());
+         ImGui::PushID((int)i);
+         if (downloaded)
+            ImGui::TextColored(col(P.ok), "Downloaded");
+         else
+         {
+            ImGui::BeginDisabled(busy || !p.playable());
+            if (ImGui::SmallButton("Download"))
+               s.download_movie(p);
+            ImGui::EndDisabled();
+            if (!p.playable() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+               ImGui::SetTooltip("Made with %s. BizHawk only keeps its own movies (.bk2) in sync.", p.emulator.c_str());
+         }
+         ImGui::PopID();
          ImGui::TableNextColumn();
          ImGui::TextColored(col(p.playable() ? P.text : P.dim), "%s", p.emulator.c_str());
          ImGui::TableNextColumn();
          ImGui::TextUnformatted(p.duration().c_str());
          ImGui::TableNextColumn();
-         ImGui::PushID((int)i);
-         ImGui::BeginDisabled(busy || !p.playable());
-         if (ImGui::SmallButton("Download"))
-            s.download_movie(p);
-         ImGui::EndDisabled();
-         if (!p.playable() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Made with %s. BizHawk only keeps its own movies (.bk2) in sync.", p.emulator.c_str());
-         ImGui::PopID();
+         ImGui::TextUnformatted(p.title.c_str());
       }
       ImGui::EndTable();
    }
@@ -1680,31 +1692,125 @@ static void tab_movie(App &a)
    }
    else
    {
-      bool can = installed && !movies.empty() && !s.references.empty() && !s.loading_references() && !(a.live_running);
+      int &step = a.movie_step[a.live];
+      bool can = step == 0 && !busy && !s.loading_references() && !a.live_running;
       ImGui::BeginDisabled(!can);
-      if (primary_button("Play movie and find songs", ImVec2(240, 0), P.accent))
+      if (primary_button(step ? "Working..." : "Play movie and find songs", ImVec2(240, 0), P.accent))
       {
          a.audio.stop();
-         s.start_movie(movies[pick], kMovieSpeeds[a.movie_speed].percent, a.show_bizhawk);
+         step = 1;
+         for (bool &t : a.movie_tried[a.live])
+            t = false;
       }
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       {
-         if (!installed)
-            ImGui::SetTooltip("Download BizHawk first.");
-         else if (movies.empty())
-            ImGui::SetTooltip("Download a movie first.");
-         else if (s.references.empty())
-            ImGui::SetTooltip("Download the reference songs first.");
-         else if (a.live_running)
+         if (a.live_running)
             ImGui::SetTooltip("Pause the game in Play & rip first.");
          else
-            ImGui::SetTooltip("Plays the movie in BizHawk. Songs heard join the list; the song address is saved\n"
-                  "to the game database when one RAM byte follows the music.");
+            ImGui::SetTooltip("Does every step that is missing: downloads the reference songs and BizHawk, finds and\n"
+                  "downloads the best movie on TASVideos, and plays it in BizHawk. Songs heard join the list;\n"
+                  "the song address is saved to the game database when one RAM byte follows the music.");
+      }
+      if (step)
+      {
+         ImGui::SameLine();
+         if (ImGui::SmallButton("Cancel##movieauto"))
+            step = 0;
       }
       std::string msg = s.scan_message();
       if (!msg.empty())
          ImGui::TextColored(col(P.dim), "%s", msg.c_str());
+   }
+}
+
+// Carries out "Play movie and find songs" one step per frame while each background job finishes.
+static void drive_movie_steps(App &a)
+{
+   for (int side = 0; side < 2; side++)
+   {
+      int &step = a.movie_step[side];
+      RomSession &s = a.sessions[side];
+      if (!step)
+         continue;
+      if (!s.is_open())
+      {
+         step = 0;
+         continue;
+      }
+      if (s.tool_busy() || s.loading_references() || s.scanning())
+         continue;
+      bool *tried = a.movie_tried[side];
+      auto fail = [&](const std::string &msg) {
+         set_status(a, s.display_name() + ": " + msg, true);
+         step = 0;
+      };
+      if (step == 1)
+      {
+         if (!s.references.empty())
+            step = 2;
+         else if (!tried[1])
+         {
+            tried[1] = true;
+            s.download_references();
+         }
+         else
+            fail("no reference songs were found to name the movie's songs; import them with Reference songs.");
+      }
+      else if (step == 2)
+      {
+         if (bizhawk_installed(s.app_dir()))
+            step = 3;
+         else if (!tried[2])
+         {
+            tried[2] = true;
+            s.install_bizhawk();
+         }
+         else
+            fail(s.tool_message());
+      }
+      else if (step == 3)
+      {
+         if (!s.downloaded_movies().empty())
+            step = 5;
+         else if (!tried[3])
+         {
+            tried[3] = true;
+            s.find_movies();
+         }
+         else
+            step = 4;
+      }
+      else if (step == 4)
+      {
+         std::vector<TasPublication> list = s.movie_list();
+         auto pick = std::find_if(list.begin(), list.end(), [](const TasPublication &p) { return p.playable(); });
+         if (!s.downloaded_movies().empty())
+            step = 5;
+         else if (pick == list.end())
+            fail(list.empty() ? s.tool_message() : "TASVideos has no BizHawk movie of this game, so none can be played in sync.");
+         else if (!tried[4])
+         {
+            tried[4] = true;
+            s.download_movie(*pick);
+         }
+         else
+            fail(s.tool_message());
+      }
+      else if (step == 5)
+      {
+         std::vector<std::string> movies = s.downloaded_movies();
+         int pick = a.movie_pick[side] < (int)movies.size() ? a.movie_pick[side] : 0;
+         step = 0;
+         if (movies.empty())
+            fail("no movie was downloaded.");
+         else
+         {
+            if (a.live == side)
+               a.live_running = false;
+            s.start_movie(movies[pick], kMovieSpeeds[a.movie_speed].percent, a.show_bizhawk);
+         }
+      }
    }
 }
 
@@ -2338,6 +2444,7 @@ int main(int argc, char **argv)
       }
 
       run_live_game(a);
+      drive_movie_steps(a);
 
       for (int side = 0; side < 2; side++)
       {
