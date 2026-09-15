@@ -451,6 +451,12 @@ static bool read_song_value(px_engine *e, uint32_t *out)
       return false;
    }
 
+   if (p->events && p->events_address < size && data[p->events_address])
+   {
+      *out = 0x100u | data[p->events_address];
+      return true;
+   }
+
    if (p->pattern_length > 0)
    {
       for (unsigned i = 0; i < p->pattern_length; i++)
@@ -472,7 +478,13 @@ void px_engine_frame(px_engine *e)
 {
    uint32_t v;
 
-   if (!e->profile.loaded || !e->cfg.enabled || !read_song_value(e, &v))
+   if (!e->profile.loaded || !e->cfg.enabled)
+      return;
+   /* Frames pass whether or not the song address reads anything. */
+   bool silencing = e->silencing > 0;
+   if (silencing)
+      e->silencing--;
+   if (!read_song_value(e, &v))
       return;
    /* A command register reads zero between commands; the last song keeps playing.
     * Pattern matches return false when idle, so a zero song value is valid. */
@@ -480,14 +492,10 @@ void px_engine_frame(px_engine *e)
       return;
 
    /* Stopping the game's music changes what it reads as its song: that is still the song applied. */
-   if (e->silencing)
+   if (silencing && e->have_applied && v != e->applied)
    {
-      e->silencing--;
-      if (e->have_applied && v != e->applied)
-      {
-         e->have_silenced = true;
-         e->silenced      = v;
-      }
+      e->have_silenced = true;
+      e->silenced      = v;
    }
    if (e->have_silenced && v == e->silenced)
    {

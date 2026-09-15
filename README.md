@@ -202,7 +202,10 @@ NES games work the same way in Studio, with these differences:
   channels, so muting channels loses them. After a scan, Studio writes each value of the song request
   while music plays and keeps one that stops the music (Super Mario Bros.: `$FB = 80`); profiles then
   carry a `[silence]` section instead of channel mutes, and Proteus writes that request whenever
-  replacement music starts. Games without one (The Legend of Zelda so far) fall back to muting channels:
+  replacement music starts. The RAM that holds the song playing then reads the silence, so profiles
+  follow the requests instead: the song request (`$FB`, `latch = 1`) and the register the `.nsf` starts
+  its other songs with, as jingles (`events = 0x00FC`: the death jingle is song 0x101), so the game's own
+  jingles stop the replacement. Games without one (The Legend of Zelda so far) fall back to muting channels:
   FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two squares,
   triangle, noise and samples), and Studio mutes the squares and triangle by default. The DSP plugin
   saves those mutes as game options, which stay off for the whole game.
@@ -307,6 +310,7 @@ bytes    = 10 xx .. ..  ; optional: multi-byte command block pattern; xx is the 
 mask     = 0xFF         ; optional
 debounce = 2            ; frames a new value must hold before it counts
 latch    = 1            ; optional: address is a command register (ignores 0, keeps playing last song)
+events   = 0x00FC       ; optional: a second command register for jingles, read as song 0x100 + command
 unmapped = original     ; what unlisted values do: original | silence | keep
 
 [mute]

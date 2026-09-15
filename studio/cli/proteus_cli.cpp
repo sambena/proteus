@@ -240,8 +240,10 @@ int main(int argc, char **argv)
             taps.push_back((int)strtol(s, &end, 10));
             s = *end ? end + 1 : end;
          }
-      // PROTEUS_PRESS=600:down,660:a,720:start: press buttons at those frames (6 frames each), with no Start taps.
-      std::vector<std::pair<int, int>> presses;
+      // PROTEUS_PRESS=600:down,660:a,720:right:120: press buttons at those frames (6 frames each, or
+      // as many as given), with no Start taps.
+      struct Press { int at, button, frames; };
+      std::vector<Press> presses;
       if (const char *p = getenv("PROTEUS_PRESS"))
       {
          static const std::pair<const char *, int> kNames[] = { { "b", RETRO_DEVICE_ID_JOYPAD_B }, { "y", RETRO_DEVICE_ID_JOYPAD_Y },
@@ -253,11 +255,14 @@ int main(int argc, char **argv)
             char *end;
             int at = (int)strtol(s, &end, 10);
             std::string name;
-            for (s = *end == ':' ? end + 1 : end; *s && *s != ','; s++)
+            int hold = 6;
+            for (s = *end == ':' ? end + 1 : end; *s && *s != ',' && *s != ':'; s++)
                name += *s;
+            if (*s == ':')
+               hold = (int)strtol(s + 1, (char **)&s, 10);
             for (const auto &n : kNames)
                if (name == n.first)
-                  presses.push_back({ at, n.second });
+                  presses.push_back({ at, n.second, hold });
             if (*s)
                s++;
          }
@@ -269,8 +274,8 @@ int main(int argc, char **argv)
                                  : std::any_of(taps.begin(), taps.end(), [&](int at) { return f >= at && f < at + 6; });
          uint16_t buttons = tap ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
          for (const auto &p : presses)
-            if (f >= p.first && f < p.first + 6)
-               buttons |= (uint16_t)(1 << p.second);
+            if (f >= p.at && f < p.at + p.frames)
+               buttons |= (uint16_t)(1 << p.button);
          core.run_frame(buttons);
          size_t ram_size = 0;
          uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);

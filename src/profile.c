@@ -287,6 +287,13 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
          if (!parse_action(val, &p->unmapped))
             goto bad_value;
       }
+      else if (!strcmp(key, "events"))
+      {
+         if (!parse_uint(val, &n) || n > 0xFFFFFFFFu)
+            goto bad_value;
+         p->events_address = (uint32_t)n;
+         p->events = true;
+      }
       else if (!strcmp(key, "latch"))
       {
          if (!parse_bool(val, &p->latch))

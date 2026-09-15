@@ -22,6 +22,10 @@ struct SongAddress
    std::vector<uint8_t> bytes;  // pattern for command blocks (e.g. 10 xx .. ..)
    std::vector<bool> any;       // per byte of `bytes`: matches any value (written "..")
    int offset = 0;              // offset of xx in bytes
+   // A second command register for jingles (Super Mario Bros.: $FC); its commands are song
+   // values 0x100 + command.
+   bool events = false;
+   uint32_t events_address = 0;
 };
 
 // Reads the song number at `a` from `ram`; false when a pattern does not match.

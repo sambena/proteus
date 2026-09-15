@@ -74,6 +74,11 @@ bool read_song_address(const SongAddress &a, const uint8_t *ram, size_t ram_size
 {
    if (!a.known || !ram)
       return false;
+   if (a.events && a.events_address < ram_size && ram[a.events_address])
+   {
+      value = 0x100u | ram[a.events_address];
+      return true;
+   }
    if (!a.bytes.empty())
    {
       if ((uint64_t)a.address + a.bytes.size() > ram_size)
@@ -103,6 +108,8 @@ std::string describe_song_address(const SongAddress &a)
       for (size_t i = 0; i < a.bytes.size(); i++)
          out += (int)i == a.offset ? " song" : is_any(a, i) ? " .." : " " + hex(a.bytes[i], 2).substr(2);
    }
+   if (a.events)
+      out += " + $" + hex(a.events_address, 4).substr(2);
    return out;
 }
 
@@ -228,6 +235,9 @@ static void parse(const std::string &text, std::map<uint32_t, GameInfo> &games)
          g->song.size = atoi(opt("size", "1").c_str());
          g->song.latch = opt("latch", "0") == "1";
          g->song.debounce = atoi(opt("debounce", "2").c_str());
+         std::string events = opt("events", "");
+         g->song.events = !events.empty();
+         g->song.events_address = (uint32_t)strtoul(events.c_str(), nullptr, 0);
          for (size_t i = 0; i < w.size(); i++)
             if (w[i].compare(0, 6, "bytes=") == 0)
             {
@@ -337,7 +347,7 @@ void GameDb::save_locked()
                    "; Sections are ROM CRC32s (without copier headers). Studio updates this file when\n"
                    "; scans confirm something; edits made here are used the next time a ROM opens.\n"
                    ";\n"
-                   "; song_address = <memory> <address> size=<bytes> latch=<0|1> debounce=<frames>\n"
+                   "; song_address = <memory> <address> size=<bytes> latch=<0|1> debounce=<frames> [events=<jingle command address>]\n"
                    "; song_address = <memory> <address> bytes=<pattern, xx = song number, .. = any> latch=1 debounce=1\n"
                    "; start = ram <address> bytes=<command, xx = song number> settle=<frames>\n"
                    "; start = routine <jsl|jsr> <address> [block=<address>] [bytes=...] [a=song] settle=<frames>\n"
@@ -358,7 +368,10 @@ void GameDb::save_locked()
          else
             t += " size=" + std::to_string(g.song.size);
          t += " latch=" + std::string(g.song.latch ? "1" : "0") +
-              " debounce=" + std::to_string(g.song.debounce) + "\n";
+              " debounce=" + std::to_string(g.song.debounce);
+         if (g.song.events)
+            t += " events=" + hex(g.song.events_address, 4);
+         t += "\n";
       }
       if (g.start.kind != SongStart::NONE)
          t += "start = " + format_song_start(g.start) + "\n";

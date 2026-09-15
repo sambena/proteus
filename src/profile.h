@@ -59,6 +59,10 @@ typedef struct
    uint8_t pattern_mask[PX_MAX_PATTERN];
    unsigned pattern_length;
    unsigned pattern_offset;
+   /* A second command register, for jingles (Super Mario Bros.: $FC): a command there is song
+    * value 0x100 + command, and wins over the song address in the frame it is set. */
+   bool events;
+   uint32_t events_address;
 
    /* [mute] core options forced while the original music is muted */
    px_option mute[PX_MAX_MUTE];

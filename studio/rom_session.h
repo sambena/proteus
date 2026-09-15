@@ -194,6 +194,9 @@ private:
    bool find_song_variable();
    // NES: from the scan start, a value of the song request `s` writes that stops the music.
    bool find_silence(const SongStart &s);
+   // NES, once the music is stopped through RAM: follows the song requests themselves, and the
+   // .nsf's other request register as jingles, since the song the game keeps then stays silent.
+   void follow_requests(const SongStart &s);
    // NES: records what the game plays over the next `seconds` from where the core is, as a .wav.
    std::vector<uint8_t> record_music(double seconds);
    int reference_by_notes(const std::vector<uint8_t> &spc);

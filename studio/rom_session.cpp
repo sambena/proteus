@@ -285,6 +285,8 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
          from_profile.size = (int)p.size;
          from_profile.latch = p.latch;
          from_profile.debounce = (int)p.debounce;
+         from_profile.events = p.events;
+         from_profile.events_address = p.events_address;
          if (p.pattern_length > 0)
          {
             from_profile.bytes.assign(p.pattern, p.pattern + p.pattern_length);
@@ -2376,6 +2378,71 @@ bool RomSession::find_silence(const SongStart &s)
    return false;
 }
 
+// A profile that stops the game's music makes the RAM that holds the song playing useless: it
+// reads the silence from then on, so the game's next song (Super Mario Bros.: the death jingle)
+// would go unseen. The requests show every song the game asks for, so Proteus follows those: the
+// song request, and the register the .nsf starts its other songs with (jingles, at 0x100 + value),
+// when writing it makes the game take and clear it.
+void RomSession::follow_requests(const SongStart &s)
+{
+   SongAddress a;
+   a.known = true;
+   a.address = s.address;
+   a.latch = true;
+   a.debounce = 1;
+
+   size_t ram_size = 0;
+   core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+   uint32_t best = 0;
+   size_t best_songs = 0;
+   for (const auto &entry : nsf_table)
+   {
+      if (entry.first == s.address || entry.first >= ram_size || entry.second.size() <= best_songs)
+         continue;
+      // A request is taken and cleared within a few frames; RAM holding the song playing keeps it.
+      core.load_state(scan_state_);
+      uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+      if (!ram)
+         break;
+      ram[entry.first] = entry.second.begin()->first;
+      run_frames(4);
+      ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+      if (ram && ram[entry.first] == 0)
+      {
+         best = entry.first;
+         best_songs = entry.second.size();
+      }
+   }
+   core.load_state(scan_state_);
+   if (best_songs)
+   {
+      a.events = true;
+      a.events_address = best;
+      std::string err;
+      int listed = 0;
+      for (const auto &v : nsf_table[best])
+      {
+         std::lock_guard<std::mutex> lock(songs_mutex);
+         uint32_t value = 0x100u | v.first;
+         FoundSong *existing = find_song(value);
+         if (existing && !existing->reference.empty())
+            continue;
+         FoundSong song;
+         song.value = value;
+         if (use_reference(song, references.song(v.second), err))
+         {
+            add_song_locked(song);
+            listed++;
+         }
+      }
+      log("jingles are requested at $" + hex4(best) + ": listed " + std::to_string(listed) + " of them, as songs from 0x100");
+   }
+   scan_address_ = a;
+   scan_address_source_ = "scan (the requests, since the music is stopped through RAM)";
+   scan_changed_ = true;
+   log("profiles will follow " + describe_song_address(a) + ", where the game asks for each song");
+}
+
 // ---------------------------------------------------------------------------
 // Scanning
 // ---------------------------------------------------------------------------
@@ -2683,6 +2750,8 @@ void RomSession::scan_thread(int first, int last)
    if (nes_ && !cancel_ && s.kind == SongStart::RAM && s.bytes.empty() &&
          !(scan_silence_.known && scan_silence_.address == s.address))
       find_silence(s);
+   if (nes_ && !cancel_ && scan_silence_.known && scan_silence_.address == s.address)
+      follow_requests(s);
 
    core.load_state(scan_state_);
    core.audio().clear();

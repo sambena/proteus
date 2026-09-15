@@ -22,6 +22,8 @@
  * PLAYING_ADDR holds the song playing (0 while stopped). */
 #define STOP_ADDR    0x60
 #define PLAYING_ADDR 0x61
+/* A jingle request, like Super Mario Bros.' $FC: 01 for two frames at frame 250. */
+#define JINGLE_ADDR  0x62
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -141,6 +143,7 @@ RETRO_API void retro_run(void)
       s.stopped = false;
    s.ram[STOP_ADDR]    = 0;
    s.ram[PLAYING_ADDR] = s.stopped ? 0 : curr;
+   s.ram[JINGLE_ADDR]  = (s.frame == 250 || s.frame == 251) ? 1 : 0;
    /* Command register pulses the new song ID for 2 frames when it changes, then resets to 0. */
    if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2))
    {

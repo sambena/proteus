@@ -44,6 +44,8 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
    t += "debounce = " + std::to_string(a.debounce) + "\n";
    if (a.latch)
       t += "latch    = 1\n";
+   if (a.events)
+      t += "events   = " + hex(a.events_address, 4) + "   ; jingles: song 0x100 + command\n";
    t += "unmapped = original\n";
 
    if (target.silence.known)

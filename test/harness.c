@@ -851,6 +851,21 @@ int main(int argc, char **argv)
    expect("stop: unmapped song stops the replacement", 486, 540, 550, false);
    end_session();
 
+   /* 9. Following requests: a command register reads 0 between songs, and a jingle request
+    * (song 0x101, unmapped) stops the replacement even though the song number never changes. */
+   printf("\nscenario: following song and jingle requests\n");
+   snprintf(content, sizeof(content), "%s/requests.tst", argv[3]);
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 400);
+   expect("requests: song 2 wav replacement", 66, 180, 220, true);
+   expect("requests: song 2 game music stopped", 66, 180, 440, false);
+   expect("requests: song 3 after a stretch of zeros", 186, 246, 330, true);
+   expect("requests: jingle stops the replacement", 256, 300, 330, false);
+   expect("requests: sound effects kept", 256, 300, 1000, true);
+   expect("requests: song 4 silence", 306, 360, 330, false);
+   end_session();
+
    printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");
    return failures ? 1 : 0;
 }
