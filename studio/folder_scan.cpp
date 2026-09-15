@@ -12,7 +12,7 @@
 #include "tas_runner.h"
 #include "zip_read.h"
 
-static const char *kReportHeader = "# Proteus Studio folder scan\n# rom\tgame\treferences\ttable\tsongs\tnamed\taddress\thow\tverdict\tnote\n";
+static const char *kReportHeader = "# Proteus Studio folder scan\n# rom\tgame\treferences\ttable\tsongs\tnamed\taddress\thow\tverdict\tnote\tstart\tsilence\n";
 
 FolderScan::~FolderScan()
 {
@@ -78,7 +78,8 @@ void FolderScan::save_report()
       std::lock_guard<std::mutex> lock(mutex_);
       for (const auto &r : rows_)
          out << clean(r.rom) << '\t' << clean(r.game) << '\t' << r.references << '\t' << (r.table ? 1 : 0) << '\t' << r.songs << '\t'
-             << r.named << '\t' << clean(r.address) << '\t' << clean(r.how) << '\t' << r.verdict << '\t' << clean(r.note) << '\n';
+             << r.named << '\t' << clean(r.address) << '\t' << clean(r.how) << '\t' << r.verdict << '\t' << clean(r.note)
+             << '\t' << clean(r.start) << '\t' << clean(r.silence) << '\n';
    }
    write_text(report_, out.str());
 }
@@ -149,6 +150,11 @@ void FolderScan::run(Options o)
             r.rom = c[0]; r.game = c[1]; r.references = atoi(c[2].c_str()); r.table = c[3] == "1";
             r.songs = atoi(c[4].c_str()); r.named = atoi(c[5].c_str()); r.address = c[6]; r.how = c[7];
             r.verdict = c[8]; r.note = c[9];
+            if (c.size() >= 12)
+            {
+               r.start = c[10];
+               r.silence = c[11];
+            }
             rows_.push_back(r);
          }
       }
@@ -274,6 +280,14 @@ void FolderScan::run(Options o)
                row.how = s.address_source;
             }
             row.note = note;
+            if (s.start.kind != SongStart::NONE)
+               row.start = describe_song_start(s.start);
+            if (s.silence.known)
+            {
+               char buf[32];
+               snprintf(buf, sizeof(buf), "$%04X = %02X", (unsigned)s.silence.address, (unsigned)s.silence.value);
+               row.silence = buf;
+            }
             if (row.named >= 3 && s.address.known)
                row.verdict = "easy";
             else if (row.songs > 0 || row.references > 0)

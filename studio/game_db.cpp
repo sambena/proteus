@@ -329,6 +329,10 @@ GameDb &GameDb::get()
 
 std::string GameDb::path() const
 {
+   // PROTEUS_GAME_DB: another database file, for scans that should not touch Studio's.
+   if (const char *other = getenv("PROTEUS_GAME_DB"))
+      if (*other)
+         return other;
    return app_data_dir() + "\\games.ini";
 }
 

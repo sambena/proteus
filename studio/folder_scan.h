@@ -24,6 +24,8 @@ struct FolderScanRow
    std::string how;          // "scan", "TAS movie", "game database", ...
    std::string verdict;      // "easy", "partly", "skip"
    std::string note;
+   std::string start;        // how songs start ("$FB = song"), or empty
+   std::string silence;      // the RAM request that stops the music ("$FB = 80"), or empty
 };
 
 // An NES ROM (.nes), or a zip holding one.
