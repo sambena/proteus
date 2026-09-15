@@ -196,6 +196,13 @@ NES games work the same way in Studio, with these differences:
   game sounds different. Super Mario Bros. asks for songs through `$FB`, which it reads as bits, and keeps
   the song playing at `$F4`; a song it plays under many numbers is listed under its first number and single
   bits.
+- **Watching the `.nsf`'s song RAM in the game.** Writing a request from outside does not always start a
+  song (the game may read it only at certain moments), but the game still uses the same RAM. From power-on,
+  with Start tapped now and then, the scan watches every byte the `.nsf` writes with its songs' values. A
+  byte that takes them, each either cleared at once (a request: Metroid `$0684`, Punch-Out!! `$00F0`) or
+  held while the song plays (Castlevania `$0082`), and never swaps one for another within a second,
+  becomes the song address, and the set's songs are listed by those values. Requests are used before a
+  tap; a held byte, which may be channel state that sound effects also change, only when no tap works.
 - **A tap on the sound routine.** Much music code keeps no song number anywhere: Mega Man 3's `.nsf`
   starts a song by calling the game's "play this sound" routine (`$8106`) with the song in A. The rip's
   code is the ROM's own, so Studio taps that routine with cheat codes: its first instructions move to a
@@ -217,12 +224,34 @@ NES games work the same way in Studio, with these differences:
   jingles stop the replacement. The `.nsf` also shows how to stop the music code itself: Studio skips each
   call and flips each branch its play routine runs, and keeps a change that silences the music songs while
   the `.nsf`'s sound effects keep sounding, when the ROM holds that code (Mega Man 3: `809D` `D0` → `F0`).
-  Profiles carry it as a `[patch]` cheat code, applied only while replacement music plays. Games with
+  A patch that silences the `.nsf` can still leave a note hanging in the game, so each is heard there too,
+  from a moment a song starts over another, and kept only when the game goes quiet (Mega Man 2's first
+  candidate left 83% of the sound; `8269` leaves none). Profiles carry it as a `[patch]` cheat code,
+  applied only while replacement music plays. Games with
   neither (The Legend of Zelda so far) fall back to muting channels:
   FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two squares,
   triangle, noise and samples), and Studio mutes the squares and triangle by default. The DSP plugin
   saves those mutes as game options, which stay off for the whole game.
 - TAS movies are SNES only for now.
+
+**Progress.** Scan folder over 100 popular NES games, with FCEUmm and Zophar's `.nsf` sets:
+
+| | Games |
+| --- | --- |
+| Song address found and at least 3 songs named | 78 (17 before the watch, taps and 6502 fixes) |
+| ... through the `.nsf`'s song RAM watched in the game | 41 |
+| ... through a tap on the sound routine | 21 |
+| ... through RAM that starts songs, or the song finder | 16 |
+| Music stopped with a code patch, sound effects kept | 23 |
+| Music stopped with a RAM request, sound effects kept | 12 |
+| Partly (no song address, or fewer than 3 songs named) | 17 |
+| Skipped (no `.nsf` set, or the ROM did not open) | 5 |
+
+A found song address is not a game heard working: Super Mario Bros., Mega Man 2, Mega Man 3 and
+Castlevania have been played through the wrapper core with replacements, the game's music stopped and
+its sound effects kept. Still partly: Contra, Zelda II, Tetris, Gradius, Dragon Warrior, Faxanadu,
+Life Force, Kung Fu, Pac-Man, Paperboy, Rad Racer, R.B.I. Baseball, Kickle Cubicle and Top Gun (1943,
+Duck Tales 2 and Shadow of the Ninja have no set on Zophar's Domain).
 
 ### TAS movies
 
@@ -441,7 +470,7 @@ lose some effects; mute fewer channels for those games.
 | `studio/movie_learner.cpp` | names the songs of a movie's moments and learns the song address from them |
 | `studio/folder_scan.cpp` | Scan folder: every ROM of a folder in turn, with a report |
 | `studio/zip_read.cpp`, `studio/http.cpp` | reading zip archives; HTTPS requests (RetroAchievements, Zophar's Domain, SNESmusic.org, TASVideos, GitHub) |
-| `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans, TAS movies, folder scans and downloads without the window |
+| `studio/cli/proteus_cli.cpp` | `proteus-cli`: song tables, matching, scans (`scan --profile` exports one), TAS movies, folder scans and downloads without the window; `nsftrace`, `nsfcalls`, `nsfpatch`, `nsfsurvey` and `nestap` look into `.nsf` rips and design taps |
 | `studio/spc_rip.cpp` | turns a snes9x save state into an `.spc` file |
 | `studio/profile_export.cpp` | writes the profile and copies the music |
 | `studio/core_host.cpp` | minimal libretro frontend; runs up to four cores at once |
