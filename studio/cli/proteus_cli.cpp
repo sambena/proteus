@@ -761,6 +761,18 @@ int main(int argc, char **argv)
       }
       return 0;
    }
+   if (cmd == "nsftrace" && argc >= 4)
+   {
+      // proteus-cli nsftrace <file.nsf> <song from 1> [frames]: what the 6502 runs of init and play.
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      printf("%s", nsf_trace(data, atoi(argv[3]) - 1, argc > 4 ? atoi(argv[4]) : 4, err).c_str());
+      if (!err.empty())
+         printf("%s\n", err.c_str());
+      return 0;
+   }
    if (cmd == "nsfdump" && argc >= 4)
    {
       // proteus-cli nsfdump <file.nsf> <hex address> [count]: code bytes as the .nsf maps them.

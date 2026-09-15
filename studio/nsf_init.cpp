@@ -79,6 +79,8 @@ public:
       if (!nsf.banked)
          for (int i = 0; i < 8; i++)
             page_[i] = (uint8_t)i;
+      // NSF players enable the sound channels before init, and many rips count on it.
+      apu_[0x15] = 0x0F;
    }
 
    uint8_t read(uint16_t a) const
@@ -146,10 +148,22 @@ public:
       s = 0xFD;
       push16(0xFFFE);   // RTS returns to $FFFF, where the call ends
       pc = address;
-      for (long steps = 0; steps < 2000000 && pc != 0xFFFF; steps++)
+      stopped_at = -1;
+      for (steps = 0; steps < 2000000 && pc != 0xFFFF; steps++)
+      {
+         uint16_t at = pc;
          if (!step())
+         {
+            stopped_at = at;
             break;
+         }
+      }
    }
+
+   // The last call: instructions run, and where it stopped on an instruction it could not run (-1: none).
+   long steps = 0;
+   int stopped_at = -1;
+   uint8_t apu(int reg) const { return apu_[reg]; }
 
    const uint8_t *ram() const { return ram_; }
    uint8_t *ram_mut() { return ram_; }
@@ -296,6 +310,11 @@ private:
          case 0xD8: flag(0x08, false); return true;
          case 0xF8: flag(0x08, true); return true;
          case 0xEA: return true;
+         // Unofficial NOPs, which some drivers use: 1, 2 and 3 bytes long.
+         case 0x1A: case 0x3A: case 0x5A: case 0x7A: case 0xDA: case 0xFA: return true;
+         case 0x80: case 0x82: case 0x89: case 0xC2: case 0xE2: case 0x04: case 0x44: case 0x64:
+         case 0x14: case 0x34: case 0x54: case 0x74: case 0xD4: case 0xF4: pc++; return true;
+         case 0x0C: case 0x1C: case 0x3C: case 0x5C: case 0x7C: case 0xDC: case 0xFC: pc += 2; return true;
          case 0x0A: case 0x2A: case 0x4A: case 0x6A: a = shift(op >> 5, a); return true;
          case 0x4C: pc = fetch16(); return true;
          case 0x6C: { uint16_t t = fetch16(); pc = (uint16_t)(read(t) | read((uint16_t)((t & 0xFF00) | ((t + 1) & 0xFF))) << 8); return true; }
@@ -696,6 +715,38 @@ std::vector<NsfMusicPatch> nsf_music_patch_candidates(const std::vector<uint8_t>
    for (size_t i : order)
       sorted.push_back(out[i]);
    return sorted;
+}
+
+std::string nsf_trace(const std::vector<uint8_t> &data, int song, int frames, std::string &error)
+{
+   Nsf nsf;
+   if (!parse(data, nsf, error))
+      return "";
+   Machine m(nsf);
+   std::string out;
+   char line[160];
+   auto report = [&](const char *what) {
+      snprintf(line, sizeof(line), "%-8s %7ld steps%s", what, m.steps, m.stopped_at >= 0 ? "" : "\n");
+      out += line;
+      if (m.stopped_at >= 0)
+      {
+         snprintf(line, sizeof(line), "  stopped at $%04X on %02X %02X %02X\n", m.stopped_at, m.read((uint16_t)m.stopped_at),
+               m.read((uint16_t)(m.stopped_at + 1)), m.read((uint16_t)(m.stopped_at + 2)));
+         out += line;
+      }
+   };
+   m.call(nsf.init, (uint8_t)song, 0);
+   report("init");
+   for (int f = 0; f < frames; f++)
+   {
+      m.call(nsf.play, 0, 0);
+      snprintf(line, sizeof(line), "play %-3d", f);
+      report(line);
+      snprintf(line, sizeof(line), "  $4015=%02X $4000=%02X $4002=%02X $4003=%02X $4008=%02X $400A=%02X audible=%02X\n", m.apu(0x15),
+            m.apu(0), m.apu(2), m.apu(3), m.apu(8), m.apu(0xA), m.audible());
+      out += line;
+   }
+   return out;
 }
 
 bool nsf_channel_activity_patched(const std::vector<uint8_t> &data, int song, int frames,

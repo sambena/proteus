@@ -102,6 +102,10 @@ bool nsf_find_music_patch(const std::vector<uint8_t> &nsf, const std::vector<int
 // The songs of an .nsf that sound like sound effects: short bursts on one or two channels.
 std::vector<int> nsf_effect_songs(const std::vector<uint8_t> &nsf, std::string &error);
 
+// What running init and `frames` play calls does: instructions run, where a call stopped, and the
+// sound registers after each frame. For finding what the 6502 does not run.
+std::string nsf_trace(const std::vector<uint8_t> &nsf, int song, int frames, std::string &error);
+
 // Channel activity (see nsf_channel_activity) with code patches applied.
 bool nsf_channel_activity_patched(const std::vector<uint8_t> &nsf, int song, int frames,
       const std::vector<std::pair<uint16_t, uint8_t>> &patches, int activity[NSF_CHANNELS], std::string &error);

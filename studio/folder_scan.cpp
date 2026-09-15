@@ -288,6 +288,8 @@ void FolderScan::run(Options o)
                snprintf(buf, sizeof(buf), "$%04X = %02X", (unsigned)s.silence.address, (unsigned)s.silence.value);
                row.silence = buf;
             }
+            else if (!s.patch.empty())
+               row.silence = "patch " + s.patch.begin()->second;
             if (row.named >= 3 && s.address.known)
                row.verdict = "easy";
             else if (row.songs > 0 || row.references > 0)

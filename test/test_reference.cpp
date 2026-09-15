@@ -294,6 +294,33 @@ static void test_nsf_init()
    TEST(requests.size() == 2 && requests[1].address == 0x602 && requests[1].song_values[2] == 0x40, "a second request byte");
 }
 
+static void test_nsf_sound()
+{
+   printf("scenario: reference songs - what an .nsf plays\n");
+   // Play sets pulse 1 without ever enabling channels through $4015, as the player has already
+   // (Castlevania's rip), after an unofficial NOP (Super C's).
+   const uint8_t play[] = {
+      0x3C, 0x00, 0x00,       // 8000 NOP abs,X (unofficial)
+      0xA9, 0xBF, 0x8D, 0x00, 0x40,   // LDA #$BF / STA $4000
+      0xA9, 0x7D, 0x8D, 0x02, 0x40,   // LDA #$7D / STA $4002
+      0xA9, 0x09, 0x8D, 0x03, 0x40,   // LDA #$09 / STA $4003
+      0x60,                   // RTS
+   };
+   std::vector<uint8_t> nsf(0x80 + 0x40, 0);
+   memcpy(nsf.data(), "NESM\x1A\x01", 6);
+   nsf[6] = 1;
+   nsf[7] = 1;
+   nsf[8] = 0x00; nsf[9] = 0x80;
+   nsf[10] = 0x20; nsf[11] = 0x80;   // init: RTS
+   nsf[12] = 0x00; nsf[13] = 0x80;   // play
+   memcpy(&nsf[0x80], play, sizeof(play));
+   nsf[0x80 + 0x20] = 0x60;
+   std::string err;
+   int act[NSF_CHANNELS];
+   TEST(nsf_channel_activity(nsf, 0, 60, {}, act, err) && act[0] == 60 && act[1] == 0,
+         "channels count as enabled from the start, and unofficial NOPs run");
+}
+
 static void test_nes_tap()
 {
    printf("scenario: a tap on an NES game's sound routine\n");
@@ -365,6 +392,7 @@ int main(int argc, char **argv)
    test_import(work);
    test_nsf_sets(work);
    test_nsf_init();
+   test_nsf_sound();
    test_nes_tap();
    printf(g_failures ? "\nFAILED (%d failures)\n" : "\nPASSED (0 failures)\n", g_failures);
    return g_failures ? 1 : 0;
