@@ -186,13 +186,18 @@ NES games work the same way in Studio, with these differences:
 - **Reference songs are `.nsf` sets.** Download finds the game's set on Zophar's Domain; its `.m3u`
   playlist names the songs (a set without one lists every song of the `.nsf` by number). Rips are named by
   their notes alone, and a song named by a reference plays from the `.nsf`, looping as the game does.
-- **Finding how songs start.** The scan watches the RAM while the game starts up, and writes each byte
-  that takes a few values from a moment music plays (many games play none on their title screen), keeping
-  the bytes after which the game sounds different. Super Mario Bros. asks for songs through `$FB`, which it
-  reads as bits, and keeps the song playing at `$F4`; a song it plays under many numbers is listed under its
-  first number and single bits. Games that start songs by calling their music routine (Mega Man 2) are not
-  found this way yet: play them with **Play & rip** (`R` rips the music playing), which names the songs heard
-  and, after three or more, can learn the song address as it does for SNES games.
+- **Finding how songs start.** An `.nsf` holds the game's own music code, and many rips start a song
+  the way the game does, by writing a request to RAM. Studio runs the `.nsf`'s init routine for every song
+  on a small 6502 and notes the RAM each writes (The Legend of Zelda: `$0600 = 80` for the title, `01` for
+  the overworld). Those bytes are tried first; when one starts songs in the game, the values the `.nsf`
+  writes are the game's songs: they are listed by name at once, and only they are played to check them.
+  Otherwise the scan watches the RAM while the game starts up, and writes each byte that takes a few values
+  from a moment music plays (many games play none on their title screen), keeping the bytes after which the
+  game sounds different. Super Mario Bros. asks for songs through `$FB`, which it reads as bits, and keeps
+  the song playing at `$F4`; a song it plays under many numbers is listed under its first number and single
+  bits. Games whose `.nsf` calls the music routine directly (Mega Man 2) are not found this way yet: play
+  them with **Play & rip** (`R` rips the music playing), which names the songs heard and, after three or
+  more, can learn the song address as it does for SNES games.
 - **Channels.** FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two
   squares, triangle, noise and samples). Studio mutes the squares and triangle by default. Most NES games
   play sound effects on the music's channels, so those effects go quiet while a replacement plays.
@@ -385,6 +390,7 @@ lose some effects; mute fewer channels for those games.
 | `studio/game_db.cpp` | the game database (`games.ini`) |
 | `studio/snes_rom.cpp` | SNES ROM header, CRC32, and CPU address mapping |
 | `studio/reference.cpp` | reference songs: matching rips, finding song tables in the ROM, importing and downloading sets |
+| `studio/nsf_init.cpp` | a small 6502 that runs an `.nsf`'s init routine to see the RAM requests that start its songs |
 | `studio/song_notes.cpp` | a song's notes over time, for matching songs that memory cannot tell apart |
 | `studio/tas_runner.cpp` | TASVideos lookups and downloads, installing BizHawk, playing a movie in BizHawk with a RAM-saving Lua script |
 | `studio/movie_learner.cpp` | names the songs of a movie's moments and learns the song address from them |

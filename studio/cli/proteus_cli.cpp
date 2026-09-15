@@ -23,6 +23,7 @@
 #include "reference.h"
 #include "folder_scan.h"
 #include "movie_learner.h"
+#include "nsf_init.h"
 #include "rom_session.h"
 #include "snes_rom.h"
 #include "song_notes.h"
@@ -239,12 +240,37 @@ int main(int argc, char **argv)
             taps.push_back((int)strtol(s, &end, 10));
             s = *end ? end + 1 : end;
          }
+      // PROTEUS_PRESS=600:down,660:a,720:start: press buttons at those frames (6 frames each), with no Start taps.
+      std::vector<std::pair<int, int>> presses;
+      if (const char *p = getenv("PROTEUS_PRESS"))
+      {
+         static const std::pair<const char *, int> kNames[] = { { "b", RETRO_DEVICE_ID_JOYPAD_B }, { "y", RETRO_DEVICE_ID_JOYPAD_Y },
+            { "select", RETRO_DEVICE_ID_JOYPAD_SELECT }, { "start", RETRO_DEVICE_ID_JOYPAD_START }, { "up", RETRO_DEVICE_ID_JOYPAD_UP },
+            { "down", RETRO_DEVICE_ID_JOYPAD_DOWN }, { "left", RETRO_DEVICE_ID_JOYPAD_LEFT }, { "right", RETRO_DEVICE_ID_JOYPAD_RIGHT },
+            { "a", RETRO_DEVICE_ID_JOYPAD_A }, { "x", RETRO_DEVICE_ID_JOYPAD_X } };
+         for (const char *s = p; *s;)
+         {
+            char *end;
+            int at = (int)strtol(s, &end, 10);
+            std::string name;
+            for (s = *end == ':' ? end + 1 : end; *s && *s != ','; s++)
+               name += *s;
+            for (const auto &n : kNames)
+               if (name == n.first)
+                  presses.push_back({ at, n.second });
+            if (*s)
+               s++;
+         }
+      }
       std::vector<int16_t> all;
       for (int f = 0; f < frames; f++)
       {
-         bool tap = taps.empty() ? f > 240 && f % 180 < 6
+         bool tap = !presses.empty() ? false : taps.empty() ? f > 240 && f % 180 < 6
                                  : std::any_of(taps.begin(), taps.end(), [&](int at) { return f >= at && f < at + 6; });
          uint16_t buttons = tap ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
+         for (const auto &p : presses)
+            if (f >= p.first && f < p.first + 6)
+               buttons |= (uint16_t)(1 << p.second);
          core.run_frame(buttons);
          size_t ram_size = 0;
          uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
@@ -557,6 +583,25 @@ int main(int argc, char **argv)
             if (name != playing)
                printf("  [%5.1fs] playing: %s\n", f / 60.0, (playing = name).c_str());
          }
+      }
+      return 0;
+   }
+   if (cmd == "nsfinit" && argc >= 3)
+   {
+      // proteus-cli nsfinit <file.nsf>: the RAM the .nsf's init writes differently from song to song.
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      std::vector<NsfRequest> requests = nsf_song_requests(data, err);
+      if (!err.empty())
+         fprintf(stderr, "%s\n", err.c_str());
+      for (const auto &r : requests)
+      {
+         printf("$%04X  %zu songs:", r.address, r.song_values.size());
+         for (const auto &v : r.song_values)
+            printf(" %d=%02X", v.first + 1, v.second);
+         printf("\n");
       }
       return 0;
    }

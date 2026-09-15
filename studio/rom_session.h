@@ -94,6 +94,9 @@ public:
    ReferenceSet references;
    std::vector<SongNotes> reference_notes;   // each reference's notes, for songs memory cannot tell apart
    SongTable song_table;
+   // NES: the RAM an .nsf reference writes to start each of its songs, when its init routine starts
+   // them the way the game does: address -> value written -> reference index.
+   std::map<uint32_t, std::map<uint8_t, int>> nsf_table;
    std::string reference_dir() const;
    // Copies .spc files (a folder, zip or .spc) into this game's reference folder and reloads.
    int import_references(const std::string &source, std::string &error);
@@ -221,6 +224,7 @@ private:
    std::vector<uint8_t> before_notes_spc_;   // the sound CPU state before_notes_ measures
    SongNotes before_notes_;
    SongTable pending_table_;
+   std::map<uint32_t, std::map<uint8_t, int>> pending_nsf_table_;
    std::string ref_message_;
    std::vector<uint8_t> scan_before_spc_;   // the sound CPU at the scan start state
    std::vector<uint8_t> command_state_;     // the game when it last sent the sound CPU a command

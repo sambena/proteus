@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "nsf_init.h"
 #include "platform.h"
 #include "reference.h"
 #include "snes_rom.h"
@@ -253,6 +254,45 @@ static void test_nsf_sets(const std::string &work)
    TEST(refs.size() == 5 && refs.song(4).track == 4 && refs.song(4).title == "Other #5", "without a playlist, every song is listed");
 }
 
+static void test_nsf_init()
+{
+   printf("scenario: reference songs - what an .nsf's init writes\n");
+   // Like The Legend of Zelda's rip: song -> (offset, value) pairs written to $0600 + offset, after
+   // clearing a work byte and calling a subroutine that sets another.
+   const uint8_t code[] = {
+      0x48,                   // 8000 PHA
+      0xA9, 0x00, 0x85, 0x10, // LDA #0 / STA $10       (the same for every song)
+      0x20, 0x20, 0x80,       // JSR $8020
+      0x68, 0x0A, 0xA8,       // PLA / ASL A / TAY
+      0xB9, 0x30, 0x80, 0xAA, // LDA $8030,Y / TAX
+      0xB9, 0x31, 0x80,       // LDA $8031,Y
+      0x9D, 0x00, 0x06,       // STA $0600,X
+      0x60,                   // RTS
+   };
+   const uint8_t sub[] = { 0xA9, 0x05, 0x8D, 0x20, 0x07, 0x60 };   // LDA #5 / STA $0720 / RTS
+   const uint8_t table[] = { 0x00, 0x80, 0x00, 0x10, 0x02, 0x40, 0x02, 0x80 };
+   std::vector<uint8_t> nsf(0x80 + 0x40, 0);
+   memcpy(nsf.data(), "NESM\x1A\x01", 6);
+   nsf[6] = 4;
+   nsf[7] = 1;
+   nsf[8] = 0x00; nsf[9] = 0x80;     // load
+   nsf[10] = 0x00; nsf[11] = 0x80;   // init
+   nsf[12] = 0x20; nsf[13] = 0x80;   // play
+   memcpy(&nsf[0x80], code, sizeof(code));
+   memcpy(&nsf[0x80 + 0x20], sub, sizeof(sub));
+   memcpy(&nsf[0x80 + 0x30], table, sizeof(table));
+
+   std::string err;
+   std::map<uint16_t, uint8_t> writes;
+   TEST(nsf_init_ram(nsf, 1, writes, err) && writes.count(0x600) && writes[0x600] == 0x10 && writes[0x720] == 5,
+         "runs init for a song and returns the RAM it writes");
+   std::vector<NsfRequest> requests = nsf_song_requests(nsf, err);
+   TEST(requests.size() == 2, "only bytes written differently from song to song are requests");
+   TEST(requests.size() == 2 && requests[0].address == 0x600 && requests[0].song_values.size() == 2 &&
+         requests[0].song_values[0] == 0x80 && requests[0].song_values[1] == 0x10, "the request byte and each song's value");
+   TEST(requests.size() == 2 && requests[1].address == 0x602 && requests[1].song_values[2] == 0x40, "a second request byte");
+}
+
 int main(int argc, char **argv)
 {
    std::string work = argc > 1 ? argv[1] : ".";
@@ -261,6 +301,7 @@ int main(int argc, char **argv)
    test_names();
    test_import(work);
    test_nsf_sets(work);
+   test_nsf_init();
    printf(g_failures ? "\nFAILED (%d failures)\n" : "\nPASSED (0 failures)\n", g_failures);
    return g_failures ? 1 : 0;
 }

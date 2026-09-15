@@ -14,6 +14,7 @@
 #include "gme.h"
 #include "platform.h"
 #include "movie_learner.h"
+#include "nsf_init.h"
 #include "spc_rip.h"
 
 extern "C" {
@@ -365,6 +366,7 @@ void RomSession::close()
    references.clear();
    reference_notes.clear();
    song_table = SongTable();
+   nsf_table.clear();
    {
       std::lock_guard<std::mutex> lock(ref_mutex_);
       refs_ready_ = false;
@@ -486,6 +488,33 @@ std::string RomSession::reference_message()
    return ref_message_;
 }
 
+// The RAM requests the first .nsf of a reference set writes for its songs (see nsf_table).
+static std::map<uint32_t, std::map<uint8_t, int>> nsf_request_table(const ReferenceSet &refs)
+{
+   std::map<uint32_t, std::map<uint8_t, int>> table;
+   for (size_t r = 0; r < refs.size(); r++)
+   {
+      const ReferenceSong &ref = refs.song(r);
+      if (ref.data.size() < 5 || (memcmp(ref.data.data(), "NESM\x1A", 5) && memcmp(ref.data.data(), "NSFE", 4)))
+         continue;
+      std::string err;
+      for (const auto &q : nsf_song_requests(ref.data, err))
+      {
+         if (q.address >= 0x100 && q.address < 0x200)
+            continue;
+         for (const auto &v : q.song_values)
+            for (size_t i = 0; i < refs.size(); i++)
+               if (refs.song(i).path == ref.path && refs.song(i).track == v.first && v.second)
+                  table[q.address].emplace(v.second, (int)i);   // the first song writing a value names it
+      }
+      break;
+   }
+   // A request says which song; bytes written with fewer than two values say nothing.
+   for (auto it = table.begin(); it != table.end();)
+      it = it->second.size() < 2 ? table.erase(it) : std::next(it);
+   return table;
+}
+
 // Loads the reference folder, after downloading into it, and looks for the ROM's song table.
 void RomSession::load_references_async(bool download)
 {
@@ -520,6 +549,7 @@ void RomSession::load_references_async(bool download)
       SongTable table;
       std::vector<SongNotes> notes;
       std::string summary;
+      std::map<uint32_t, std::map<uint8_t, int>> nsf_table = nsf_request_table(refs);
       if (!refs.empty())
       {
          say("Looking for the song table in the ROM...");
@@ -545,6 +575,7 @@ void RomSession::load_references_async(bool download)
       std::lock_guard<std::mutex> lock(ref_mutex_);
       pending_refs_ = std::move(refs);
       pending_table_ = table;
+      pending_nsf_table_ = nsf_table;
       pending_notes_.swap(notes);
       refs_ready_ = true;
       ref_message_ = summary;
@@ -562,6 +593,7 @@ bool RomSession::apply_reference_results()
    refs_ready_ = false;
    references = std::move(pending_refs_);
    song_table = pending_table_;
+   nsf_table = pending_nsf_table_;
    reference_notes.swap(pending_notes_);
    pending_notes_.clear();
    pending_refs_.clear();
@@ -627,6 +659,7 @@ void RomSession::remove_references()
    references.clear();
    reference_notes.clear();
    song_table = SongTable();
+   nsf_table.clear();
    std::lock_guard<std::mutex> lock(ref_mutex_);
    ref_message_.clear();
 }
@@ -2071,6 +2104,29 @@ bool RomSession::find_song_start_nes(const SongPrint *baseline)
    log(std::to_string(candidates.size()) + " RAM bytes to try (" + std::to_string(onsets) + " times sound started, music playing at " +
        std::to_string(moments.size()) + " moments)");
 
+   // The reference .nsf may start its songs by writing the game's own request bytes (The Legend of
+   // Zelda: $0600): those come first, with the values the .nsf writes.
+   std::map<uint32_t, std::vector<uint32_t>> nsf_values;
+   for (const auto &entry : nsf_table)
+   {
+      if (entry.first >= ram_size || nsf_values.size() >= 8)
+         continue;
+      // In the order of the songs they start.
+      std::vector<std::pair<int, uint32_t>> by_song;
+      for (const auto &v : entry.second)
+         by_song.push_back({ v.second, v.first });
+      std::sort(by_song.begin(), by_song.end());
+      for (const auto &b : by_song)
+         nsf_values[entry.first].push_back(b.second);
+   }
+   if (!nsf_values.empty())
+      log("the reference .nsf starts songs by writing" + [&] {
+         std::string s;
+         for (const auto &n : nsf_values)
+            s += " $" + hex4(n.first);
+         return s;
+      }());
+
    const double kDiffer = 0.25;
    struct Trial
    {
@@ -2088,12 +2144,16 @@ bool RomSession::find_song_start_nes(const SongPrint *baseline)
       std::vector<float> untouched;
       short_print(core, kQuick, untouched);
       std::vector<std::pair<int, uint32_t>> likely;   // values that changed the music, byte
+      for (const auto &n : nsf_values)
+         likely.push_back({ 1000, n.first });
       scan_total_ = (int)candidates.size();
       scan_done_ = 0;
       for (uint32_t at : candidates)
       {
          if (cancel_)
             break;
+         if (nsf_values.count(at))
+            continue;
          if (scan_done_++ % 16 == 0)
             set_scan_message("Listening for music changes from RAM $" + hex4(at) + where + "...");
          const std::vector<uint8_t> &seen = bytes[at].values;
@@ -2137,6 +2197,9 @@ bool RomSession::find_song_start_nes(const SongPrint *baseline)
          scan_done_++;
          set_scan_message("Listening closely to RAM $" + hex4(at) + where + "...");
          std::vector<uint32_t> values;
+         auto from_nsf = nsf_values.find(at);
+         if (from_nsf != nsf_values.end())
+            values.assign(from_nsf->second.begin(), from_nsf->second.begin() + std::min<size_t>(4, from_nsf->second.size()));
          for (uint8_t v : bytes[at].values)
             if (values.size() < 3)
                values.push_back(v);
@@ -2202,6 +2265,11 @@ bool RomSession::find_song_start_nes(const SongPrint *baseline)
       s.kind = SongStart::RAM;
       s.address = t.address;
       std::vector<uint32_t> values = t.values;
+      auto from_nsf = nsf_values.find(t.address);
+      if (from_nsf != nsf_values.end())
+         for (uint32_t v : from_nsf->second)
+            if (values.size() < 6 && std::find(values.begin(), values.end(), v) == values.end())
+               values.push_back(v);
       for (uint32_t v : kTrials)
          if (values.size() < 6 && std::find(values.begin(), values.end(), v) == values.end())
             values.push_back(v);
@@ -2373,6 +2441,9 @@ void RomSession::scan_thread(int first, int last)
       if (!usable)
          log(describe_song_start(scan_start_) + " starts no songs");
    }
+   // An .nsf that starts songs through RAM names the bytes to try: faster than playing the game.
+   if (!usable && !cancel_ && nes_ && !nsf_table.empty())
+      usable = find_song_start_nes(base_print);
    if (!usable && !cancel_ && !references.empty() && find_song_variable())
    {
       usable = true;
@@ -2382,7 +2453,7 @@ void RomSession::scan_thread(int first, int last)
       have_baseline = rip_state(core.save_state(), 0, false, baseline, err);
       base_print = have_baseline ? &baseline.print : nullptr;
    }
-   if (!usable && !cancel_)
+   if (!usable && !cancel_ && !(nes_ && !nsf_table.empty()))
       usable = nes_ ? find_song_start_nes(base_print) : find_song_start(base_print);
    if (!usable)
    {
@@ -2414,12 +2485,45 @@ void RomSession::scan_thread(int first, int last)
       first = 1;
       last = 255;
    }
-   scan_total_ = std::max(1, last - first + 1);
+   std::vector<uint32_t> values;
+   for (int v = first; v <= last; v++)
+      values.push_back((uint32_t)v);
+   // NES: when the .nsf starts its songs with this very request, its values are the game's songs.
+   // They are listed by name at once, and only they are played to check them.
+   auto nsf_songs = nsf_table.end();
+   if (nes_ && s.kind == SongStart::RAM && s.bytes.empty() && !by_address)
+      nsf_songs = nsf_table.find(s.address);
+   if (nsf_songs != nsf_table.end())
+   {
+      values.clear();
+      std::string err;
+      int listed = 0;
+      for (const auto &entry : nsf_songs->second)
+      {
+         values.push_back(entry.first);
+         std::lock_guard<std::mutex> lock(songs_mutex);
+         FoundSong *existing = find_song(entry.first);
+         if (existing && !existing->reference.empty())
+            continue;
+         FoundSong song;
+         song.value = entry.first;
+         if (use_reference(song, references.song(entry.second), err))
+         {
+            add_song_locked(song);
+            listed++;
+         }
+      }
+      log("the reference .nsf starts " + std::to_string(values.size()) + " songs with " + describe_song_start(s) +
+          "; listed " + std::to_string(listed) + " of them");
+   }
+   scan_total_ = std::max(1, (int)values.size());
    scan_done_ = 0;
    int ignored = 0, unmatched = 0, confirmed = 0, aliases = 0;
    std::vector<std::string> heard;
-   for (int v = first; v <= last && !cancel_; v++)
+   for (uint32_t v : values)
    {
+      if (cancel_)
+         break;
       set_scan_message("Trying song " + hex2((uint32_t)v) + "...");
       if (!start_song(s, (uint32_t)v))
       {
