@@ -254,6 +254,24 @@ its sound effects kept. Still partly: Contra, Zelda II, Tetris, Gradius, Dragon 
 Life Force, Kung Fu, Pac-Man, Paperboy, Rad Racer, R.B.I. Baseball, Kickle Cubicle and Top Gun (1943,
 Duck Tales 2 and Shadow of the Ninja have no set on Zophar's Domain).
 
+### N64 games
+
+Choose Mupen64Plus-Next as the N64 core in Settings, then open Super Mario 64 or Ocarina of Time
+(any revision). Studio lists every background song by number and name at once; N64 games need no
+song scan in the SNES sense.
+
+- **Scan songs** runs the game for a few seconds to find its sequence players (see
+  [N64 games](#n64-games-nintendo-ead-sound-engine) below). Opening a game whose profile already
+  follows them skips this.
+- **Reference songs > Download** fetches the game's USF set from Zophar's Domain. Each song then
+  plays its rip, and the set's other tracks (variations, fanfares) are listed without numbers, so an
+  N64 game makes a music source for any other game too.
+- **Generate INI** writes the profile with the replacements chosen. A `.miniusf` used as a
+  replacement is copied with its `.usflib`.
+
+Play & rip, TAS movies and Scan folder are for SNES and NES games. Fanfares that Ocarina of Time plays
+over the music (item gets, ocarina songs) stay the game's own and are not listed.
+
 ### TAS movies
 
 Games whose songs a scan cannot start from outside (ActRaiser 2 uploads each song itself) can still

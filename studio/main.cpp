@@ -35,6 +35,7 @@ struct Settings
    std::string retroarch_dir;
    std::string core_file;       // SNES
    std::string nes_core_file;   // NES
+   std::string n64_core_file;   // N64
    std::string rom[2];
    float ui_scale = 1.0f;
    int volume = 80;
@@ -62,6 +63,7 @@ static Settings load_settings()
       if (k == "retroarch_dir") s.retroarch_dir = v;
       else if (k == "core") s.core_file = v;
       else if (k == "nes_core") s.nes_core_file = v;
+      else if (k == "n64_core") s.n64_core_file = v;
       else if (k == "rom_a") s.rom[0] = v;
       else if (k == "rom_b") s.rom[1] = v;
       else if (k == "ui_scale") s.ui_scale = std::clamp((float)atof(v.c_str()), 0.8f, 2.5f);
@@ -79,7 +81,7 @@ static void save_settings(const Settings &s)
    char scale[16];
    snprintf(scale, sizeof(scale), "%.2f", s.ui_scale);
    write_text(settings_path(), "retroarch_dir=" + s.retroarch_dir + "\ncore=" + s.core_file +
-         "\nnes_core=" + s.nes_core_file + "\nrom_a=" + s.rom[0] + "\nrom_b=" + s.rom[1] + "\nui_scale=" + scale +
+         "\nnes_core=" + s.nes_core_file + "\nn64_core=" + s.n64_core_file + "\nrom_a=" + s.rom[0] + "\nrom_b=" + s.rom[1] + "\nui_scale=" + scale +
          "\nvolume=" + std::to_string(s.volume) + "\nscan_folder=" + s.scan_folder + "\n");
 }
 
@@ -222,6 +224,8 @@ static void refresh_cores(App &a)
          a.settings.core_file = c.first;
       if (a.settings.nes_core_file.empty() && c.first == "fceumm_libretro.dll")
          a.settings.nes_core_file = c.first;
+      if (a.settings.n64_core_file.empty() && c.first == "mupen64plus_next_libretro.dll")
+         a.settings.n64_core_file = c.first;
    }
 }
 
@@ -250,12 +254,13 @@ static void default_mutes(App &a)
 
 static void open_rom(App &a, int side, const std::string &path)
 {
-   bool nes = is_nes_rom_file(path);
-   const std::string &core_file = nes ? a.settings.nes_core_file : a.settings.core_file;
+   bool nes = is_nes_rom_file(path), n64 = !nes && is_n64_rom_file(path);
+   const std::string &core_file = n64 ? a.settings.n64_core_file : nes ? a.settings.nes_core_file : a.settings.core_file;
    if (core_file.empty())
    {
-      set_status(a, nes ? "Choose an NES core in Settings first; Proteus Studio uses RetroArch's FCEUmm core for NES games."
-                        : "Choose your RetroArch folder in Settings first; Proteus Studio uses its snes9x core.", true);
+      set_status(a, n64 ? "Choose an N64 core in Settings first; Proteus Studio uses RetroArch's Mupen64Plus-Next core for N64 games."
+                    : nes ? "Choose an NES core in Settings first; Proteus Studio uses RetroArch's FCEUmm core for NES games."
+                          : "Choose your RetroArch folder in Settings first; Proteus Studio uses its snes9x core.", true);
       a.show_settings = true;
       return;
    }
@@ -289,7 +294,11 @@ static void open_rom(App &a, int side, const std::string &path)
       }
    }
    std::string msg = "Opened " + s.display_name();
-   if (!s.address.known)
+   if (s.is_n64() && !n64_song_names(s.n64_code()))
+      msg += ". Proteus knows the songs of Super Mario 64 and Ocarina of Time; this game's are not listed yet.";
+   else if (s.is_n64() && !s.address.known)
+      msg += ". Click Scan songs to find its sequence players (a few seconds).";
+   else if (!s.address.known)
       msg += ". No song address is known for this game yet; find it in Advanced.";
    else if (s.songs.empty())
       msg += ". Click Scan songs to find its music.";
@@ -377,7 +386,7 @@ static bool is_spc_archive(const std::string &path)
    std::string err;
    zip_read(data, [&](const std::string &name) {
             std::string e = lower_ext(name);
-            spc = spc || e == "spc" || e == "nsf" || e == "nsfe";
+            spc = spc || e == "spc" || e == "nsf" || e == "nsfe" || e == "miniusf" || e == "usf";
             return false;
          },
          [](const std::string &, std::vector<uint8_t> &) { return false; }, err);
@@ -449,7 +458,7 @@ static std::string open_rom_dialog(App &a, int side)
 {
    std::string start = a.settings.rom[side].empty() ? a.settings.rom[1 - side] : a.settings.rom[side];
    return open_file_dialog(side == TARGET ? "Open the game to change" : "Open the game to take music from",
-         { { "SNES and NES ROMs", "*.sfc;*.smc;*.swc;*.fig;*.nes;*.zip" }, { "All files", "*.*" } }, dir_of(start));
+         { { "SNES, NES and N64 ROMs", "*.sfc;*.smc;*.swc;*.fig;*.nes;*.z64;*.n64;*.v64;*.zip" }, { "All files", "*.*" } }, dir_of(start));
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +479,24 @@ static void draw_panel_header(App &a, int side)
    ImGui::TextUnformatted(s.display_name().c_str());
    ImGui::PopFont();
 
-   if (s.address.known)
+   if (s.is_n64() && s.address.known)
+   {
+      char addr[64];
+      snprintf(addr, sizeof(addr), "Sequence players 0x%08X", (unsigned)s.n64.players);
+      chip(addr, P.ok);
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip("Proteus follows the song of the game's background music player (%s engine) and silences\n"
+               "that player while a replacement plays, so sound effects and fanfares stay. From: %s.",
+               s.n64.engine.c_str(), s.address_source.c_str());
+   }
+   else if (s.is_n64())
+   {
+      chip("Sequence players not found yet", side == TARGET ? P.danger : P.dim);
+      if (ImGui::IsItemHovered())
+         ImGui::SetTooltip(side == TARGET ? "Scan songs runs the game for a few seconds to find its sequence players."
+                                          : "Not needed for the music source.");
+   }
+   else if (s.address.known)
    {
       std::string addr = "Song address " + describe_song_address(s.address) +
             (s.address.latch && s.address.bytes.empty() ? " (command)" : "");
@@ -488,7 +514,9 @@ static void draw_panel_header(App &a, int side)
                                           : "Not needed for the music source.");
    }
    ImGui::SameLine();
-   if (s.start.kind != SongStart::NONE)
+   if (s.is_n64())
+      ;   // the song list comes from the game's song names, not from starting songs
+   else if (s.start.kind != SongStart::NONE)
    {
       chip(s.start.kind == SongStart::ROUTINE ? "Songs start: music routine" : "Songs start: RAM command", P.ok);
       if (ImGui::IsItemHovered())
@@ -528,15 +556,18 @@ static void draw_panel_header(App &a, int side)
          tip = s.reference_message();
       else if (s.references.empty())
       {
-         tip = s.is_nes() ? "The game's soundtrack as an .nsf file with its .m3u playlist (Zophar's Domain).\n"
-                          : "The game's soundtrack as .spc files (SNESmusic.org, Zophar's Domain).\n";
+         tip = s.is_n64() ? "The game's soundtrack as .miniusf rips with their .usflib (Zophar's Domain).\n"
+               : s.is_nes() ? "The game's soundtrack as an .nsf file with its .m3u playlist (Zophar's Domain).\n"
+                            : "The game's soundtrack as .spc files (SNESmusic.org, Zophar's Domain).\n";
          tip += "With them, songs are named after the reference they match, scans keep only real songs,\n"
                 "and a song table in the ROM lists every song by number.\nAdd them with Reference songs, or drop a folder or .zip here.";
       }
       else
       {
          tip = "Scans and rips are named after the reference song they match.\nFolder: " + s.references.dir();
-         if (s.song_table.found)
+         if (s.is_n64())
+            tip = "Each song plays its rip from the game's USF set.\nFolder: " + s.references.dir();
+         else if (s.song_table.found)
             tip += "\nThe ROM lists " + std::to_string(s.song_table.entries.size()) + " songs in a table (ROM offset " +
                    hex((uint32_t)s.song_table.rom_offset, 6) + "); Scan songs lists and checks them.";
          else
@@ -615,6 +646,9 @@ static void draw_scan_bar(App &a, int side)
       {
          if (a.live == side && a.live_running)
             ImGui::SetTooltip("Pause the game in Advanced to scan.");
+         else if (s.is_n64())
+            ImGui::SetTooltip("Runs the game for a few seconds to find its sequence players: where it keeps the song\n"
+                  "playing, and the volume Proteus holds at zero while a replacement plays.");
          else if (s.loading_references())
             ImGui::SetTooltip("Waiting for the reference songs to load.");
          else if (s.song_table.found)
@@ -629,6 +663,7 @@ static void draw_scan_bar(App &a, int side)
       }
       ImGui::SameLine();
       bool live_here = a.show_advanced && a.live == side && a.live_running;
+      ImGui::BeginDisabled(s.is_n64());
       if (ImGui::Button(live_here ? "Pause game" : "Play & rip"))
       {
          if (live_here)
@@ -636,10 +671,12 @@ static void draw_scan_bar(App &a, int side)
          else
             play_live(a, side);
       }
-      if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("Play this game in Advanced. Each new song is ripped into this list a few seconds after it starts.");
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+         ImGui::SetTooltip(s.is_n64() ? "N64 songs are listed by name and play from the game's USF set; there is nothing to rip."
+                                      : "Play this game in Advanced. Each new song is ripped into this list a few seconds after it starts.");
       ImGui::SameLine();
-      ImGui::BeginDisabled(s.is_nes());
+      ImGui::BeginDisabled(s.is_nes() || s.is_n64());
       if (ImGui::Button("TAS movie"))
       {
          if (a.live != side)
@@ -649,33 +686,36 @@ static void draw_scan_bar(App &a, int side)
       }
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-         ImGui::SetTooltip(s.is_nes() ? "TAS movies are not supported for NES games yet."
+         ImGui::SetTooltip(s.is_nes() || s.is_n64() ? "TAS movies are supported for SNES games."
                                       : "Download a movie of the whole game from TASVideos and play it in BizHawk\n"
                                         "to hear its songs and learn the song address (Advanced > TAS movie).");
       ImGui::SameLine();
       if (ImGui::Button("Reference songs"))
          ImGui::OpenPopup("references");
       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip(s.is_nes() ? "The game's soundtrack as an .nsf file, to name and check the songs found."
-                                      : "The game's soundtrack as .spc files, to name and check the songs found.");
+         ImGui::SetTooltip(s.is_n64() ? "The game's soundtrack as USF rips, to listen to its songs and use them as music."
+               : s.is_nes() ? "The game's soundtrack as an .nsf file, to name and check the songs found."
+                            : "The game's soundtrack as .spc files, to name and check the songs found.");
       if (ImGui::BeginPopup("references"))
       {
          bool busy = s.loading_references();
          if (ImGui::MenuItem("Download", nullptr, false, !busy))
          {
             s.download_references();
-            set_status(a, "Looking for " + s.display_name() + (s.is_nes() ? " on Zophar's Domain..." : " on Zophar's Domain and SNESmusic.org..."));
+            set_status(a, "Looking for " + s.display_name() + (s.is_nes() || s.is_n64() ? " on Zophar's Domain..." : " on Zophar's Domain and SNESmusic.org..."));
          }
          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(s.is_nes() ? "Finds the game's NSF set by name on Zophar's Domain."
-                                         : "Finds the game's SPC set by name on Zophar's Domain, or on SNESmusic.org (needs 7-Zip).");
+            ImGui::SetTooltip(s.is_n64() ? "Finds the game's USF set by name on Zophar's Domain."
+                  : s.is_nes() ? "Finds the game's NSF set by name on Zophar's Domain."
+                               : "Finds the game's SPC set by name on Zophar's Domain, or on SNESmusic.org (needs 7-Zip).");
          if (ImGui::MenuItem("Import folder...", nullptr, false, !busy))
          {
-            std::string dir = pick_folder_dialog(s.is_nes() ? "Folder with the game's .nsf file" : "Folder with the game's .spc files");
+            std::string dir = pick_folder_dialog(s.is_n64() ? "Folder with the game's .miniusf and .usflib files"
+                  : s.is_nes() ? "Folder with the game's .nsf file" : "Folder with the game's .spc files");
             if (!dir.empty())
                import_references(a, side, dir);
          }
-         if (ImGui::MenuItem(s.is_nes() ? "Import archive or .nsf..." : "Import archive or .spc...", nullptr, false, !busy))
+         if (ImGui::MenuItem(s.is_n64() ? "Import archive..." : s.is_nes() ? "Import archive or .nsf..." : "Import archive or .spc...", nullptr, false, !busy))
          {
             std::string path = open_file_dialog("Reference songs", { { "Reference sets", "*.zip;*.rsn;*.rar;*.7z;*.spc;*.nsf;*.nsfe" }, { "All files", "*.*" } }, "");
             if (!path.empty())
@@ -710,7 +750,7 @@ static void draw_scan_bar(App &a, int side)
          if (!path.empty())
             open_rom(a, side, path);
       }
-      if (!s.songs.empty())
+      if (!s.songs.empty() && !s.is_n64())
       {
          ImGui::SameLine();
          if (ImGui::Button("Clear songs"))
@@ -868,7 +908,7 @@ static void draw_replacement_cell(App &a, const FoundSong &song)
       if (ImGui::Selectable("Music file..."))
       {
          std::string path = open_file_dialog("Choose replacement music",
-               { { "Music", "*.spc;*.nsf;*.nsfe;*.vgm;*.vgz;*.gbs;*.ogg;*.mp3;*.wav" }, { "All files", "*.*" } },
+               { { "Music", "*.spc;*.nsf;*.nsfe;*.vgm;*.vgz;*.gbs;*.miniusf;*.usf;*.ogg;*.mp3;*.wav" }, { "All files", "*.*" } },
                dir_of(current.path));
          if (!path.empty())
          {
@@ -943,7 +983,14 @@ static void draw_song_table(App &a, int side)
       ImGui::TableSetColumnIndex(0);
       std::string id = std::string(side == TARGET ? "A:" : "B:") + song.path;
       bool playing = a.audio.playing_id() == id;
-      if (icon_button("##play", playing ? ICON_STOP : ICON_PLAY, fh, P.side[side], playing))
+      if (song.path.empty())
+      {
+         // N64 songs the USF set lacks (or before it is downloaded) have nothing to play.
+         ImGui::Dummy(ImVec2(fh, fh));
+         if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Download the game's USF set under Reference songs to listen.");
+      }
+      else if (icon_button("##play", playing ? ICON_STOP : ICON_PLAY, fh, P.side[side], playing))
          play_song(a, id, song.path, (unsigned)song.track + 1);
 
       ImGui::TableSetColumnIndex(1);
@@ -2117,6 +2164,7 @@ static void draw_settings(App &a)
          a.settings.retroarch_dir = dir;
          a.settings.core_file.clear();
          a.settings.nes_core_file.clear();
+         a.settings.n64_core_file.clear();
          refresh_cores(a);
       }
    }
@@ -2154,6 +2202,23 @@ static void draw_settings(App &a)
    }
    if (a.settings.nes_core_file != "fceumm_libretro.dll")
       ImGui::TextColored(col(P.danger), "Muting NES music channels needs FCEUmm (fceumm_libretro.dll).");
+
+   ImGui::Spacing();
+   ImGui::TextUnformatted("N64 core");
+   std::string n64_current = a.settings.n64_core_file.empty() ? "(none found)" : a.settings.n64_core_file;
+   for (auto &c : a.cores)
+      if (c.first == a.settings.n64_core_file)
+         n64_current = c.second;
+   ImGui::SetNextItemWidth(-1);
+   if (ImGui::BeginCombo("##n64_core", n64_current.c_str()))
+   {
+      for (auto &c : a.cores)
+         if (ImGui::Selectable(c.second.c_str(), c.first == a.settings.n64_core_file))
+            a.settings.n64_core_file = c.first;
+      ImGui::EndCombo();
+   }
+   if (a.settings.n64_core_file != "mupen64plus_next_libretro.dll")
+      ImGui::TextColored(col(P.danger), "N64 games need Mupen64Plus-Next (mupen64plus_next_libretro.dll).");
 
    ImGui::Spacing();
    ImGui::TextUnformatted("Interface size");

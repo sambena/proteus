@@ -15,6 +15,7 @@
 #include "apu_analyzer.h"
 #include "core_host.h"
 #include "game_db.h"
+#include "n64_scan.h"
 #include "ra_client.h"
 #include "reference.h"
 #include "song_notes.h"
@@ -61,6 +62,12 @@ public:
    bool is_open() const { return open_; }
    // An NES game: songs are ripped as recordings, and reference songs are .nsf sets.
    bool is_nes() const { return nes_; }
+   // An N64 game (Nintendo EAD sound engine): songs are listed by name, scans find the sequence
+   // players, and reference songs are USF sets.
+   bool is_n64() const { return n64_; }
+   const std::string &n64_code() const { return n64_rom_.code; }
+   // Where the game's sequence players are, once a scan or its profile tells.
+   N64ScanResult n64;
 
    const std::string &rom_path() const { return rom_path_; }
    // The name Proteus matches profiles by: the ROM file (or zip entry) without extension.
@@ -226,8 +233,16 @@ private:
    void save_library();
    void log(const std::string &line);
 
+   // N64: the song list from the game's song names and its USF set (UI or reference thread).
+   void list_n64_songs();
+   void scan_n64();
+
    bool open_ = false;
    bool nes_ = false;
+   bool n64_ = false;
+   N64Rom n64_rom_;
+   N64ScanResult scan_n64_;   // the scan thread's result
+   std::string core_path_;
    std::vector<int16_t> live_audio_;          // NES: the last seconds of live play, mono at kRipRate
    double live_phase_ = 0;
    std::string app_dir_;

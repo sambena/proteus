@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@ struct N64Song
 {
    int value;
    const char *name;
+   const char *zophar;   // the song's title in Zophar's Domain's USF set, when it differs from `name`
 };
 
 struct N64Rom
@@ -24,8 +26,13 @@ struct N64Rom
 
 // Reads a .z64/.v64/.n64 header (the byte order is fixed up); false when it is not an N64 ROM.
 bool n64_rom_header(const std::vector<uint8_t> &rom, N64Rom &out);
+// True for N64 ROM files (.z64, .n64, .v64), and zip archives holding one.
+bool is_n64_rom_file(const std::string &path);
 // Song names for a game code's first three characters ("CZL"), or nullptr.
 const std::vector<N64Song> *n64_song_names(const std::string &code);
+// The song a file of the game's USF set plays ("19a Hyrule Field Main Theme.miniusf", "LOZ57.miniusf"),
+// or -1.
+int n64_song_of_reference(const std::string &code, const std::string &file_name);
 
 struct N64ScanResult
 {
@@ -42,6 +49,13 @@ struct N64ScanResult
 bool n64_scan(const std::string &core_path, const std::string &rom_path, const std::string &save_dir,
       double seconds, N64ScanResult &result, std::string &error,
       const std::function<void(const std::string &)> &log);
+// The players an existing profile follows, when it was written for one of the known layouts.
+bool n64_scan_from_profile(const std::string &profile_path, const N64Rom &rom, N64ScanResult &result);
+// The address of the BGM player's song number, for showing.
+uint32_t n64_song_address(const N64ScanResult &scan);
 
-// The profile text for a scan: [song], [hold] and every known song as `original` with its name.
-std::string n64_profile(const N64ScanResult &scan, const std::string &rom_name);
+// The profile text for a scan: [song], [hold] and every known song, as `original` unless `tracks`
+// gives its entry and a comment ({"music/field.ogg | track=2", "<- label"}, {"silence", ""});
+// `music_dir` is the [library] folder.
+std::string n64_profile(const N64ScanResult &scan, const std::string &rom_name,
+      const std::map<int, std::pair<std::string, std::string>> &tracks = {}, const std::string &music_dir = "");

@@ -106,6 +106,7 @@ private:
    void *lib_ = nullptr;
    Api *api_ = nullptr;
    bool game_loaded_ = false;
+   bool ran_ = false;   // run_frame was called since the game loaded
    retro_system_av_info av_{};
    std::string library_name_;
    std::string content_path_;

@@ -81,7 +81,8 @@ const uint8_t *spc_ram(const std::vector<uint8_t> &spc);
 // The ID666 song title, trimmed; empty when there is none.
 std::string spc_song_title(const std::vector<uint8_t> &spc);
 
-// True for the files a reference set is made of: .spc, .nsf, .nsfe and .m3u playlists.
+// True for the files a reference set is made of: .spc, .nsf, .nsfe, .m3u playlists, and N64 .usf,
+// .miniusf and .usflib files.
 bool is_reference_file(const std::string &name);
 // Copies the reference files from `source` (a folder, a zip archive, an .rsn/.rar/.7z archive
 // through 7-Zip, or a single file) into `dir`. Returns how many songs files were copied
@@ -93,7 +94,7 @@ std::string find_7zip();
 // Downloads a game's set into `dir`, finding it by any of `names` (the ROM file name, the
 // game's title): SNES sets from Zophar's Domain, else from SNESmusic.org (needs 7-Zip); NES
 // sets from Zophar's Domain. `progress` receives messages while it works.
-enum { REFERENCES_ZOPHAR = 1, REFERENCES_SNESMUSIC = 2, REFERENCES_ZOPHAR_NES = 4 };
+enum { REFERENCES_ZOPHAR = 1, REFERENCES_SNESMUSIC = 2, REFERENCES_ZOPHAR_NES = 4, REFERENCES_ZOPHAR_N64 = 8 };
 int download_reference_songs(const std::vector<std::string> &names, const std::string &dir,
       const std::function<void(const std::string &)> &progress, std::string &error,
       int sources = REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC);

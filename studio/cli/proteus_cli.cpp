@@ -3,7 +3,7 @@
 //
 //   proteus-cli table <rom> <spc folder>
 //   proteus-cli match <spc folder> <rip.spc> [before.spc]
-//   proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system <dir>] [--refs <spc folder>] [--first N] [--last N] [--keep-rips dir]
+//   proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system <dir>] [--refs <spc folder>] [--first N] [--last N] [--keep-rips dir] [--profile out.ini [--assign 0xNN=file|silence ...]]
 //   proteus-cli list <rom> <snes9x core> [app dir]
 //   proteus-cli import <folder, archive or .spc> <folder>
 //   proteus-cli download "<game name>" <folder> [zophar|snesmusic]
@@ -97,10 +97,24 @@ static int cmd_scan(int argc, char **argv)
 {
    std::string rom_path = argv[2], core, system, refs, keep, profile;
    int first = -1, last = -1;
+   Assignments assignments;
    for (int i = 3; i + 1 < argc; i += 2)
    {
       std::string k = argv[i];
-      if (k == "--core") core = argv[i + 1];
+      // --assign 0x02=path: a replacement, as Studio's Replace with column sets it.
+      if (k == "--assign")
+      {
+         std::string v = argv[i + 1];
+         size_t eq = v.find('=');
+         if (eq == std::string::npos)
+            continue;
+         Assignment as;
+         as.path = v.substr(eq + 1);
+         as.kind = as.path == "silence" ? Assignment::SILENCE : Assignment::FILE;
+         as.label = as.kind == Assignment::FILE ? stem_of(as.path) : "";
+         assignments[(uint32_t)strtoul(v.substr(0, eq).c_str(), nullptr, 0)] = as;
+      }
+      else if (k == "--core") core = argv[i + 1];
       else if (k == "--system") system = argv[i + 1];
       else if (k == "--refs") refs = argv[i + 1];
       else if (k == "--first") first = (int)strtol(argv[i + 1], nullptr, 0);
@@ -158,8 +172,8 @@ static int cmd_scan(int argc, char **argv)
       if (getenv("PROTEUS_GAME_DB"))
          s.apply_scan_results();
       int copied = 0;
-      if (export_profile(s, Assignments(), ProfileOptions(), profile, copied, err))
-         printf("wrote %s\n", profile.c_str());
+      if (export_profile(s, assignments, ProfileOptions(), profile, copied, err))
+         printf("wrote %s (%d files copied)\n", profile.c_str(), copied);
       else
          printf("profile: %s\n", err.c_str());
    }
@@ -1090,7 +1104,7 @@ int main(int argc, char **argv)
          "  proteus-cli n64 <mupen64plus_next core> <rom or folder> [profile folder] [--all] [--force]\n"
          "  proteus-cli table <rom> <spc folder>\n"
          "  proteus-cli match <spc folder> <rip.spc> [before.spc]\n"
-         "  proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system dir] [--refs spc folder] [--first N] [--last N] [--keep-rips dir] [--profile out.ini]\n"
+         "  proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system dir] [--refs spc folder] [--first N] [--last N] [--keep-rips dir] [--profile out.ini [--assign 0xNN=file|silence ...]]\n"
          "  proteus-cli nestap <file.nsf> <rom.nes> [ram hex]\n"
          "  proteus-cli list <rom> <snes9x core> [app dir]\n"
          "  proteus-cli import <folder, archive or .spc> <folder>\n"

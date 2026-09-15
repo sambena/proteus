@@ -7,6 +7,7 @@
 #include <functional>
 #include <sstream>
 
+#include "n64_scan.h"
 #include "platform.h"
 #include "rom_session.h"
 #include "tas_runner.h"
@@ -206,6 +207,11 @@ void FolderScan::run(Options o)
          {
             row.verdict = "skip";
             row.note = "no NES core chosen";
+         }
+         else if (is_n64_rom_file(path))
+         {
+            row.verdict = "skip";
+            row.note = "N64 games: open them in Studio, or use proteus-cli n64";
          }
          else if (!s.open(path, nes ? o.nes_core_path : o.core_path, o.system_dir, err))
          {

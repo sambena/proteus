@@ -359,12 +359,19 @@ void CoreHost::unload()
 {
    if (api_)
    {
+      // Mupen64Plus-Next waits forever in retro_unload_game for an emulator it never started.
+      if (game_loaded_ && !ran_)
+      {
+         skip_video_ = true;
+         api_->run();
+      }
       if (game_loaded_)
          api_->unload_game();
       if (api_->deinit)
          api_->deinit();
    }
    game_loaded_ = false;
+   ran_ = false;
    delete api_;
    api_ = nullptr;
    if (lib_)
@@ -388,6 +395,7 @@ void CoreHost::run_frame(uint16_t buttons)
    if (!game_loaded_)
       return;
    buttons_ = buttons;
+   ran_ = true;
    api_->run();
 }
 

@@ -70,7 +70,13 @@ static bool flat_block(const uint8_t *p, size_t n)
 bool is_reference_file(const std::string &name)
 {
    std::string e = lower_ext(name);
-   return e == "spc" || e == "nsf" || e == "nsfe" || e == "m3u";
+   return e == "spc" || e == "nsf" || e == "nsfe" || e == "m3u" || e == "usf" || e == "miniusf" || e == "usflib";
+}
+
+// A PSF file of version 0x21: an N64 USF rip or its library.
+static bool is_usf(const std::vector<uint8_t> &d)
+{
+   return d.size() >= 16 && !memcmp(d.data(), "PSF\x21", 4);
 }
 
 // The songs of an .nsf or .nsfe: how many, and the titles an .nsfe carries.
@@ -167,6 +173,25 @@ bool ReferenceSet::load(const std::string &dir, std::string &error)
          s.title = spc_song_title(s.data);
          if (s.title.empty())
             s.title = stem_of(f);
+         songs.push_back(std::move(s));
+         continue;
+      }
+      // N64 USF rips play from their files (a .miniusf needs its .usflib beside it), so only the
+      // path is kept; the title is the file's, without its track number.
+      if (ext == "usf" || ext == "miniusf")
+      {
+         ReferenceSong s;
+         s.path = dir + "\\" + f;
+         std::string t = stem_of(f);
+         size_t at = 0;
+         while (at < t.size() && isdigit((unsigned char)t[at]))
+            at++;
+         if (at > 0 && at < t.size() && isalpha((unsigned char)t[at]) && at + 1 < t.size() && (t[at + 1] == ' ' || t[at + 1] == '_'))
+            at++;
+         while (at > 0 && at < t.size() && (t[at] == ' ' || t[at] == '_'))
+            at++;
+         s.title = at > 0 && at < t.size() ? t.substr(at) : t;
+         std::replace(s.title.begin(), s.title.end(), '_', ' ');
          songs.push_back(std::move(s));
          continue;
       }
@@ -622,8 +647,8 @@ static int import_zip(const std::vector<uint8_t> &zip, const std::string &dir, s
             int songs = 0;
             std::vector<std::string> titles;
             bool playlist = lower_ext(name) == "m3u";
-            if ((playlist || spc_ram(data) || nsf_songs(data, songs, titles)) &&
-                  write_bytes(dir + "\\" + sanitize_filename(file_name(name)), data) && !playlist)
+            if ((playlist || spc_ram(data) || nsf_songs(data, songs, titles) || is_usf(data)) &&
+                  write_bytes(dir + "\\" + sanitize_filename(file_name(name)), data) && !playlist && lower_ext(name) != "usflib")
                count++;
             return true;
          }, error);
@@ -750,7 +775,7 @@ int import_reference_songs(const std::string &source, const std::string &dir, st
          }
          else if (is_archive(e))
             count += std::max(0, import_with_7zip(from, dir, error));
-         else if (is_reference_file(f) && copy_file_data(from, dir + "\\" + f) && e != "m3u")
+         else if (is_reference_file(f) && copy_file_data(from, dir + "\\" + f) && e != "m3u" && e != "usflib")
             count++;
       }
    }
@@ -971,11 +996,15 @@ static std::string find_emu_zip(const std::string &html)
    return "";
 }
 
+enum ZopharSystem { ZOPHAR_SNES, ZOPHAR_NES, ZOPHAR_N64 };
+
 static int download_from_zophar(const std::vector<std::string> &variants, const std::string &dir,
-      const std::function<void(const std::string &)> &progress, std::string &error, bool nes)
+      const std::function<void(const std::string &)> &progress, std::string &error, ZopharSystem which)
 {
-   const std::string site = "https://www.zophar.net", section = nes ? "/music/nintendo-nes-nsf/" : "/music/nintendo-snes-spc/";
-   const std::string system = nes ? "NES" : "SNES", format = nes ? ".nsf" : ".spc";
+   static const char *kSections[] = { "/music/nintendo-snes-spc/", "/music/nintendo-nes-nsf/", "/music/nintendo-64-usf/" };
+   static const char *kSystems[] = { "SNES", "NES", "N64" }, *kFormats[] = { ".spc", ".nsf", ".miniusf" };
+   const std::string site = "https://www.zophar.net", section = kSections[which];
+   const std::string system = kSystems[which], format = kFormats[which];
    std::string html, err, link, page_url;
    progress("Looking for " + variants.front() + " on Zophar's Domain...");
    for (const auto &v : variants)
@@ -1174,11 +1203,12 @@ int download_reference_songs(const std::vector<std::string> &names, const std::s
       return -1;
    }
    std::string errors;
-   for (int nes = 0; nes < 2; nes++)
-      if (sources & (nes ? REFERENCES_ZOPHAR_NES : REFERENCES_ZOPHAR))
+   static const int kFlags[] = { REFERENCES_ZOPHAR, REFERENCES_ZOPHAR_NES, REFERENCES_ZOPHAR_N64 };
+   for (int which = ZOPHAR_SNES; which <= ZOPHAR_N64; which++)
+      if (sources & kFlags[which])
       {
          std::string e;
-         int count = download_from_zophar(variants, dir, progress, e, nes != 0);
+         int count = download_from_zophar(variants, dir, progress, e, (ZopharSystem)which);
          if (count > 0)
             return count;
          errors += (errors.empty() ? "" : "; ") + e;

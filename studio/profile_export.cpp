@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "profile_export.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
 
+#include "n64_scan.h"
 #include "platform.h"
 
 extern "C" {
@@ -27,12 +29,65 @@ std::string profile_path_for(const RomSession &target, const std::string &system
    return system_dir + "\\proteus\\" + target.game_name() + ".ini";
 }
 
+// A USF rip's .usflib libraries sit beside it and are found by name: they go wherever it goes.
+static void plan_usf_libraries(const std::string &source, const std::string &dest,
+      std::vector<std::pair<std::string, std::string>> &plan)
+{
+   std::string ext = lower_ext(source);
+   if (ext != "miniusf" && ext != "usf")
+      return;
+   for (const auto &f : list_files(dir_of(source)))
+      if (lower_ext(f) == "usflib")
+      {
+         std::pair<std::string, std::string> copy(dir_of(source) + "\\" + f, dir_of(dest) + "\\" + f);
+         if (normalize_path(copy.first) != normalize_path(copy.second) &&
+               std::find(plan.begin(), plan.end(), copy) == plan.end())
+            plan.push_back(copy);
+      }
+}
+
+// The [tracks] entry of an assignment ("music/x.ogg | track=2", "silence"), planning the file's copy
+// into the profile's music folder; the comment names where it came from.
+static std::pair<std::string, std::string> track_entry(uint32_t value, const Assignment &as, const std::string &music_rel,
+      const std::string &profile_dir, std::vector<std::pair<std::string, std::string>> *copy_plan)
+{
+   if (as.kind == Assignment::SILENCE)
+      return { "silence", "" };
+   std::string file = as.path;
+   if (copy_plan)
+   {
+      std::string rel = music_rel + "/" + hex(value, 2).substr(2) + "_" +
+            sanitize_filename(as.label.empty() ? stem_of(as.path) : as.label) + "." + lower_ext(as.path);
+      std::string dest = profile_dir + "\\" + rel;
+      if (normalize_path(dest) != normalize_path(as.path))
+         copy_plan->push_back({ as.path, dest });
+      plan_usf_libraries(as.path, dest, *copy_plan);
+      file = rel;
+   }
+   // Quotes keep ';' (a comment) and '|' (options) in a file name.
+   bool quote = file.find_first_of(";|") != std::string::npos ||
+         (!file.empty() && (file.front() == ' ' || file.back() == ' '));
+   std::string spec = quote ? "\"" + file + "\"" : file;
+   if (as.track > 1)
+      spec += " | track=" + std::to_string(as.track);
+   return { spec, as.label.empty() ? "" : "<- " + as.label };
+}
+
 std::string profile_text(RomSession &target, const Assignments &assignments, const ProfileOptions &options,
       const std::string &profile_path, std::vector<std::pair<std::string, std::string>> *copy_plan)
 {
    const SongAddress &a = target.address;
    std::string profile_dir = dir_of(profile_path);
    std::string music_rel = "music/" + sanitize_filename(target.game_name());
+
+   if (target.is_n64())
+   {
+      std::map<int, std::pair<std::string, std::string>> tracks;
+      for (auto &entry : assignments)
+         if (entry.second.kind != Assignment::ORIGINAL)
+            tracks[(int)entry.first] = track_entry(entry.first, entry.second, music_rel, profile_dir, copy_plan);
+      return "; Made with Proteus Studio\n" + n64_profile(target.n64, target.game_name(), tracks, music_rel);
+   }
 
    std::string t;
    t += "; Proteus Retune profile for " + target.game_name() + "\n; Made with Proteus Studio\n\n[song]\n";
@@ -105,28 +160,7 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
       const Assignment &as = entry.second;
       if (as.kind == Assignment::ORIGINAL)
          continue;
-      std::string spec;
-      if (as.kind == Assignment::SILENCE)
-         spec = "silence";
-      else
-      {
-         std::string file = as.path;
-         if (copy_plan)
-         {
-            std::string rel = music_rel + "/" + hex(entry.first, 2).substr(2) + "_" +
-                  sanitize_filename(as.label.empty() ? stem_of(as.path) : as.label) + "." + lower_ext(as.path);
-            std::string dest = profile_dir + "\\" + rel;
-            if (normalize_path(dest) != normalize_path(as.path))
-               copy_plan->push_back({ as.path, dest });
-            file = rel;
-         }
-         // Quotes keep ';' (a comment) and '|' (options) in a file name.
-         bool quote = file.find_first_of(";|") != std::string::npos ||
-               (!file.empty() && (file.front() == ' ' || file.back() == ' '));
-         spec = quote ? "\"" + file + "\"" : file;
-         if (as.track > 1)
-            spec += " | track=" + std::to_string(as.track);
-      }
+      std::string spec = track_entry(entry.first, as, music_rel, profile_dir, copy_plan).first;
       std::string comment;
       auto title = titles.find(entry.first);
       if (title != titles.end())

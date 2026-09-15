@@ -13,7 +13,10 @@
 #include <set>
 #include <sstream>
 
+#include <zlib.h>
+
 #include "gme.h"
+#include "md5.h"
 #include "platform.h"
 #include "movie_learner.h"
 #include "nes_tap.h"
@@ -212,14 +215,22 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    make_dirs(save_dir);
    {
       std::lock_guard<std::mutex> lock(core_mutex);
-      if (!core.load(core_path, rom_path, system_dir, save_dir, error))
+      // N64 cores choose their renderer as they load: software rendering, which needs no GPU.
+      std::map<std::string, std::string> options;
+      if (is_n64_rom_file(rom_path))
+         options = { { "mupen64plus-rdp-plugin", "angrylion" }, { "mupen64plus-rsp-plugin", "hle" },
+                     { "mupen64plus-cpucore", "dynamic_recompiler" } };
+      if (!core.load(core_path, rom_path, system_dir, save_dir, error, options))
          return false;
       const std::vector<uint8_t> &data = core.content_data();
       nes_ = data.size() >= 16 && !memcmp(data.data(), "NES\x1A", 4);
+      n64_rom_ = N64Rom();
+      n64_ = !nes_ && n64_rom_header(data, n64_rom_);
+      core_path_ = core_path;
 
       // Once per run: learn this snes9x version's save state layout.
       static bool calibrated = false;
-      if (!calibrated && !nes_)
+      if (!calibrated && !nes_ && !n64_)
       {
          for (int f = 0; f < 60; f++)
          {
@@ -243,8 +254,16 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    size_t hash = content.find('#');
    game_name_ = stem_of(hash == std::string::npos ? content : content.substr(hash + 1));
    rom_ = SnesRom();
+   n64 = N64ScanResult();
    if (nes_)
       load_nes_identity(core.content_data(), rom_);
+   else if (n64_)
+   {
+      const std::vector<uint8_t> &data = core.content_data();
+      rom_.map = SnesRom::NONE;
+      rom_.crc32 = (uint32_t)::crc32(0, data.data(), (uInt)data.size());
+      rom_.md5 = md5_hex(data.data(), data.size());
+   }
    else
       rom_.load(core.content_data());
 
@@ -278,7 +297,25 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
 
    profile_path_.clear();
    char found[2048];
-   if (px_engine_find_profile(content.c_str(), system_dir.c_str(), found, sizeof(found)))
+   if (n64_)
+   {
+      // The song address comes from the players the profile follows, or a scan.
+      address = SongAddress();
+      address_source.clear();
+      if (px_engine_find_profile(content.c_str(), system_dir.c_str(), found, sizeof(found)))
+      {
+         profile_path_ = found;
+         if (n64_scan_from_profile(found, n64_rom_, n64))
+         {
+            address.known = true;
+            address.address = n64_song_address(n64);
+            address_source = "profile";
+         }
+         else
+            log(std::string("profile ") + found + " does not follow a known N64 sound engine; Scan songs finds it");
+      }
+   }
+   else if (px_engine_find_profile(content.c_str(), system_dir.c_str(), found, sizeof(found)))
    {
       auto profile = std::make_unique<px_profile>();   // large; folder scans open games on their own thread
       px_profile &p = *profile;
@@ -333,7 +370,10 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    have_last_ = false;
    pending_rip_frames_ = -1;
    open_ = true;
-   load_library();
+   if (n64_)
+      list_n64_songs();
+   else
+      load_library();
    load_references_async(false);
    log("opened " + rom_path + " (ROM " + hex4(rom_.crc32 >> 16) + hex4(rom_.crc32 & 0xFFFF) + ")");
    return true;
@@ -341,7 +381,7 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
 
 void RomSession::run_static_analysis()
 {
-   if (!rom_.data.empty() && !nes_)
+   if (!rom_.data.empty() && !nes_ && !n64_)
    {
       apu_analysis = analyze_snes_apu(rom_);
       if (apu_analysis.found)
@@ -552,7 +592,7 @@ void RomSession::load_references_async(bool download)
       if (download)
       {
          int n = download_reference_songs(names, dir, say, err,
-               nes_ ? REFERENCES_ZOPHAR_NES : REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC);
+               n64_ ? REFERENCES_ZOPHAR_N64 : nes_ ? REFERENCES_ZOPHAR_NES : REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC);
          if (n <= 0)
          {
             say(err);
@@ -568,7 +608,10 @@ void RomSession::load_references_async(bool download)
       std::vector<SongNotes> notes;
       std::string summary;
       std::map<uint32_t, std::map<uint8_t, int>> nsf_table = nsf_request_table(refs);
-      if (!refs.empty())
+      // USF sets name songs by their titles; there is nothing to listen to or look for in the ROM.
+      if (n64_ && !refs.empty())
+         summary = std::to_string(refs.size()) + " reference songs";
+      else if (!refs.empty())
       {
          say("Looking for the song table in the ROM...");
          table = refs.find_song_table(rom_);
@@ -615,6 +658,11 @@ bool RomSession::apply_reference_results()
    reference_notes.swap(pending_notes_);
    pending_notes_.clear();
    pending_refs_.clear();
+   if (n64_)
+   {
+      list_n64_songs();
+      return true;
+   }
 
    // Songs listed before the references came are named from the ROM song table, which
    // numbers songs the way the game's music command does. Titles someone typed are kept.
@@ -714,8 +762,77 @@ int RomSession::add_songs_from_table()
    return added;
 }
 
+// The game's songs by number and name, each with the USF set's song when one matches, then the set's
+// other songs (fanfares and variations the game plays elsewhere) without numbers, as a music source.
+void RomSession::list_n64_songs()
+{
+   std::vector<FoundSong> list;
+   std::vector<bool> used(references.size(), false);
+   if (const auto *names = n64_song_names(n64_rom_.code))
+      for (const auto &n : *names)
+      {
+         FoundSong s;
+         s.value = (uint32_t)n.value;
+         s.title = n.name;
+         for (size_t r = 0; r < references.size(); r++)
+            if (!used[r] && n64_song_of_reference(n64_rom_.code, file_name(references.song(r).path)) == n.value)
+            {
+               s.path = references.song(r).path;
+               s.reference = references.song(r).title;
+               used[r] = true;
+               break;
+            }
+         list.push_back(s);
+      }
+   for (size_t r = 0; r < references.size(); r++)
+      if (!used[r])
+      {
+         FoundSong s;
+         s.has_value = false;
+         s.title = references.song(r).title;
+         s.reference = s.title;
+         s.path = references.song(r).path;
+         list.push_back(s);
+      }
+   std::lock_guard<std::mutex> lock(songs_mutex);
+   songs.swap(list);
+}
+
+// Finds the sequence players in a copy of the game started for the purpose (scan thread).
+void RomSession::scan_n64()
+{
+   set_scan_message("Looking for the game's sequence players...");
+   scan_total_ = 1;
+   N64ScanResult result;
+   std::string err;
+   bool ok = n64_scan(core_path_, rom_path_, app_dir_ + "\\saves", 120, result, err, [this](const std::string &m) { log(m); });
+   scan_done_ = 1;
+   if (!ok)
+      set_scan_message("No sequence players found: " + err);
+   else
+   {
+      scan_n64_ = result;
+      scan_address_ = SongAddress();
+      scan_address_.known = true;
+      scan_address_.address = n64_song_address(result);
+      scan_address_source_ = "scan";
+      scan_changed_ = true;
+      char where[64];
+      snprintf(where, sizeof(where), "0x%08X", (unsigned)result.players);
+      set_scan_message("Found " + std::to_string(result.player_count) + " sequence players at " + where +
+            "; Generate INI follows their song and silences it while replacing.");
+      log(scan_message());
+   }
+   scanning_ = false;
+}
+
 void RomSession::list_reference_songs()
 {
+   if (n64_ && !scanning_ && open_)
+   {
+      list_n64_songs();
+      return;
+   }
    if (scanning_ || !open_ || references.empty())
       return;
    if (worker_.joinable())
@@ -2820,6 +2937,11 @@ void RomSession::start_scan(int first, int last)
    scan_address_source_ = address_source;
    scan_start_source_ = start_source;
    scan_changed_ = false;
+   if (n64_)
+   {
+      worker_ = std::thread(&RomSession::scan_n64, this);
+      return;
+   }
 
    address_hints_.clear();
    if (address.known)
@@ -2869,6 +2991,14 @@ void RomSession::apply_scan_results()
    if (scanning_ || !scan_changed_)
       return;
    scan_changed_ = false;
+   if (n64_)
+   {
+      // The game database keeps SNES and NES findings; an N64 game's live in its profile.
+      n64 = scan_n64_;
+      address = scan_address_;
+      address_source = scan_address_source_;
+      return;
+   }
    address = scan_address_;
    start = scan_start_;
    silence = scan_silence_;
