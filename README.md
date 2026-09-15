@@ -457,6 +457,13 @@ volume at zero while replacing, so the sound effects on the other players are un
 | Super Mario 64 (USA) | `0x80222618` (size 0x140) | `+0x05` | `+0x00 & 0x80` | fade volume `+0x18 = 00000000, 3F800000` |
 | Ocarina of Time (USA 1.0) | `0x80128B60` (size 0x160) | `+0x04` | `+0x00 & 0x80` | volume scale `+0x2C = 00000000, 3F800000` and `+0x00 \|= 04` (recalculate) |
 
+The addresses move between revisions (Ocarina of Time Rev 1: `0x80128D20`, Rev 2: `0x80129430`), so
+let proteus-cli find them and write the profile, every song listed by name:
+
+```
+proteus-cli n64 <cores\mupen64plus_next_libretro.dll> <ROM or ROM folder> <system\proteus> [--force]
+```
+
 Sequence numbers are the decompilations' (`seq_ids.h` in n64decomp/sm64, `sequence_table.h` in
 zeldaret/oot): Ocarina of Time's title is `0x1E`, file select `0x57`, Hyrule Field `0x02`.
 
