@@ -501,10 +501,13 @@ static void apply_song(px_engine *e, uint32_t value, bool announce)
       const char *name = c.action == PX_ACTION_FILE ? what + strlen(what) : what;
       while (name > what && name[-1] != '/' && name[-1] != '\\')
          name--;
-      elog(e, RETRO_LOG_INFO, "song 0x%X -> %s%s", (unsigned)value, what,
-            c.mapped ? "" : " (unmapped)");
+      int index = px_profile_find(&e->profile, value);
+      const char *song = index >= 0 ? e->profile.tracks[index].name : "";
+      elog(e, RETRO_LOG_INFO, "song 0x%X%s%s%s -> %s%s", (unsigned)value, *song ? " (" : "", song, *song ? ")" : "",
+            what, c.mapped ? "" : " (unmapped)");
       if (e->cfg.notify)
-         enotify(e, "Proteus: song 0x%X%s: %s", (unsigned)value, c.mapped ? "" : " (unmapped)", name);
+         enotify(e, "Proteus: song 0x%X%s%s%s: %s", (unsigned)value, c.mapped ? "" : " (unmapped)",
+               *song ? " " : "", song, name);
    }
 
    e->have_silenced = false;

@@ -200,6 +200,8 @@ static bool parse_track(px_profile *p, const char *dir, uint32_t value, char *sp
             if (!parse_volume(val, &t->volume))
                goto bad_value;
          }
+         else if (!strcmp(key, "name"))
+            snprintf(t->name, sizeof(t->name), "%s", val);
          else if (!strcmp(key, "track"))
          {
             if (!parse_uint(val, &n) || n < 1 || n > 255)

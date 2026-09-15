@@ -10,6 +10,7 @@
 //   proteus-cli tas <core> <rom> [bizhawk | movies | download N | play <movie> <spc folder> [speed %]]
 //   proteus-cli folder <core> <rom folder> [--movies] [--rescan] [--nes-core <fceumm_libretro.dll>]
 //   proteus-cli dumps <spc folder> <dump folder>
+//   proteus-cli n64 <mupen64plus_next core> <rom or folder> [profile folder] [--all] [--force]
 #include <algorithm>
 #include <array>
 #include <map>
@@ -25,6 +26,7 @@
 #include "reference.h"
 #include "folder_scan.h"
 #include "movie_learner.h"
+#include "n64_scan.h"
 #include "nes_tap.h"
 #include "profile_export.h"
 #include "nsf_init.h"
@@ -970,7 +972,85 @@ int main(int argc, char **argv)
       printf("%d songs%s\n", n, err.empty() ? "" : (": " + err).c_str());
       return n > 0 ? 0 : 1;
    }
+   if (cmd == "n64" && argc >= 4)
+   {
+      // proteus-cli n64 <mupen64plus_next core> <rom or folder> [profile folder] [--all] [--force]: finds
+      // each game's sequence players and writes <ROM name>.ini (to stdout without a folder). Only games
+      // with known song names unless --all; existing profiles are kept unless --force.
+      std::string out_dir;
+      bool all = false, force = false;
+      for (int i = 4; i < argc; i++)
+      {
+         if (!strcmp(argv[i], "--all"))
+            all = true;
+         else if (!strcmp(argv[i], "--force"))
+            force = true;
+         else
+            out_dir = argv[i];
+      }
+      std::vector<std::string> roms;
+      if (dir_exists(argv[3]))
+      {
+         for (const auto &name : list_files(argv[3]))
+         {
+            std::string ext = lower_ext(name);
+            if (ext == "z64" || ext == "n64" || ext == "v64")
+               roms.push_back(std::string(argv[3]) + "\\" + name);
+         }
+         std::sort(roms.begin(), roms.end());
+      }
+      else
+         roms.push_back(argv[3]);
+      std::string save = app_data_dir() + "\\cli\\saves";
+      make_dirs(save);
+      if (!out_dir.empty())
+         make_dirs(out_dir);
+      int failed = 0, skipped = 0;
+      for (const auto &rom_path : roms)
+      {
+         std::vector<uint8_t> data;
+         N64Rom header;
+         std::string name = stem_of(rom_path), target = out_dir + "\\" + name + ".ini";
+         if (!read_file_bytes(rom_path, data) || !n64_rom_header(data, header))
+            continue;
+         if (!all && !n64_song_names(header.code))
+         {
+            if (roms.size() == 1)
+               printf("%s: skipped (%s has no song names; --all scans it anyway)\n", name.c_str(), header.code.c_str());
+            skipped++;
+            continue;
+         }
+         if (!out_dir.empty() && !force && file_exists(target))
+         {
+            printf("%s: kept %s (--force replaces it)\n", name.c_str(), target.c_str());
+            continue;
+         }
+         printf("%s (%s version %d)\n", name.c_str(), header.code.c_str(), header.version);
+         N64ScanResult result;
+         std::string err;
+         if (!n64_scan(argv[2], rom_path, save, 120, result, err, [](const std::string &m) { printf("  %s\n", m.c_str()); }))
+         {
+            printf("  failed: %s\n", err.c_str());
+            failed++;
+            continue;
+         }
+         std::string profile = n64_profile(result, name);
+         if (out_dir.empty())
+            printf("%s", profile.c_str());
+         else if (write_text(target, profile))
+            printf("  wrote %s\n", target.c_str());
+         else
+         {
+            printf("  cannot write %s\n", target.c_str());
+            failed++;
+         }
+      }
+      if (skipped > 1)
+         printf("skipped %d ROMs without song names (--all scans them anyway)\n", skipped);
+      return failed ? 1 : 0;
+   }
    fprintf(stderr, "usage:\n"
+         "  proteus-cli n64 <mupen64plus_next core> <rom or folder> [profile folder] [--all] [--force]\n"
          "  proteus-cli table <rom> <spc folder>\n"
          "  proteus-cli match <spc folder> <rip.spc> [before.spc]\n"
          "  proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system dir] [--refs spc folder] [--first N] [--last N] [--keep-rips dir] [--profile out.ini]\n"

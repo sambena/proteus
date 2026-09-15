@@ -39,6 +39,7 @@ typedef struct
    bool loop;
    uint64_t loop_start;    /* source sample frame the loop jumps back to */
    float volume;           /* 0..1 */
+   char name[64];          /* what the game's song is, shown in the song pickers ("Hyrule Field") */
 } px_track;
 
 typedef struct

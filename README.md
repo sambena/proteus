@@ -424,6 +424,7 @@ Track options:
 | `loop_start` | sample frame the loop returns to (recordings) |
 | `volume` | percent, up to 200 |
 | `track` | song number inside a multi-song file (NSF, NSFE, GBS, HES, KSS, AY, SAP), starting at 1 |
+| `name` | what the game's song is, shown in the Quick Menu song pickers (`0x02 = original \| name=Hyrule Field`) |
 
 Emulated music plays at the wrapped core's sample rate, so an SPC under snes9x needs no
 resampling.

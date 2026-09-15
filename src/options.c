@@ -442,10 +442,13 @@ static void build_own(const px_profile *p)
       for (unsigned i = 0; i < p->track_count; i++)
       {
          const px_track *t = &p->tracks[i];
-         char key[32], desc[64], info[512], label[300], def_label[320];
+         char key[32], desc[96], info[512], label[300], def_label[320];
 
          snprintf(key, sizeof(key), PX_OPT_SONG_FMT, (unsigned)t->value);
-         snprintf(desc, sizeof(desc), "Song 0x%X", (unsigned)t->value);
+         if (t->name[0])
+            snprintf(desc, sizeof(desc), "Song 0x%X: %s", (unsigned)t->value, t->name);
+         else
+            snprintf(desc, sizeof(desc), "Song 0x%X", (unsigned)t->value);
          track_label(t, label, sizeof(label));
          snprintf(info, sizeof(info),
                "What plays when the game selects song 0x%X. The profile plays %s.",
