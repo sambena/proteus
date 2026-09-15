@@ -8,7 +8,7 @@
 //   proteus-cli import <folder, archive or .spc> <folder>
 //   proteus-cli download "<game name>" <folder> [zophar|snesmusic]
 //   proteus-cli tas <core> <rom> [bizhawk | movies | download N | play <movie> <spc folder> [speed %]]
-//   proteus-cli folder <core> <rom folder> [--movies] [--rescan]
+//   proteus-cli folder <core> <rom folder> [--movies] [--rescan] [--nes-core <fceumm_libretro.dll>]
 //   proteus-cli dumps <spc folder> <dump folder>
 #include <algorithm>
 #include <chrono>
@@ -216,13 +216,41 @@ int main(int argc, char **argv)
             p = *end ? end + 1 : end;
          }
       std::vector<int> last(watch.size(), -1);
+      // PROTEUS_POKE=600:FB=04,900:FB=08: write work RAM bytes at those frames (after the frame runs).
+      struct Poke { int frame; uint32_t address; uint8_t value; };
+      std::vector<Poke> pokes;
+      if (const char *p = getenv("PROTEUS_POKE"))
+         for (const char *s = p; *s;)
+         {
+            char *end;
+            Poke k;
+            k.frame = (int)strtol(s, &end, 10);
+            k.address = (uint32_t)strtoul(end + 1, &end, 16);
+            k.value = (uint8_t)strtoul(end + 1, &end, 16);
+            pokes.push_back(k);
+            s = *end ? end + 1 : end;
+         }
+      // PROTEUS_START=240,600: tap Start at those frames only, instead of every 3 seconds.
+      std::vector<int> taps;
+      if (const char *t = getenv("PROTEUS_START"))
+         for (const char *s = t; *s;)
+         {
+            char *end;
+            taps.push_back((int)strtol(s, &end, 10));
+            s = *end ? end + 1 : end;
+         }
       std::vector<int16_t> all;
       for (int f = 0; f < frames; f++)
       {
-         uint16_t buttons = (f > 240 && f % 180 < 6) ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
+         bool tap = taps.empty() ? f > 240 && f % 180 < 6
+                                 : std::any_of(taps.begin(), taps.end(), [&](int at) { return f >= at && f < at + 6; });
+         uint16_t buttons = tap ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
          core.run_frame(buttons);
          size_t ram_size = 0;
-         const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+         uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+         for (const auto &k : pokes)
+            if (k.frame == f && ram && k.address < ram_size)
+               ram[k.address] = k.value;
          for (size_t i = 0; i < watch.size() && ram; i++)
             if (watch[i] < ram_size && ram[watch[i]] != last[i])
             {
@@ -316,6 +344,8 @@ int main(int argc, char **argv)
       {
          o.use_movies = o.use_movies || std::string(argv[i]) == "--movies";
          o.rescan = o.rescan || std::string(argv[i]) == "--rescan";
+         if (std::string(argv[i]) == "--nes-core" && i + 1 < argc)
+            o.nes_core_path = argv[++i];
       }
       FolderScan scan;
       scan.start(o);
@@ -487,7 +517,7 @@ int main(int argc, char **argv)
       refs.load(argv[4], err);
       std::vector<SongNotes> notes(refs.size());
       for (size_t i = 0; i < refs.size(); i++)
-         spc_notes(refs.song(i).spc, notes[i], err);
+         music_notes(refs.song(i).data, refs.song(i).track, notes[i], err);
       uint8_t last[4] = { 0, 0, 0, 0 };
       std::string playing;
       int frames = (int)(atof(argv[5]) * 60);
@@ -530,6 +560,28 @@ int main(int argc, char **argv)
       }
       return 0;
    }
+   if (cmd == "notes" && argc >= 3)
+   {
+      // proteus-cli notes <song file> [track from 1]: the song's mean strength per pitch class.
+      std::vector<uint8_t> data;
+      SongNotes n;
+      std::string err;
+      int track = argc > 3 ? atoi(argv[3]) - 1 : 0;
+      if (!read_file_bytes(argv[2], data) || !music_notes(data, track, n, err))
+      {
+         fprintf(stderr, "%s\n", err.c_str());
+         return 1;
+      }
+      static const char *names[] = { "A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#" };
+      double mean[12] = { 0 };
+      for (int f = 0; f < n.frames; f++)
+         for (int k = 0; k < 12; k++)
+            mean[k] += n.chroma[12 * f + k] / n.frames;
+      for (int k = 0; k < 12; k++)
+         printf("%s %.2f  ", names[k], mean[k]);
+      printf("\n");
+      return 0;
+   }
    if (cmd == "sound" && argc >= 4)
    {
       // proteus-cli sound <spc folder> <rip.spc>...: references ranked by how the rip sounds.
@@ -538,7 +590,7 @@ int main(int argc, char **argv)
       refs.load(argv[2], err);
       std::vector<SongNotes> notes(refs.size());
       for (size_t i = 0; i < refs.size(); i++)
-         spc_notes(refs.song(i).spc, notes[i], err);
+         music_notes(refs.song(i).data, refs.song(i).track, notes[i], err);
       for (int a = 3; a < argc; a++)
       {
          std::vector<uint8_t> rip;
@@ -550,7 +602,8 @@ int main(int argc, char **argv)
             ranked.push_back({ notes_distance(n, notes[i]), i });
          std::sort(ranked.begin(), ranked.end());
          printf("%s", file_name(argv[a]).c_str());
-         for (size_t k = 0; k < 3 && k < ranked.size(); k++)
+         size_t top = getenv("PROTEUS_TOP") ? (size_t)atoi(getenv("PROTEUS_TOP")) : 3;
+         for (size_t k = 0; k < top && k < ranked.size(); k++)
             printf("\t%s\t%.3f", refs.song(ranked[k].second).title.c_str(), ranked[k].first);
          printf("\n");
       }
@@ -566,7 +619,8 @@ int main(int argc, char **argv)
    if (cmd == "download" && argc >= 4)
    {
       std::string err, from = argc > 4 ? argv[4] : "";
-      int sources = from == "zophar" ? REFERENCES_ZOPHAR : from == "snesmusic" ? REFERENCES_SNESMUSIC : REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC;
+      int sources = from == "zophar" ? REFERENCES_ZOPHAR : from == "snesmusic" ? REFERENCES_SNESMUSIC :
+                    from == "nes" ? REFERENCES_ZOPHAR_NES : REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC;
       int n = download_reference_songs({ argv[2] }, argv[3], [](const std::string &m) { printf("  %s\n", m.c_str()); }, err, sources);
       printf("%d songs%s\n", n, err.empty() ? "" : (": " + err).c_str());
       return n > 0 ? 0 : 1;

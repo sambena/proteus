@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-// Reference song sets: a game's soundtrack as .spc files from an archive such as
-// SNESmusic.org or Zophar's Domain. Each .spc holds the sound CPU's RAM while its song
-// plays, so it names rips (the song data a rip loaded matches one reference) and shows
-// where the songs sit in the ROM when the game stores them uncompressed.
+// Reference song sets: a game's soundtrack from an archive such as SNESmusic.org or Zophar's
+// Domain. SNES sets are .spc files: each holds the sound CPU's RAM while its song plays, so it
+// names rips (the song data a rip loaded matches one reference) and shows where the songs sit
+// in the ROM when the game stores them uncompressed. NES sets are an .nsf (or .nsfe) holding
+// every song, with an .m3u playlist naming them; those name rips by their notes alone.
 #pragma once
 
 #include <cstdint>
@@ -14,9 +15,10 @@
 
 struct ReferenceSong
 {
-   std::string title;   // ID666 song title, or the file name
+   std::string title;   // ID666 or playlist song title, or the file name
    std::string path;
-   std::vector<uint8_t> spc;
+   std::vector<uint8_t> data;   // the .spc, or the whole .nsf the song is in
+   int track = 0;               // song within a multi-song file, from 0
 };
 
 // A song table found in the ROM: pointers to each song's data, indexed by song number.
@@ -34,7 +36,8 @@ struct SongTable
 class ReferenceSet
 {
 public:
-   // Loads every .spc in `dir`. An empty or missing folder is an empty set.
+   // Loads every .spc, and every song of each .nsf/.nsfe, in `dir`. An empty or missing folder
+   // is an empty set.
    bool load(const std::string &dir, std::string &error);
    // Uses `songs` directly (tests, and sets built in memory).
    void assign(std::vector<ReferenceSong> songs);
@@ -78,16 +81,19 @@ const uint8_t *spc_ram(const std::vector<uint8_t> &spc);
 // The ID666 song title, trimmed; empty when there is none.
 std::string spc_song_title(const std::vector<uint8_t> &spc);
 
-// Copies the .spc files from `source` (a folder, a zip archive, an .rsn/.rar/.7z archive through
-// 7-Zip, or a single .spc) into `dir`. Returns how many were copied.
+// True for the files a reference set is made of: .spc, .nsf, .nsfe and .m3u playlists.
+bool is_reference_file(const std::string &name);
+// Copies the reference files from `source` (a folder, a zip archive, an .rsn/.rar/.7z archive
+// through 7-Zip, or a single file) into `dir`. Returns how many songs files were copied
+// (playlists do not count).
 int import_reference_songs(const std::string &source, const std::string &dir, std::string &error);
 // 7z.exe, or empty when 7-Zip is not installed.
 std::string find_7zip();
 
-// Downloads a game's SPC set into `dir`, finding it by any of `names` (the ROM file name, the
-// game's title): from Zophar's Domain, else from SNESmusic.org (needs 7-Zip).
-// `progress` receives messages while it works.
-enum { REFERENCES_ZOPHAR = 1, REFERENCES_SNESMUSIC = 2 };
+// Downloads a game's set into `dir`, finding it by any of `names` (the ROM file name, the
+// game's title): SNES sets from Zophar's Domain, else from SNESmusic.org (needs 7-Zip); NES
+// sets from Zophar's Domain. `progress` receives messages while it works.
+enum { REFERENCES_ZOPHAR = 1, REFERENCES_SNESMUSIC = 2, REFERENCES_ZOPHAR_NES = 4 };
 int download_reference_songs(const std::vector<std::string> &names, const std::string &dir,
       const std::function<void(const std::string &)> &progress, std::string &error,
       int sources = REFERENCES_ZOPHAR | REFERENCES_SNESMUSIC);

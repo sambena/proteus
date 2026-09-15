@@ -54,6 +54,7 @@ Close RetroArch, then from the release folder (or `tools\` in a source checkout)
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Dsp            # plugin
 powershell -ExecutionPolicy Bypass -File .\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core snes9x    # wrapper core
+powershell -ExecutionPolicy Bypass -File .\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core fceumm    # wrapper core for NES
 ```
 
 `tools/package-release.sh <version>` builds everything and packs the release zip.
@@ -91,8 +92,9 @@ to keep them for one game only.
 
 ## Proteus Studio
 
-Proteus Studio (`make studio`, SDL2 + Dear ImGui) builds a profile from two SNES ROMs: the
-game to change and a game to take music from. It needs RetroArch's snes9x core.
+Proteus Studio (`make studio`, SDL2 + Dear ImGui) builds a profile from two SNES or NES ROMs: the
+game to change and a game to take music from. It needs RetroArch's snes9x core for SNES games and
+its FCEUmm core for NES games (see [NES games](#nes-games)).
 
 1. Open the game to change on the left and the music source on the right (or drop ROMs on
    either side).
@@ -174,6 +176,27 @@ When the references' song data is found in the ROM and a table points to most of
 song numbers from the table (entry 0 is where the game's code reads it). Scan songs then lists every
 song of the table by name at once, plays the table's song numbers, and checks each one against its
 reference. Chrono Trigger's table is at `$C70D18`: 83 songs, all named by the SNESmusic set.
+
+### NES games
+
+NES games work the same way in Studio, with these differences:
+
+- **Rips are recordings.** The NES plays its music on the main CPU, so there is no sound chip state to
+  save: a rip is 20 seconds of what the game plays, kept as a `.wav` file.
+- **Reference songs are `.nsf` sets.** Download finds the game's set on Zophar's Domain; its `.m3u`
+  playlist names the songs (a set without one lists every song of the `.nsf` by number). Rips are named by
+  their notes alone, and a song named by a reference plays from the `.nsf`, looping as the game does.
+- **Finding how songs start.** The scan watches the RAM while the game starts up, and writes each byte
+  that takes a few values from a moment music plays (many games play none on their title screen), keeping
+  the bytes after which the game sounds different. Super Mario Bros. asks for songs through `$FB`, which it
+  reads as bits, and keeps the song playing at `$F4`; a song it plays under many numbers is listed under its
+  first number and single bits. Games that start songs by calling their music routine (Mega Man 2) are not
+  found this way yet: play them with **Play & rip** (`R` rips the music playing), which names the songs heard
+  and, after three or more, can learn the song address as it does for SNES games.
+- **Channels.** FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two
+  squares, triangle, noise and samples). Studio mutes the squares and triangle by default. Most NES games
+  play sound effects on the music's channels, so those effects go quiet while a replacement plays.
+- TAS movies are SNES only for now.
 
 ### TAS movies
 
@@ -330,7 +353,7 @@ the candidate in `[song] address`, turn on **Song change notifications**, and wa
 the on-screen values while walking between areas.
 
 For SNES, `system_ram` is the 128 KB work RAM, so address `$7E0ABC` becomes
-`0x0ABC`.
+`0x0ABC`. For NES it is the 2 KB of RAM at `$0000`-`$07FF`.
 
 ### Muting the original music
 
@@ -339,6 +362,7 @@ The mute options are core-specific:
 | Core | Options | Mute value |
 | --- | --- | --- |
 | snes9x | `snes9x_sndchan_volume_1` .. `_8` | `0` |
+| FCEUmm (NES) | `fceumm_apu_1` .. `_5` (square 1, square 2, triangle, noise, samples) | `disabled` |
 | Genesis Plus GX | `genesis_plus_gx_md_channel_0_volume` .. `_5` (FM, MAME FM emulators only), `genesis_plus_gx_psg_channel_0_volume` .. `_3` | `0` |
 
 Sound effects in most SNES games use the upper voices (often 7 and 8), so muting

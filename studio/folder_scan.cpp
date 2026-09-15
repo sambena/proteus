@@ -10,6 +10,7 @@
 #include "platform.h"
 #include "rom_session.h"
 #include "tas_runner.h"
+#include "zip_read.h"
 
 static const char *kReportHeader = "# Proteus Studio folder scan\n# rom\tgame\treferences\ttable\tsongs\tnamed\taddress\thow\tverdict\tnote\n";
 
@@ -97,6 +98,21 @@ static std::vector<std::string> split_tabs(const std::string &line)
    return out;
 }
 
+bool is_nes_rom_file(const std::string &path)
+{
+   std::string ext = lower_ext(path);
+   if (ext == "nes")
+      return true;
+   std::vector<uint8_t> data;
+   if (ext != "zip" || !read_file_bytes(path, data))
+      return false;
+   bool nes = false;
+   std::string err;
+   zip_read(data, [&](const std::string &name) { nes = nes || lower_ext(name) == "nes"; return false; },
+         [](const std::string &, std::vector<uint8_t> &) { return false; }, err);
+   return nes;
+}
+
 void FolderScan::run(Options o)
 {
    report_ = o.app_dir + "\\folder-scans\\" + sanitize_filename(file_name(normalize_path(o.folder))) + ".tsv";
@@ -106,7 +122,7 @@ void FolderScan::run(Options o)
    for (const auto &f : list_files(o.folder))
    {
       std::string e = lower_ext(f);
-      if (e == "sfc" || e == "smc" || e == "swc" || e == "fig" || e == "zip")
+      if (e == "sfc" || e == "smc" || e == "swc" || e == "fig" || e == "nes" || e == "zip")
          roms.push_back(f);
    }
    std::sort(roms.begin(), roms.end(), [](const std::string &a, const std::string &b) { return to_lower(a) < to_lower(b); });
@@ -179,7 +195,13 @@ void FolderScan::run(Options o)
                s.take_log();
             }
          };
-         if (!s.open(path, o.core_path, o.system_dir, err))
+         bool nes = is_nes_rom_file(path);
+         if (nes && o.nes_core_path.empty())
+         {
+            row.verdict = "skip";
+            row.note = "no NES core chosen";
+         }
+         else if (!s.open(path, nes ? o.nes_core_path : o.core_path, o.system_dir, err))
          {
             row.verdict = "skip";
             row.note = "could not open: " + err;
@@ -215,7 +237,7 @@ void FolderScan::run(Options o)
             };
             std::string note = s.scan_message();
             // A TAS movie numbers songs the scan could not.
-            if (movies && !cancel_ && !s.references.empty() && (!s.address.known || named() < 3))
+            if (movies && !s.is_nes() && !cancel_ && !s.references.empty() && (!s.address.known || named() < 3))
             {
                s.find_movies();
                wait([&] { return s.tool_busy(); }, [&] { return s.tool_message(); });

@@ -9,7 +9,7 @@
 struct SnesRom
 {
    std::vector<uint8_t> data;   // without a copier header
-   enum Map { LOROM, HIROM, EXHIROM } map = LOROM;
+   enum Map { LOROM, HIROM, EXHIROM, NONE } map = LOROM;
    std::string title;           // from the internal header
    uint32_t crc32 = 0;          // of `data`: identifies the exact ROM
    std::string md5;             // 32-char lowercase hex of `data` (unheadered), used by RetroAchievements
@@ -21,3 +21,8 @@ struct SnesRom
    // The CPU addresses where the ROM byte at `offset` appears (each mirror bank).
    std::vector<uint32_t> cpu_addresses(size_t offset) const;
 };
+
+// An NES ROM (iNES file): fills `rom` with its identity only, `data` being PRG and CHR ROM
+// without the header or trainer, as RetroAchievements hashes it. False if it is not one.
+// Its CPU addresses depend on the mapper, so at() finds nothing in it.
+bool load_nes_identity(const std::vector<uint8_t> &content, SnesRom &rom);

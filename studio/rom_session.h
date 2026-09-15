@@ -37,7 +37,8 @@ struct FoundSong
    uint32_t value = 0;          // song number
    bool has_value = true;       // false for rips made while playing without a song number
    std::string title;
-   std::string spc_path;
+   std::string spc_path;        // the song's file: an .spc rip, a .wav rip (NES), or a reference file
+   int track = 0;               // song within a multi-song file (.nsf), from 0
    std::string reference;       // title of the reference song it matched, if any
    SongKind kind = SONG_MUSIC;
    SongPrint print;
@@ -57,6 +58,8 @@ public:
          const std::string &system_dir, std::string &error);
    void close();
    bool is_open() const { return open_; }
+   // An NES game: songs are ripped as recordings, and reference songs are .nsf sets.
+   bool is_nes() const { return nes_; }
 
    const std::string &rom_path() const { return rom_path_; }
    // The name Proteus matches profiles by: the ROM file (or zip entry) without extension.
@@ -181,7 +184,10 @@ private:
    // "values": song numbers to try instead of the usual few.
    int start_score(const SongStart &s, const SongPrint *baseline, const std::vector<uint32_t> *values = nullptr);
    bool find_song_start(const SongPrint *baseline);
+   bool find_song_start_nes(const SongPrint *baseline);
    bool find_song_variable();
+   // NES: records what the game plays over the next `seconds` from where the core is, as a .wav.
+   std::vector<uint8_t> record_music(double seconds);
    int reference_by_notes(const std::vector<uint8_t> &spc);
    bool choose_stub_area(const std::vector<uint8_t> &before);
    void add_song_locked(FoundSong song);
@@ -202,6 +208,9 @@ private:
    void log(const std::string &line);
 
    bool open_ = false;
+   bool nes_ = false;
+   std::vector<int16_t> live_audio_;          // NES: the last seconds of live play, mono at kRipRate
+   double live_phase_ = 0;
    std::string app_dir_;
    std::thread ref_thread_;
    std::atomic<bool> loading_refs_{false};
@@ -270,7 +279,11 @@ private:
    std::vector<std::string> log_;
 };
 
-// Renders the first seconds of an .spc and measures it.
-bool analyze_spc(const std::vector<uint8_t> &spc, SongPrint &print, std::string &error);
+// Renders the first seconds of a song (song `track` of a multi-song file, or a .wav rip) and measures it.
+bool analyze_music(const std::vector<uint8_t> &data, int track, SongPrint &print, std::string &error);
+inline bool analyze_spc(const std::vector<uint8_t> &spc, SongPrint &print, std::string &error)
+{
+   return analyze_music(spc, 0, print, error);
+}
 double song_distance(const SongPrint &a, const SongPrint &b);
 bool same_song(const SongPrint &a, const SongPrint &b);

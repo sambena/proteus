@@ -33,7 +33,8 @@
 struct Settings
 {
    std::string retroarch_dir;
-   std::string core_file;
+   std::string core_file;       // SNES
+   std::string nes_core_file;   // NES
    std::string rom[2];
    float ui_scale = 1.0f;
    int volume = 80;
@@ -60,6 +61,7 @@ static Settings load_settings()
       std::string k = line.substr(0, eq), v = line.substr(eq + 1);
       if (k == "retroarch_dir") s.retroarch_dir = v;
       else if (k == "core") s.core_file = v;
+      else if (k == "nes_core") s.nes_core_file = v;
       else if (k == "rom_a") s.rom[0] = v;
       else if (k == "rom_b") s.rom[1] = v;
       else if (k == "ui_scale") s.ui_scale = std::clamp((float)atof(v.c_str()), 0.8f, 2.5f);
@@ -77,7 +79,7 @@ static void save_settings(const Settings &s)
    char scale[16];
    snprintf(scale, sizeof(scale), "%.2f", s.ui_scale);
    write_text(settings_path(), "retroarch_dir=" + s.retroarch_dir + "\ncore=" + s.core_file +
-         "\nrom_a=" + s.rom[0] + "\nrom_b=" + s.rom[1] + "\nui_scale=" + scale +
+         "\nnes_core=" + s.nes_core_file + "\nrom_a=" + s.rom[0] + "\nrom_b=" + s.rom[1] + "\nui_scale=" + scale +
          "\nvolume=" + std::to_string(s.volume) + "\nscan_folder=" + s.scan_folder + "\n");
 }
 
@@ -213,14 +215,18 @@ static void refresh_cores(App &a)
          name = info.substr(p + 16, info.find('"', p + 16) - p - 16);
       a.cores.push_back({ f, name });
    }
-   // Song ripping reads snes9x save states.
-   if (a.settings.core_file.empty())
-      for (auto &c : a.cores)
-         if (c.first == "snes9x_libretro.dll")
-            a.settings.core_file = c.first;
+   // Song ripping reads snes9x save states; NES songs are recorded, and FCEUmm mutes its channels cleanly.
+   for (auto &c : a.cores)
+   {
+      if (a.settings.core_file.empty() && c.first == "snes9x_libretro.dll")
+         a.settings.core_file = c.first;
+      if (a.settings.nes_core_file.empty() && c.first == "fceumm_libretro.dll")
+         a.settings.nes_core_file = c.first;
+   }
 }
 
-// Default channel mutes: the first six voices, which carry the music in most SNES games.
+// Default channel mutes: the first six voices, which carry the music in most SNES games; on NES
+// the two squares and the triangle, leaving noise and samples (often sound effects and drums).
 static void default_mutes(App &a)
 {
    a.options.mute.clear();
@@ -231,13 +237,22 @@ static void default_mutes(App &a)
       if (core.find_option(key))
          a.options.mute[key] = "0";
    }
+   for (int ch = 1; ch <= 3; ch++)
+   {
+      std::string key = "fceumm_apu_" + std::to_string(ch);
+      if (core.find_option(key))
+         a.options.mute[key] = "disabled";
+   }
 }
 
 static void open_rom(App &a, int side, const std::string &path)
 {
-   if (a.settings.core_file.empty())
+   bool nes = is_nes_rom_file(path);
+   const std::string &core_file = nes ? a.settings.nes_core_file : a.settings.core_file;
+   if (core_file.empty())
    {
-      set_status(a, "Choose your RetroArch folder in Settings first; Proteus Studio uses its snes9x core.", true);
+      set_status(a, nes ? "Choose an NES core in Settings first; Proteus Studio uses RetroArch's FCEUmm core for NES games."
+                        : "Choose your RetroArch folder in Settings first; Proteus Studio uses its snes9x core.", true);
       a.show_settings = true;
       return;
    }
@@ -246,7 +261,7 @@ static void open_rom(App &a, int side, const std::string &path)
       a.live_running = false;
    std::string err;
    RomSession &s = a.sessions[side];
-   if (!s.open(path, a.settings.retroarch_dir + "\\cores\\" + a.settings.core_file, system_dir(a), err))
+   if (!s.open(path, a.settings.retroarch_dir + "\\cores\\" + core_file, system_dir(a), err))
    {
       set_status(a, "Could not open " + file_name(path) + ": " + err, true);
       return;
@@ -317,6 +332,7 @@ static void assign(App &a, uint32_t value, const FoundSong &song, const std::str
    Assignment as;
    as.kind = Assignment::FILE;
    as.path = song.spc_path;
+   as.track = (unsigned)song.track + 1;
    as.label = game + ": " + song.title;
    a.assignments[value] = as;
 }
@@ -348,7 +364,7 @@ static int references_found(const App &a, int side)
    return (int)seen.size();
 }
 
-// A zip archive of .spc files, rather than a zipped ROM.
+// A zip archive of reference songs (.spc, .nsf), rather than a zipped ROM.
 static bool is_spc_archive(const std::string &path)
 {
    std::vector<uint8_t> data;
@@ -356,7 +372,11 @@ static bool is_spc_archive(const std::string &path)
       return false;
    bool spc = false;
    std::string err;
-   zip_read(data, [&](const std::string &name) { spc = spc || lower_ext(name) == "spc"; return false; },
+   zip_read(data, [&](const std::string &name) {
+            std::string e = lower_ext(name);
+            spc = spc || e == "spc" || e == "nsf" || e == "nsfe";
+            return false;
+         },
          [](const std::string &, std::vector<uint8_t> &) { return false; }, err);
    return spc;
 }
@@ -426,7 +446,7 @@ static std::string open_rom_dialog(App &a, int side)
 {
    std::string start = a.settings.rom[side].empty() ? a.settings.rom[1 - side] : a.settings.rom[side];
    return open_file_dialog(side == TARGET ? "Open the game to change" : "Open the game to take music from",
-         { { "SNES ROMs", "*.sfc;*.smc;*.swc;*.fig;*.zip" }, { "All files", "*.*" } }, dir_of(start));
+         { { "SNES and NES ROMs", "*.sfc;*.smc;*.swc;*.fig;*.nes;*.zip" }, { "All files", "*.*" } }, dir_of(start));
 }
 
 // ---------------------------------------------------------------------------
@@ -504,12 +524,15 @@ static void draw_panel_header(App &a, int side)
       if (s.loading_references())
          tip = s.reference_message();
       else if (s.references.empty())
-         tip = "The game's soundtrack as .spc files (SNESmusic.org, Zophar's Domain).\n"
-               "With them, songs are named after the reference they match, scans keep only real songs,\n"
-               "and a song table in the ROM lists every song by number.\nAdd them with Reference songs, or drop a folder or .zip here.";
+      {
+         tip = s.is_nes() ? "The game's soundtrack as an .nsf file with its .m3u playlist (Zophar's Domain).\n"
+                          : "The game's soundtrack as .spc files (SNESmusic.org, Zophar's Domain).\n";
+         tip += "With them, songs are named after the reference they match, scans keep only real songs,\n"
+                "and a song table in the ROM lists every song by number.\nAdd them with Reference songs, or drop a folder or .zip here.";
+      }
       else
       {
-         tip = "Scans and rips are named after the reference .spc they match.\nFolder: " + s.references.dir();
+         tip = "Scans and rips are named after the reference song they match.\nFolder: " + s.references.dir();
          if (s.song_table.found)
             tip += "\nThe ROM lists " + std::to_string(s.song_table.entries.size()) + " songs in a table (ROM offset " +
                    hex((uint32_t)s.song_table.rom_offset, 6) + "); Scan songs lists and checks them.";
@@ -613,6 +636,7 @@ static void draw_scan_bar(App &a, int side)
       if (ImGui::IsItemHovered())
          ImGui::SetTooltip("Play this game in Advanced. Each new song is ripped into this list a few seconds after it starts.");
       ImGui::SameLine();
+      ImGui::BeginDisabled(s.is_nes());
       if (ImGui::Button("TAS movie"))
       {
          if (a.live != side)
@@ -620,33 +644,37 @@ static void draw_scan_bar(App &a, int side)
          a.show_advanced = true;
          a.select_tab = TAB_MOVIE;
       }
-      if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("Download a movie of the whole game from TASVideos and play it in BizHawk\n"
-               "to hear its songs and learn the song address (Advanced > TAS movie).");
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+         ImGui::SetTooltip(s.is_nes() ? "TAS movies are not supported for NES games yet."
+                                      : "Download a movie of the whole game from TASVideos and play it in BizHawk\n"
+                                        "to hear its songs and learn the song address (Advanced > TAS movie).");
       ImGui::SameLine();
       if (ImGui::Button("Reference songs"))
          ImGui::OpenPopup("references");
       if (ImGui::IsItemHovered())
-         ImGui::SetTooltip("The game's soundtrack as .spc files, to name and check the songs found.");
+         ImGui::SetTooltip(s.is_nes() ? "The game's soundtrack as an .nsf file, to name and check the songs found."
+                                      : "The game's soundtrack as .spc files, to name and check the songs found.");
       if (ImGui::BeginPopup("references"))
       {
          bool busy = s.loading_references();
          if (ImGui::MenuItem("Download", nullptr, false, !busy))
          {
             s.download_references();
-            set_status(a, "Looking for " + s.display_name() + " on Zophar's Domain and SNESmusic.org...");
+            set_status(a, "Looking for " + s.display_name() + (s.is_nes() ? " on Zophar's Domain..." : " on Zophar's Domain and SNESmusic.org..."));
          }
          if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Finds the game's SPC set by name on Zophar's Domain, or on SNESmusic.org (needs 7-Zip).");
+            ImGui::SetTooltip(s.is_nes() ? "Finds the game's NSF set by name on Zophar's Domain."
+                                         : "Finds the game's SPC set by name on Zophar's Domain, or on SNESmusic.org (needs 7-Zip).");
          if (ImGui::MenuItem("Import folder...", nullptr, false, !busy))
          {
-            std::string dir = pick_folder_dialog("Folder with the game's .spc files");
+            std::string dir = pick_folder_dialog(s.is_nes() ? "Folder with the game's .nsf file" : "Folder with the game's .spc files");
             if (!dir.empty())
                import_references(a, side, dir);
          }
-         if (ImGui::MenuItem("Import archive or .spc...", nullptr, false, !busy))
+         if (ImGui::MenuItem(s.is_nes() ? "Import archive or .nsf..." : "Import archive or .spc...", nullptr, false, !busy))
          {
-            std::string path = open_file_dialog("Reference songs", { { "SPC sets", "*.zip;*.rsn;*.rar;*.7z;*.spc" }, { "All files", "*.*" } }, "");
+            std::string path = open_file_dialog("Reference songs", { { "Reference sets", "*.zip;*.rsn;*.rar;*.7z;*.spc;*.nsf;*.nsfe" }, { "All files", "*.*" } }, "");
             if (!path.empty())
                import_references(a, side, path);
          }
@@ -880,7 +908,7 @@ static void draw_song_table(App &a, int side)
       else
          ImGui::TextWrapped("No songs yet. Scan songs plays every song number from a moment early in the game "
                "and keeps the ones that make music. You can also play the game in Advanced and rip songs "
-               "as you hear them. Reference songs (the game's .spc soundtrack) name the songs and make scans reliable.");
+               "as you hear them. Reference songs (the game's .spc or .nsf soundtrack) name the songs and make scans reliable.");
       ImGui::PopStyleColor();
       return;
    }
@@ -913,7 +941,7 @@ static void draw_song_table(App &a, int side)
       std::string id = std::string(side == TARGET ? "A:" : "B:") + song.spc_path;
       bool playing = a.audio.playing_id() == id;
       if (icon_button("##play", playing ? ICON_STOP : ICON_PLAY, fh, P.side[side], playing))
-         play_song(a, id, song.spc_path);
+         play_song(a, id, song.spc_path, (unsigned)song.track + 1);
 
       ImGui::TableSetColumnIndex(1);
       ImGui::AlignTextToFramePadding();
@@ -1475,13 +1503,15 @@ static void tab_channels(App &a)
 {
    RomSession &t = a.sessions[TARGET];
    ImGui::TextWrapped("While a replacement plays, these channels of the game to change are muted. Music usually "
-         "uses the first channels and sound effects the last ones; mute fewer to keep more effects.");
+         "uses the first channels and sound effects the last ones; mute fewer to keep more effects. NES games "
+         "have five channels and play most sound effects on the music's channels, so some effects go quiet too.");
    if (!t.is_open())
       return;
    int shown = 0;
    for (auto &o : t.core.options())
    {
-      if (o.key.find("sndchan") == std::string::npos && o.key.find("channel") == std::string::npos)
+      if (o.key.find("sndchan") == std::string::npos && o.key.find("channel") == std::string::npos &&
+            o.key.compare(0, 11, "fceumm_apu_") != 0)
          continue;
       std::string mute_value;
       for (auto &v : o.values)
@@ -1911,6 +1941,8 @@ static void draw_folder_scan(App &a)
          FolderScan::Options o;
          o.folder = a.settings.scan_folder;
          o.core_path = a.settings.retroarch_dir + "\\cores\\" + a.settings.core_file;
+         if (!a.settings.nes_core_file.empty())
+            o.nes_core_path = a.settings.retroarch_dir + "\\cores\\" + a.settings.nes_core_file;
          o.system_dir = system_dir(a);
          o.app_dir = app_data_dir();
          o.download_references = a.folder_download_refs;
@@ -2075,6 +2107,7 @@ static void draw_settings(App &a)
          snprintf(ra, sizeof(ra), "%s", dir.c_str());
          a.settings.retroarch_dir = dir;
          a.settings.core_file.clear();
+         a.settings.nes_core_file.clear();
          refresh_cores(a);
       }
    }
@@ -2095,6 +2128,23 @@ static void draw_settings(App &a)
    }
    if (a.settings.core_file != "snes9x_libretro.dll")
       ImGui::TextColored(col(P.danger), "Ripping songs needs snes9x (snes9x_libretro.dll).");
+
+   ImGui::Spacing();
+   ImGui::TextUnformatted("NES core");
+   std::string nes_current = a.settings.nes_core_file.empty() ? "(none found)" : a.settings.nes_core_file;
+   for (auto &c : a.cores)
+      if (c.first == a.settings.nes_core_file)
+         nes_current = c.second;
+   ImGui::SetNextItemWidth(-1);
+   if (ImGui::BeginCombo("##nes_core", nes_current.c_str()))
+   {
+      for (auto &c : a.cores)
+         if (ImGui::Selectable(c.second.c_str(), c.first == a.settings.nes_core_file))
+            a.settings.nes_core_file = c.first;
+      ImGui::EndCombo();
+   }
+   if (a.settings.nes_core_file != "fceumm_libretro.dll")
+      ImGui::TextColored(col(P.danger), "Muting NES music channels needs FCEUmm (fceumm_libretro.dll).");
 
    ImGui::Spacing();
    ImGui::TextUnformatted("Interface size");
@@ -2425,7 +2475,8 @@ int main(int argc, char **argv)
    if (a.settings.retroarch_dir.empty() || a.settings.core_file.empty())
       a.show_settings = true;
    for (int side = 0; side < 2; side++)
-      if (!a.settings.rom[side].empty() && file_exists(a.settings.rom[side]) && !a.settings.core_file.empty())
+      if (!a.settings.rom[side].empty() && file_exists(a.settings.rom[side]) &&
+            !(is_nes_rom_file(a.settings.rom[side]) ? a.settings.nes_core_file : a.settings.core_file).empty())
          open_rom(a, side, a.settings.rom[side]);
    if (a.status.empty())
       set_status(a, "Open the game to change on the left and a game to take music from on the right.");
@@ -2461,7 +2512,8 @@ int main(int argc, char **argv)
             SDL_free(ev.drop.file);
             int side = (mx - wx) < ww / 2 ? TARGET : SOURCE;
             std::string ext = lower_ext(path);
-            if (dir_exists(path) || ext == "spc" || ext == "rsn" || ext == "rar" || ext == "7z" || is_spc_archive(path))
+            if (dir_exists(path) || ext == "spc" || ext == "nsf" || ext == "nsfe" || ext == "rsn" || ext == "rar" || ext == "7z" ||
+                  is_spc_archive(path))
                import_references(a, side, path);
             else
                open_rom(a, side, path);

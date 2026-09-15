@@ -26,12 +26,16 @@ struct FolderScanRow
    std::string note;
 };
 
+// An NES ROM (.nes), or a zip holding one.
+bool is_nes_rom_file(const std::string &path);
+
 class FolderScan
 {
 public:
    struct Options
    {
       std::string folder, core_path, system_dir, app_dir;
+      std::string nes_core_path;     // for NES ROMs; they are skipped without one
       bool download_references = true;
       bool use_movies = false;       // play a TAS movie (needs BizHawk) when the scan leaves songs unnumbered
       int movie_speed = 6400;

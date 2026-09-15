@@ -67,6 +67,82 @@ static bool flat_block(const uint8_t *p, size_t n)
 // Loading
 // ---------------------------------------------------------------------------
 
+bool is_reference_file(const std::string &name)
+{
+   std::string e = lower_ext(name);
+   return e == "spc" || e == "nsf" || e == "nsfe" || e == "m3u";
+}
+
+// The songs of an .nsf or .nsfe: how many, and the titles an .nsfe carries.
+static bool nsf_songs(const std::vector<uint8_t> &d, int &count, std::vector<std::string> &titles)
+{
+   count = 0;
+   titles.clear();
+   if (d.size() >= 0x80 && !memcmp(d.data(), "NESM\x1A", 5))
+   {
+      count = d[6];
+      return count > 0;
+   }
+   if (d.size() < 4 || memcmp(d.data(), "NSFE", 4))
+      return false;
+   // Chunks: size (4, little endian), id (4), data.
+   for (size_t pos = 4; pos + 8 <= d.size();)
+   {
+      uint32_t size = d[pos] | d[pos + 1] << 8 | d[pos + 2] << 16 | (uint32_t)d[pos + 3] << 24;
+      const char *id = (const char*)&d[pos + 4];
+      size_t body = pos + 8;
+      if (body + size > d.size() || !memcmp(id, "NEND", 4))
+         break;
+      if (!memcmp(id, "INFO", 4) && size >= 9)
+         count = d[body + 8];
+      else if (!memcmp(id, "tlbl", 4))
+         for (size_t at = body; at < body + size;)
+         {
+            size_t end = at;
+            while (end < body + size && d[end])
+               end++;
+            titles.push_back(std::string((const char*)&d[at], end - at));
+            at = end + 1;
+         }
+      pos = body + size;
+   }
+   return count > 0;
+}
+
+// An extended .m3u line: "file::NSF,track,title,length,loop,fade". Decimal track numbers count
+// from 1, "$hex" ones from 0; "\," is a comma inside a field.
+static bool m3u_entry(const std::string &line, std::string &file, int &track, std::string &title)
+{
+   size_t sep = line.find("::");
+   if (line.empty() || line[0] == '#' || sep == std::string::npos)
+      return false;
+   file = line.substr(0, sep);
+   size_t comma = line.find(',', sep);
+   if (comma == std::string::npos)
+      return false;
+   std::vector<std::string> fields(1);
+   for (size_t j = comma + 1; j < line.size(); j++)
+   {
+      char c = line[j];
+      if (c == '\\' && j + 1 < line.size())
+         fields.back() += line[++j];
+      else if (c == ',')
+         fields.push_back("");
+      else if (c != '\r')
+         fields.back() += c;
+   }
+   if (fields[0].empty())
+      return false;
+   std::string t = fields[0];
+   while (!t.empty() && t[0] == ' ')
+      t.erase(0, 1);
+   track = t[0] == '$' ? (int)strtol(t.c_str() + 1, nullptr, 16) : atoi(t.c_str()) - 1;
+   title = fields.size() > 1 ? fields[1] : "";
+   while (!title.empty() && (title.back() == ' ' || title.back() == '\t'))
+      title.pop_back();
+   return track >= 0;
+}
+
 bool ReferenceSet::load(const std::string &dir, std::string &error)
 {
    clear();
@@ -78,19 +154,65 @@ bool ReferenceSet::load(const std::string &dir, std::string &error)
    std::vector<ReferenceSong> songs;
    for (const auto &f : files)
    {
-      if (lower_ext(f) != "spc")
-         continue;
-      ReferenceSong s;
-      s.path = dir + "\\" + f;
-      if (!read_file_bytes(s.path, s.spc) || !spc_ram(s.spc))
+      std::string ext = lower_ext(f);
+      if (ext == "spc")
       {
-         error = f + " is not an .spc file";
+         ReferenceSong s;
+         s.path = dir + "\\" + f;
+         if (!read_file_bytes(s.path, s.data) || !spc_ram(s.data))
+         {
+            error = f + " is not an .spc file";
+            continue;
+         }
+         s.title = spc_song_title(s.data);
+         if (s.title.empty())
+            s.title = stem_of(f);
+         songs.push_back(std::move(s));
          continue;
       }
-      s.title = spc_song_title(s.spc);
-      if (s.title.empty())
-         s.title = stem_of(f);
-      songs.push_back(std::move(s));
+      if (ext != "nsf" && ext != "nsfe")
+         continue;
+      std::vector<uint8_t> data;
+      int count = 0;
+      std::vector<std::string> titles;
+      if (!read_file_bytes(dir + "\\" + f, data) || !nsf_songs(data, count, titles))
+      {
+         error = f + " is not an .nsf file";
+         continue;
+      }
+      // A playlist beside it lists the real songs, in order, by name; without one, every song
+      // the file holds is listed.
+      std::vector<std::pair<int, std::string>> list;
+      for (const auto &m : files)
+      {
+         if (lower_ext(m) != "m3u")
+            continue;
+         std::string text = read_text(dir + "\\" + m), line, file, title;
+         bool mine = stem_of(m) == stem_of(f);
+         for (size_t pos = 0; pos < text.size();)
+         {
+            size_t end = text.find('\n', pos);
+            line = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+            pos = end == std::string::npos ? text.size() : end + 1;
+            int track;
+            if (m3u_entry(line, file, track, title) && (mine || file == f) && track < count)
+               list.push_back({ track, title });
+         }
+         if (!list.empty())
+            break;
+      }
+      if (list.empty())
+         for (int t = 0; t < count; t++)
+            list.push_back({ t, t < (int)titles.size() ? titles[t] : "" });
+      for (auto &entry : list)
+      {
+         ReferenceSong s;
+         s.path = dir + "\\" + f;
+         s.data = data;
+         s.track = entry.first;
+         s.title = !entry.second.empty() ? entry.second : stem_of(f) + " #" + std::to_string(entry.first + 1);
+         songs.push_back(std::move(s));
+      }
    }
    std::string keep = dir_;
    assign(std::move(songs));
@@ -119,10 +241,11 @@ void ReferenceSet::index()
    size_t n = songs_.size();
    hashes_.assign(n, std::vector<uint32_t>(kBlocks));
    share_.assign(n, std::vector<uint16_t>(kBlocks));
+   // Songs that are not .spc files have no sound CPU RAM; they match by their notes alone.
    for (size_t i = 0; i < n; i++)
    {
-      const uint8_t *ram = spc_ram(songs_[i].spc);
-      for (size_t b = 0; b < kBlocks; b++)
+      const uint8_t *ram = spc_ram(songs_[i].data);
+      for (size_t b = 0; ram && b < kBlocks; b++)
          hashes_[i][b] = fnv(ram + b * kBlock, kBlock);
    }
    for (size_t b = 0; b < kBlocks; b++)
@@ -137,8 +260,8 @@ void ReferenceSet::index()
    content_.reserve(n * 0x10000);
    for (size_t i = 0; i < n; i++)
    {
-      const uint8_t *ram = spc_ram(songs_[i].spc);
-      for (size_t o = 0; o + kBlock <= 0x10000; o++)
+      const uint8_t *ram = spc_ram(songs_[i].data);
+      for (size_t o = 0; ram && o + kBlock <= 0x10000; o++)
          if (!flat_block(ram + o, kBlock))
             content_.push_back((uint64_t)fnv(ram + o, kBlock) << 16 | i);
    }
@@ -226,6 +349,9 @@ SongTable ReferenceSet::find_song_table(const SnesRom &rom) const
    const size_t n = songs_.size();
    if (n == 0 || d.size() < 0x10000)
       return table;
+   for (const auto &s : songs_)
+      if (!spc_ram(s.data))
+         return table;
 
    // Index every 12-byte window of the ROM.
    const size_t K = 12;
@@ -251,7 +377,7 @@ SongTable ReferenceSet::find_song_table(const SnesRom &rom) const
    std::unordered_map<uint32_t, std::vector<Want>> want3, want2;
    for (size_t r = 0; r < n; r++)
    {
-      const uint8_t *ram = spc_ram(songs_[r].spc);
+      const uint8_t *ram = spc_ram(songs_[r].data);
       std::set<size_t> starts;
       for (size_t a = 0; a + K <= 0x10000;)
       {
@@ -491,9 +617,13 @@ static int import_zip(const std::vector<uint8_t> &zip, const std::string &dir, s
 {
    int count = 0;
    make_dirs(dir);
-   bool ok = zip_read(zip, [](const std::string &name) { return lower_ext(name) == "spc"; },
+   bool ok = zip_read(zip, [](const std::string &name) { return is_reference_file(name); },
          [&](const std::string &name, std::vector<uint8_t> &data) {
-            if (spc_ram(data) && write_bytes(dir + "\\" + sanitize_filename(file_name(name)), data))
+            int songs = 0;
+            std::vector<std::string> titles;
+            bool playlist = lower_ext(name) == "m3u";
+            if ((playlist || spc_ram(data) || nsf_songs(data, songs, titles)) &&
+                  write_bytes(dir + "\\" + sanitize_filename(file_name(name)), data) && !playlist)
                count++;
             return true;
          }, error);
@@ -551,7 +681,7 @@ static void remove_folder(const std::string &dir)
 }
 #endif
 
-// Extracts the .spc files of any archive 7-Zip opens (SNESmusic.org's .rsn sets are RAR) into `dir`.
+// Extracts the reference files of any archive 7-Zip opens (SNESmusic.org's .rsn sets are RAR) into `dir`.
 static int import_with_7zip(const std::string &archive, const std::string &dir, std::string &error)
 {
 #ifdef _WIN32
@@ -563,9 +693,9 @@ static int import_with_7zip(const std::string &archive, const std::string &dir, 
    }
    std::string tmp = temp_folder();
    make_dirs(tmp);
-   // e: flat, -y: no prompts, -r: .spc files in subfolders too
+   // e: flat, -y: no prompts, -r: files in subfolders too
    std::wstring cmd = L"\"" + widen_utf8(seven) + L"\" e -y -r \"-o" + widen_utf8(tmp) + L"\" \"" +
-         widen_utf8(archive) + L"\" *.spc";
+         widen_utf8(archive) + L"\" *.spc *.nsf *.nsfe *.m3u";
    STARTUPINFOW si{};
    si.cb = sizeof(si);
    PROCESS_INFORMATION pi{};
@@ -589,7 +719,7 @@ static int import_with_7zip(const std::string &archive, const std::string &dir, 
    {
       make_dirs(dir);
       for (const auto &f : list_files(tmp))
-         if (lower_ext(f) == "spc" && copy_file_data(tmp + "\\" + f, dir + "\\" + f))
+         if (is_reference_file(f) && copy_file_data(tmp + "\\" + f, dir + "\\" + f) && lower_ext(f) != "m3u")
             count++;
    }
    remove_folder(tmp);
@@ -620,7 +750,7 @@ int import_reference_songs(const std::string &source, const std::string &dir, st
          }
          else if (is_archive(e))
             count += std::max(0, import_with_7zip(from, dir, error));
-         else if (e == "spc" && copy_file_data(from, dir + "\\" + f))
+         else if (is_reference_file(f) && copy_file_data(from, dir + "\\" + f) && e != "m3u")
             count++;
       }
    }
@@ -636,11 +766,15 @@ int import_reference_songs(const std::string &source, const std::string &dir, st
       if (count < 0)
          return -1;
    }
-   else if (ext == "spc")
+   else if (ext == "spc" || ext == "nsf" || ext == "nsfe")
    {
       make_dirs(dir);
       if (copy_file_data(source, dir + "\\" + file_name(source)))
          count = 1;
+      // The playlist that names an .nsf's songs sits beside it.
+      std::string m3u = dir_of(source) + "\\" + stem_of(source) + ".m3u";
+      if (ext != "spc" && file_exists(m3u))
+         copy_file_data(m3u, dir + "\\" + file_name(m3u));
    }
    else if (is_archive(ext))
    {
@@ -650,11 +784,11 @@ int import_reference_songs(const std::string &source, const std::string &dir, st
    }
    else
    {
-      error = "choose a folder, a .zip, .rsn, .rar or .7z archive, or .spc files";
+      error = "choose a folder, a .zip, .rsn, .rar or .7z archive, or .spc or .nsf files";
       return -1;
    }
    if (count == 0 && error.empty())
-      error = "no .spc files in " + file_name(source);
+      error = "no .spc or .nsf files in " + file_name(source);
    return count;
 }
 
@@ -715,6 +849,11 @@ static std::vector<std::string> name_words(const std::string &name)
          w += (char)tolower(u);
       else if (!w.empty())
       {
+         // "Mega Man II" is "Mega Man 2".
+         static const char *kRoman[] = { "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x" };
+         for (int r = 0; r < 9; r++)
+            if (w == kRoman[r])
+               w = std::to_string(r + 2);
          bool skip = false;
          for (const char *s : kSkip)
             skip = skip || w == s;
@@ -811,9 +950,9 @@ static std::string percent_decode(const std::string &s)
 
 static const double kNameMatch = 0.75;
 
-// ---- Zophar's Domain: zips at /music/nintendo-snes-spc/<slug>
+// ---- Zophar's Domain: zips at /music/nintendo-snes-spc/<slug> and /music/nintendo-nes-nsf/<slug>
 
-// The link to the page's emulated-format (.spc) archive.
+// The link to the page's emulated-format (.spc, .nsf) archive.
 static std::string find_emu_zip(const std::string &html)
 {
    size_t pos = 0;
@@ -833,9 +972,10 @@ static std::string find_emu_zip(const std::string &html)
 }
 
 static int download_from_zophar(const std::vector<std::string> &variants, const std::string &dir,
-      const std::function<void(const std::string &)> &progress, std::string &error)
+      const std::function<void(const std::string &)> &progress, std::string &error, bool nes)
 {
-   const std::string site = "https://www.zophar.net", section = "/music/nintendo-snes-spc/";
+   const std::string site = "https://www.zophar.net", section = nes ? "/music/nintendo-nes-nsf/" : "/music/nintendo-snes-spc/";
+   const std::string system = nes ? "NES" : "SNES", format = nes ? ".nsf" : ".spc";
    std::string html, err, link, page_url;
    progress("Looking for " + variants.front() + " on Zophar's Domain...");
    for (const auto &v : variants)
@@ -887,14 +1027,14 @@ static int download_from_zophar(const std::vector<std::string> &variants, const 
       }
       if (best < kNameMatch)
       {
-         error = "Zophar's Domain has no SNES soundtrack named like \"" + variants.front() + "\"";
+         error = "Zophar's Domain has no " + system + " soundtrack named like \"" + variants.front() + "\"";
          return -1;
       }
       page_url = best_url;
       progress("Opening " + page_url + "...");
       if (!http_fetch(page_url, "", html, err) || (link = find_emu_zip(html)).empty())
       {
-         error = "no SPC archive on " + page_url + (err.empty() ? "" : ": " + err);
+         error = "no " + format + " archive on " + page_url + (err.empty() ? "" : ": " + err);
          return -1;
       }
    }
@@ -912,7 +1052,7 @@ static int download_from_zophar(const std::vector<std::string> &variants, const 
    std::vector<uint8_t> zip(body.begin(), body.end());
    int count = import_zip(zip, dir, error);
    if (count == 0 && error.empty())
-      error = "the archive from " + page_url + " has no .spc files";
+      error = "the archive from " + page_url + " has no " + format + " files";
    return count;
 }
 
@@ -1034,14 +1174,15 @@ int download_reference_songs(const std::vector<std::string> &names, const std::s
       return -1;
    }
    std::string errors;
-   if (sources & REFERENCES_ZOPHAR)
-   {
-      std::string e;
-      int count = download_from_zophar(variants, dir, progress, e);
-      if (count > 0)
-         return count;
-      errors = e;
-   }
+   for (int nes = 0; nes < 2; nes++)
+      if (sources & (nes ? REFERENCES_ZOPHAR_NES : REFERENCES_ZOPHAR))
+      {
+         std::string e;
+         int count = download_from_zophar(variants, dir, progress, e, nes != 0);
+         if (count > 0)
+            return count;
+         errors += (errors.empty() ? "" : "; ") + e;
+      }
    if (sources & REFERENCES_SNESMUSIC)
    {
       std::string e;

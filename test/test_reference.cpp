@@ -118,10 +118,10 @@ static void test_table_and_matching()
       ReferenceSong r;
       r.title = "Song " + std::to_string(i);
       // Each reference was dumped after the song before it, like real sets.
-      r.spc = make_spc(f, i, i > 0 ? i - 1 : kSongs - 1, r.title.c_str());
+      r.data = make_spc(f, i, i > 0 ? i - 1 : kSongs - 1, r.title.c_str());
       songs.push_back(r);
    }
-   TEST(spc_song_title(songs[3].spc) == "Song 3", "ID666 song title");
+   TEST(spc_song_title(songs[3].data) == "Song 3", "ID666 song title");
    ReferenceSet refs;
    refs.assign(songs);
 
@@ -221,6 +221,38 @@ static void test_import(const std::string &work)
    TEST(import_reference_songs(work + "/missing.rsn", dir, err) < 0 && !err.empty(), "a missing .rsn set fails with a reason");
 }
 
+static void test_nsf_sets(const std::string &work)
+{
+   printf("scenario: reference songs - NES sets\n");
+   std::vector<uint8_t> nsf(0x80 + 16, 0);
+   memcpy(nsf.data(), "NESM\x1A\x01", 6);
+   nsf[6] = 5;   // songs
+   nsf[7] = 1;
+   std::string playlist = "# Game\n\n"
+         "Game.nsf::NSF,03,Castle\\, Part 1,90,,7\n"
+         "Game.nsf::NSF,$00,Title,12\n"
+         "Game.nsf::NSF,9,Past the end\n";
+   std::vector<uint8_t> m3u(playlist.begin(), playlist.end());
+   std::vector<uint8_t> zip = make_zip({ { "Game (EMU)/Game.nsf", nsf }, { "Game (EMU)/Game.m3u", m3u } });
+   std::string zip_path = work + "/nsf.zip", dir = work + "/nsf_refs", err;
+   write_text(zip_path, std::string(zip.begin(), zip.end()));
+   TEST(import_reference_songs(zip_path, dir, err) == 1, "imports an .nsf and its playlist from a zip");
+
+   ReferenceSet refs;
+   refs.load(dir, err);
+   TEST(refs.size() == 2, "lists the playlist's songs that the file holds");
+   TEST(refs.size() == 2 && refs.song(0).title == "Castle, Part 1" && refs.song(0).track == 2,
+         "decimal playlist tracks count from 1; escaped commas stay in titles");
+   TEST(refs.size() == 2 && refs.song(1).title == "Title" && refs.song(1).track == 0, "$hex playlist tracks count from 0");
+   TEST(!refs.find_song_table(SnesRom()).found, "no ROM song table from an .nsf set");
+
+   std::string bare = work + "/nsf_bare";
+   make_dirs(bare);
+   write_text(bare + "/Other.nsf", std::string(nsf.begin(), nsf.end()));
+   refs.load(bare, err);
+   TEST(refs.size() == 5 && refs.song(4).track == 4 && refs.song(4).title == "Other #5", "without a playlist, every song is listed");
+}
+
 int main(int argc, char **argv)
 {
    std::string work = argc > 1 ? argv[1] : ".";
@@ -228,6 +260,7 @@ int main(int argc, char **argv)
    test_table_and_matching();
    test_names();
    test_import(work);
+   test_nsf_sets(work);
    printf(g_failures ? "\nFAILED (%d failures)\n" : "\nPASSED (0 failures)\n", g_failures);
    return g_failures ? 1 : 0;
 }

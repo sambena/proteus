@@ -3,6 +3,7 @@
 #include "md5.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include <zlib.h>
 
@@ -62,8 +63,25 @@ bool SnesRom::load(const std::vector<uint8_t> &content)
    return true;
 }
 
+bool load_nes_identity(const std::vector<uint8_t> &content, SnesRom &rom)
+{
+   rom = SnesRom();
+   rom.map = SnesRom::NONE;
+   if (content.size() < 16 || memcmp(content.data(), "NES\x1A", 4))
+      return false;
+   size_t skip = 16 + ((content[6] & 0x04) ? 512 : 0);
+   if (content.size() <= skip)
+      return false;
+   rom.data.assign(content.begin() + skip, content.end());
+   rom.crc32 = (uint32_t)::crc32(0, rom.data.data(), (uInt)rom.data.size());
+   rom.md5 = md5_hex(rom.data.data(), rom.data.size());
+   return true;
+}
+
 const uint8_t *SnesRom::at(uint32_t address, size_t length) const
 {
+   if (map == NONE)
+      return nullptr;
    uint8_t bank = (address >> 16) & 0xFF;
    uint16_t addr = address & 0xFFFF;
    if (bank == 0x7E || bank == 0x7F)
@@ -93,7 +111,7 @@ const uint8_t *SnesRom::at(uint32_t address, size_t length) const
 std::vector<uint32_t> SnesRom::cpu_addresses(size_t offset) const
 {
    std::vector<uint32_t> out;
-   if (offset >= data.size())
+   if (offset >= data.size() || map == NONE)
       return out;
    uint32_t addr;
    switch (map)
