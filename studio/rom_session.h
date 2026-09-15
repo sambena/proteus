@@ -79,6 +79,9 @@ public:
    // A RAM request that stops the game's own music (NES scans look for one); profiles use it
    // instead of muting sound channels.
    SongSilence silence;
+   // NES games whose music code keeps no song number: cheat codes by core that make the game
+   // report its requests at `address` (tap), and that stop its music code (patch). See nes_tap.h.
+   CoreCodes tap, patch;
    // Records `address` and `start` in the game database (UI thread).
    void save_to_game_db(const std::string &note);
 
@@ -198,6 +201,9 @@ private:
    // NES, once the music is stopped through RAM: follows the song requests themselves, and the
    // .nsf's other request register as jingles, since the song the game keeps then stays silent.
    void follow_requests(const SongStart &s);
+   // NES, when the music code keeps no song number: finds a tap on the game's sound routine, lists
+   // the reference songs by request, and a code patch that silences the music. See nes_tap.h.
+   bool scan_with_tap();
    // NES: records what the game plays over the next `seconds` from where the core is, as a .wav.
    std::vector<uint8_t> record_music(double seconds);
    int reference_by_notes(const std::vector<uint8_t> &spc);
@@ -263,6 +269,7 @@ private:
    SongAddress scan_address_;             // the scan thread's copies
    SongStart scan_start_;
    SongSilence scan_silence_;
+   CoreCodes scan_tap_, scan_patch_;
    std::string scan_address_source_, scan_start_source_;
    std::atomic<bool> scan_changed_{false};
    std::thread worker_;

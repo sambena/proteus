@@ -40,6 +40,31 @@ static const char *option(px_engine *e, const char *key)
    return e->host.option ? e->host.option(e->host.userdata, key) : NULL;
 }
 
+/* The core's cheat: the profile's [tap] for it while a profile is loaded, and its [patch], which
+ * stops the game's music code, while the original is muted. */
+static void apply_patches(px_engine *e)
+{
+   const px_profile *p = &e->profile;
+   const char *core, *tap, *patch;
+   char code[2 * PX_PATCH_CODE_MAX + 1];
+
+   if (!e->host.patch || !e->host.core_file)
+      return;
+   core  = e->host.core_file(e->host.userdata);
+   tap   = p->loaded ? px_profile_patch_for(p->tap, p->tap_count, core) : NULL;
+   patch = p->loaded && e->muted ? px_profile_patch_for(p->patch, p->patch_count, core) : NULL;
+   if (!tap && !patch)
+   {
+      if (e->patched)
+         e->host.patch(e->host.userdata, NULL);
+      e->patched = false;
+      return;
+   }
+   snprintf(code, sizeof(code), "%s%s%s", tap ? tap : "", tap && patch ? "+" : "", patch ? patch : "");
+   e->host.patch(e->host.userdata, code);
+   e->patched = true;
+}
+
 static void set_muted(px_engine *e, bool muted)
 {
    if (e->muted == muted)
@@ -47,13 +72,7 @@ static void set_muted(px_engine *e, bool muted)
    e->muted = muted;
    if (e->host.mute)
       e->host.mute(e->host.userdata, muted);
-   /* A [patch] for this core stops the game's music code while the original is muted. */
-   if (e->host.patch && e->profile.loaded && e->host.core_file)
-   {
-      const char *code = px_profile_patch_for(&e->profile, e->host.core_file(e->host.userdata));
-      if (code)
-         e->host.patch(e->host.userdata, muted ? code : NULL);
-   }
+   apply_patches(e);
 }
 
 static void reset_state(px_engine *e)
@@ -227,6 +246,7 @@ bool px_engine_load(px_engine *e, const char *profile_path)
    }
    elog(e, RETRO_LOG_INFO, "loaded profile %s (%u tracks)", profile_path, e->profile.track_count);
    px_engine_read_config(e);
+   apply_patches(e);
    return true;
 }
 
@@ -234,6 +254,7 @@ void px_engine_unload(px_engine *e)
 {
    reset_state(e);
    e->profile.loaded = false;
+   apply_patches(e);
 }
 
 bool px_engine_loaded(const px_engine *e)

@@ -43,6 +43,14 @@ typedef struct
    char value[128];
 } px_option;
 
+/* Cheat codes for one core, in its format. A core's lines are joined with '+'. */
+#define PX_PATCH_CODE_MAX 1024
+typedef struct
+{
+   char core[64];
+   char code[PX_PATCH_CODE_MAX];
+} px_patch;
+
 typedef struct
 {
    bool loaded;
@@ -72,8 +80,14 @@ typedef struct
    /* [patch] code patches that stop the game's own music while a replacement (or silence)
     * plays, keeping its sound effects: cheat codes, one per core, in that core's format
     * ("fceumm = 809D?D0:F0") */
-   px_option patch[PX_MAX_PATCH];
+   px_patch patch[PX_MAX_PATCH];
    unsigned patch_count;
+
+   /* [tap] code patches on while the game runs, which make it report its song requests in
+    * RAM for the song address to read (a stub in blank ROM that stores what the game asks its
+    * sound routine to play) */
+   px_patch tap[PX_MAX_PATCH];
+   unsigned tap_count;
 
    /* [silence] a request written to the game's RAM to stop its own music while a replacement
     * (or silence) plays; the sound channels stay on for sound effects */
@@ -102,8 +116,8 @@ typedef struct
 bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen);
 /* Returns the index of the track mapped to `value`, or -1. */
 int px_profile_find(const px_profile *p, uint32_t value);
-/* The [patch] code for a core ("fceumm" matches fceumm_libretro), or NULL. */
-const char *px_profile_patch_for(const px_profile *p, const char *core);
+/* The code in `patches` for a core ("fceumm" matches fceumm_libretro), or NULL. */
+const char *px_profile_patch_for(const px_patch *patches, unsigned count, const char *core);
 
 #ifdef __cplusplus
 }

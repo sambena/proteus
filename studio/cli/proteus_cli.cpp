@@ -25,6 +25,8 @@
 #include "reference.h"
 #include "folder_scan.h"
 #include "movie_learner.h"
+#include "nes_tap.h"
+#include "profile_export.h"
 #include "nsf_init.h"
 #include "rom_session.h"
 #include "snes_rom.h"
@@ -90,7 +92,7 @@ static int cmd_match(const std::string &dir, const std::string &rip_path, const 
 
 static int cmd_scan(int argc, char **argv)
 {
-   std::string rom_path = argv[2], core, system, refs, keep;
+   std::string rom_path = argv[2], core, system, refs, keep, profile;
    int first = -1, last = -1;
    for (int i = 3; i + 1 < argc; i += 2)
    {
@@ -101,6 +103,7 @@ static int cmd_scan(int argc, char **argv)
       else if (k == "--first") first = (int)strtol(argv[i + 1], nullptr, 0);
       else if (k == "--last") last = (int)strtol(argv[i + 1], nullptr, 0);
       else if (k == "--keep-rips") keep = argv[i + 1];
+      else if (k == "--profile") profile = argv[i + 1];
    }
    if (core.empty())
    {
@@ -145,6 +148,18 @@ static int cmd_scan(int argc, char **argv)
    // The game database is left alone; the log shows what the scan settled on.
    flush();
    printf("%s\n", s.scan_message().c_str());
+   // --profile <path>: what the scan found, exported as Studio would with every song unassigned
+   // (the game database written is PROTEUS_GAME_DB, when set).
+   if (!profile.empty())
+   {
+      if (getenv("PROTEUS_GAME_DB"))
+         s.apply_scan_results();
+      int copied = 0;
+      if (export_profile(s, Assignments(), ProfileOptions(), profile, copied, err))
+         printf("wrote %s\n", profile.c_str());
+      else
+         printf("profile: %s\n", err.c_str());
+   }
    std::lock_guard<std::mutex> lock(s.songs_mutex);
    for (const auto &song : s.songs)
       printf("  %s  %-40s %s%s\n", song.has_value ? ("0x" + std::string(song.value < 16 ? "0" : "") + [&] { char b[8]; snprintf(b, 8, "%X", song.value); return std::string(b); }()).c_str() : "  --",
@@ -712,77 +727,35 @@ int main(int argc, char **argv)
          if (!read_file_bytes(argv[a], data) || data.size() < 0x80)
             continue;
          int songs = data[6];
-         // Music: three or more channels sounding through most of 4 seconds. Effects: short bursts.
-         std::vector<int> music, effects;
-         std::vector<std::array<int, NSF_CHANNELS>> act(songs);
+         // Music: three or more channels sounding through most of 4 seconds.
+         std::vector<int> music;
          for (int s = 0; s < songs && s < 128; s++)
          {
-            nsf_channel_activity(data, s, 240, {}, act[s].data(), err);
-            int long_channels = 0, total = 0, busiest = 0;
+            int act[NSF_CHANNELS];
+            nsf_channel_activity(data, s, 240, {}, act, err);
+            int long_channels = 0;
             for (int c = 0; c < 4; c++)
-            {
-               long_channels += act[s][c] >= 120;
-               total += act[s][c];
-               busiest = std::max(busiest, act[s][c]);
-            }
+               long_channels += act[c] >= 120;
             if (long_channels >= 3)
                music.push_back(s);
-            else if (total > 0 && long_channels <= 1 && act[s][0] + act[s][1] + act[s][2] < 150)
-               effects.push_back(s);
          }
+         std::vector<int> effects = nsf_effect_songs(data, err);
          std::string name = file_name(argv[a]).substr(0, 40);
          if (music.empty())
          {
             printf("%-40s  no music tracks found (%d songs)\n", name.c_str(), songs);
             continue;
          }
-         int used = 0;
-         std::vector<NsfPatch> patches = nsf_music_patches(data, music[0], used, err);
-         // Rank: music tracks fully silenced, then effect channels kept.
-         const NsfPatch *best = nullptr;
-         int best_music = -1, best_kept = -1, best_total = 0;
-         for (const auto &p : patches)
-         {
-            if (p.silenced != used)
-               continue;
-            std::vector<std::pair<uint16_t, uint8_t>> pp;
-            for (size_t k = 0; k < p.bytes.size(); k++)
-               pp.push_back({ (uint16_t)(p.address + k), p.bytes[k] });
-            int silenced_music = 0, kept = 0, total = 0;
-            for (size_t i = 0; i < music.size() && i < 4; i++)
-            {
-               int x[NSF_CHANNELS];
-               nsf_channel_activity_patched(data, music[i], 240, pp, x, err);
-               silenced_music += x[0] + x[1] + x[2] + x[3] <= 48;
-            }
-            for (size_t i = 0; i < effects.size() && i < 8; i++)
-            {
-               int x[NSF_CHANNELS];
-               nsf_channel_activity_patched(data, effects[i], 240, pp, x, err);
-               for (int c = 0; c < 4; c++)
-               {
-                  kept += std::min(x[c], act[effects[i]][c]);
-                  total += act[effects[i]][c];
-               }
-            }
-            if (silenced_music > best_music || (silenced_music == best_music && kept > best_kept))
-            {
-               best = &p;
-               best_music = silenced_music;
-               best_kept = kept;
-               best_total = total;
-            }
-         }
+         NsfMusicPatch best;
          printf("%-40s  music %zu effects %zu  ", name.c_str(), music.size(), effects.size());
-         if (!best)
-            printf("no patch silences it (%zu partial)\n", patches.size());
+         if (!nsf_find_music_patch(data, music, effects, best, err))
+            printf("no patch silences it\n");
          else
          {
-            printf("%04X:", best->address);
-            for (size_t k = 0; k < best->bytes.size(); k++)
-               printf("%s%02X>%02X", k ? "," : "", best->original[k], best->bytes[k]);
-            printf("  silences %d/%zu music, keeps %d%% of effects\n", best_music, std::min<size_t>(music.size(), 4),
-                  best_total ? best_kept * 100 / best_total : -1);
+            printf("%04X:", best.patch.address);
+            for (size_t k = 0; k < best.patch.bytes.size(); k++)
+               printf("%s%02X>%02X", k ? "," : "", best.patch.original[k], best.patch.bytes[k]);
+            printf("  silences %d/%d music, keeps %d%% of effects\n", best.music_silenced, best.music_tested, best.effects_percent);
          }
          fflush(stdout);
       }
@@ -838,6 +811,45 @@ int main(int argc, char **argv)
          for (const auto &v : vars[i].song_values)
             printf(" %d=%02X", v.first + 1, v.second);
          printf("\n");
+      }
+      return 0;
+   }
+   if (cmd == "nestap" && argc >= 4)
+   {
+      // proteus-cli nestap <file.nsf> <rom.nes> [ram hex]: a tap on the game's sound routine (the
+      // routine the .nsf's init calls with the most songs), as FCEUmm cheat codes.
+      std::vector<uint8_t> nsf, rom;
+      std::string err;
+      if (!read_file_bytes(argv[2], nsf) || !read_file_bytes(argv[3], rom))
+         return 1;
+      std::vector<NsfCall> calls = nsf_init_calls(nsf, err);
+      if (calls.empty())
+      {
+         fprintf(stderr, "the .nsf's init calls no routine with the song: %s\n", err.c_str());
+         return 1;
+      }
+      std::vector<uint16_t> free_ram = nes_unnamed_ram(rom);
+      uint16_t ram = argc > 4 ? (uint16_t)strtoul(argv[4], nullptr, 16) : free_ram.empty() ? 0x07FF : free_ram.front();
+      printf("RAM no code names (from the end):");
+      for (size_t i = 0; i < free_ram.size() && i < 16; i++)
+         printf(" $%04X", free_ram[i]);
+      printf("\n");
+      for (const NsfCall &c : calls)
+      {
+         NesTap tap;
+         uint16_t body = nsf_jump_target(nsf, c.routine, err);
+         std::vector<uint8_t> code = nsf_code_at(nsf, body, 16, err);
+         if (!nes_tap_design(rom, body, code, ram, tap, err))
+         {
+            printf("JSR $%04X (at $%04X): %s\n", c.routine, body, err.c_str());
+            continue;
+         }
+         printf("JSR $%04X (at $%04X): stub at $%04X writes request + 1 to $%04X\n  %s\n  song values:", c.routine, body, tap.stub, tap.ram,
+               tap.fceumm_cheat().c_str());
+         for (const auto &v : c.song_values)
+            printf(" %d=%02X", v.first + 1, (uint8_t)(v.second + 1));
+         printf("\n");
+         break;
       }
       return 0;
    }
@@ -948,7 +960,8 @@ int main(int argc, char **argv)
    fprintf(stderr, "usage:\n"
          "  proteus-cli table <rom> <spc folder>\n"
          "  proteus-cli match <spc folder> <rip.spc> [before.spc]\n"
-         "  proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system dir] [--refs spc folder] [--first N] [--last N] [--keep-rips dir]\n"
+         "  proteus-cli scan <rom> --core <snes9x_libretro.dll> [--system dir] [--refs spc folder] [--first N] [--last N] [--keep-rips dir] [--profile out.ini]\n"
+         "  proteus-cli nestap <file.nsf> <rom.nes> [ram hex]\n"
          "  proteus-cli list <rom> <snes9x core> [app dir]\n"
          "  proteus-cli import <folder, archive or .spc> <folder>\n"
          "  proteus-cli download \"<game name>\" <folder> [zophar|snesmusic]\n");

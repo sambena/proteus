@@ -47,11 +47,40 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
       t += "latch    = 1\n";
    if (a.events)
       t += "events   = " + hex(a.events_address, 4) + "   ; jingles: song 0x100 + command\n";
-   t += "unmapped = original\n";
+   // A tap reports sound effects too: values not listed leave the music alone.
+   bool tapped = !target.tap.empty();
+   t += tapped ? "unmapped = keep       ; requests not listed are sound effects\n" : "unmapped = original\n";
 
    if (target.silence.known)
       t += "\n[silence]\n; stops the game's own music, keeping its sound effects\naddress  = " +
            hex(target.silence.address, 4) + "\nvalue    = " + hex(target.silence.value, 2) + "\n";
+   // Cheat codes by core; a core's codes are long, so eight go on each line (Proteus joins them).
+   auto codes = [&](const char *section, const char *comment, const CoreCodes &by_core) {
+      if (by_core.empty())
+         return;
+      t += std::string("\n[") + section + "]\n; " + comment + "\n";
+      for (auto &c : by_core)
+      {
+         std::string line;
+         int n = 0;
+         for (size_t start = 0; start <= c.second.size();)
+         {
+            size_t plus = c.second.find('+', start);
+            if (plus == std::string::npos)
+               plus = c.second.size();
+            line += (n ? "+" : "") + c.second.substr(start, plus - start);
+            start = plus + 1;
+            if (++n == 8 || start > c.second.size())
+            {
+               t += c.first + " = " + line + "\n";
+               line.clear();
+               n = 0;
+            }
+         }
+      }
+   };
+   codes("tap", "makes the game write each sound it requests (+ 1) to the song address", target.tap);
+   codes("patch", "stops the game's own music code while a replacement plays, keeping its sound effects", target.patch);
    if (!options.mute.empty())
    {
       t += "\n[mute]\n";
@@ -106,6 +135,14 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
          comment += " <- " + as.label;
       t += hex(entry.first, 2) + " = " + spec + (comment.empty() ? "" : " ; " + comment) + "\n";
    }
+   // Unmapped requests keep the music with a tap, so the game's own songs are listed as such.
+   if (tapped)
+      for (auto &title : titles)
+      {
+         auto as = assignments.find(title.first);
+         if (as == assignments.end() || as->second.kind == Assignment::ORIGINAL)
+            t += hex(title.first, 2) + " = original ; " + title.second + "\n";
+      }
    return t;
 }
 

@@ -249,6 +249,8 @@ static void parse(const std::string &text, std::map<uint32_t, GameInfo> &games)
       }
       else if (key == "start")
           parse_song_start(value, g->start);
+      else if ((key == "tap" || key == "patch") && w.size() >= 2)
+         (key == "tap" ? g->tap : g->patch)[w[0]] = w[1];
       else if (key == "silence" && w.size() >= 2 && w[0] == "ram")
       {
          g->silence.known = true;
@@ -355,7 +357,9 @@ void GameDb::save_locked()
                    "; song_address = <memory> <address> bytes=<pattern, xx = song number, .. = any> latch=1 debounce=1\n"
                    "; start = ram <address> bytes=<command, xx = song number> settle=<frames>\n"
                    "; start = routine <jsl|jsr> <address> [block=<address>] [bytes=...] [a=song] settle=<frames>\n"
-                   "; silence = ram <address> value=<byte that stops the game's music>\n";
+                   "; silence = ram <address> value=<byte that stops the game's music>\n"
+                   "; tap = <core> <cheat code that makes the game write each sound it requests to the song address>\n"
+                   "; patch = <core> <cheat code that stops the game's music code, keeping its sound effects>\n";
    for (auto &e : games_)
    {
       const GameInfo &g = e.second;
@@ -381,6 +385,10 @@ void GameDb::save_locked()
          t += "start = " + format_song_start(g.start) + "\n";
       if (g.silence.known)
          t += "silence = ram " + hex(g.silence.address, 4) + " value=" + hex(g.silence.value, 2) + "\n";
+      for (auto &c : g.tap)
+         t += "tap = " + c.first + " " + c.second + "\n";
+      for (auto &c : g.patch)
+         t += "patch = " + c.first + " " + c.second + "\n";
       if (!g.note.empty())
          t += "note = " + g.note + "\n";
    }

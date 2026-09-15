@@ -231,7 +231,7 @@ static void refresh_cores(App &a)
 static void default_mutes(App &a)
 {
    a.options.mute.clear();
-   if (a.sessions[TARGET].silence.known)
+   if (a.sessions[TARGET].silence.known || !a.sessions[TARGET].patch.empty())
       return;
    CoreHost &core = a.sessions[TARGET].core;
    for (int ch = 1; ch <= 6; ch++)
@@ -1513,6 +1513,9 @@ static void tab_channels(App &a)
    if (t.silence.known)
       ImGui::TextColored(col(P.ok), "Proteus stops this game's music by writing %02X to $%04X, so no channel needs muting "
             "and sound effects keep playing.", (unsigned)t.silence.value, (unsigned)t.silence.address);
+   else if (!t.patch.empty())
+      ImGui::TextColored(col(P.ok), "Proteus stops this game's music code with a patch (%s), so no channel needs "
+            "muting and sound effects keep playing.", t.patch.begin()->second.c_str());
    int shown = 0;
    for (auto &o : t.core.options())
    {
@@ -2531,10 +2534,10 @@ int main(int argc, char **argv)
 
       for (int side = 0; side < 2; side++)
       {
-         bool had_silence = a.sessions[side].silence.known;
+         bool had_silence = a.sessions[side].silence.known || !a.sessions[side].patch.empty();
          a.sessions[side].apply_scan_results();
          // A scan that finds how to stop the game's music makes the default channel mutes needless.
-         if (side == TARGET && !had_silence && a.sessions[side].silence.known)
+         if (side == TARGET && !had_silence && (a.sessions[side].silence.known || !a.sessions[side].patch.empty()))
          {
             std::map<std::string, std::string> defaults;
             for (int ch = 1; ch <= 3; ch++)

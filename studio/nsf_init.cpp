@@ -2,6 +2,7 @@
 #include "nsf_init.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <set>
 
@@ -510,6 +511,19 @@ std::vector<uint8_t> nsf_code_at(const std::vector<uint8_t> &data, uint16_t addr
    return out;
 }
 
+uint16_t nsf_jump_target(const std::vector<uint8_t> &data, uint16_t address, std::string &error)
+{
+   for (int hop = 0; hop < 4; hop++)
+   {
+      std::vector<uint8_t> op = nsf_code_at(data, address, 3, error);
+      uint16_t target = op.size() == 3 ? (uint16_t)(op[1] | op[2] << 8) : 0;
+      if (op.size() != 3 || op[0] != 0x4C || target < 0x8000 || target == address)
+         break;
+      address = target;
+   }
+   return address;
+}
+
 std::vector<NsfCall> nsf_init_calls(const std::vector<uint8_t> &data, std::string &error)
 {
    std::vector<NsfCall> out;
@@ -589,6 +603,99 @@ std::vector<NsfVariable> nsf_song_variables(const std::vector<uint8_t> &data, co
    }
    std::stable_sort(out.begin(), out.end(), [](const NsfVariable &x, const NsfVariable &y) { return x.distinct > y.distinct; });
    return out;
+}
+
+std::vector<int> nsf_effect_songs(const std::vector<uint8_t> &data, std::string &error)
+{
+   std::vector<int> out;
+   Nsf nsf;
+   if (!parse(data, nsf, error))
+      return out;
+   for (int s = 0; s < nsf.songs && s < 128; s++)
+   {
+      int act[NSF_CHANNELS];
+      if (!run_song(data, s, 240, {}, act, nullptr, error))
+         continue;
+      int long_channels = 0, total = 0;
+      for (int c = 0; c < 4; c++)
+      {
+         long_channels += act[c] >= 120;
+         total += act[c];
+      }
+      if (total > 0 && long_channels <= 1 && act[0] + act[1] + act[2] < 150)
+         out.push_back(s);
+   }
+   return out;
+}
+
+bool nsf_find_music_patch(const std::vector<uint8_t> &data, const std::vector<int> &music, const std::vector<int> &effects,
+      NsfMusicPatch &out, std::string &error)
+{
+   std::vector<NsfMusicPatch> all = nsf_music_patch_candidates(data, music, effects, error);
+   if (all.empty())
+      return false;
+   out = all.front();
+   return true;
+}
+
+std::vector<NsfMusicPatch> nsf_music_patch_candidates(const std::vector<uint8_t> &data, const std::vector<int> &music,
+      const std::vector<int> &effects, std::string &error)
+{
+   std::vector<NsfMusicPatch> out;
+   std::vector<int> kept_of;   // effect channel frames each candidate keeps
+   if (music.empty())
+      return out;
+   int used = 0;
+   std::vector<NsfPatch> patches = nsf_music_patches(data, music[0], used, error);
+   std::vector<std::array<int, NSF_CHANNELS>> plain;
+   for (size_t i = 0; i < effects.size() && i < 8; i++)
+   {
+      plain.emplace_back();
+      run_song(data, effects[i], 240, {}, plain.back().data(), nullptr, error);
+   }
+   for (const auto &p : patches)
+   {
+      if (p.silenced != used)
+         continue;
+      std::vector<std::pair<uint16_t, uint8_t>> pp;
+      for (size_t k = 0; k < p.bytes.size(); k++)
+         pp.push_back({ (uint16_t)(p.address + k), p.bytes[k] });
+      NsfMusicPatch candidate;
+      candidate.patch = p;
+      for (size_t i = 0; i < music.size() && i < 4; i++)
+      {
+         int x[NSF_CHANNELS];
+         run_song(data, music[i], 240, {}, x, nullptr, error, pp);
+         candidate.music_tested++;
+         candidate.music_silenced += x[0] + x[1] + x[2] + x[3] <= 48;
+      }
+      int kept = 0, total = 0;
+      for (size_t i = 0; i < plain.size(); i++)
+      {
+         int x[NSF_CHANNELS];
+         run_song(data, effects[i], 240, {}, x, nullptr, error, pp);
+         for (int c = 0; c < 4; c++)
+         {
+            kept += std::min(x[c], plain[i][c]);
+            total += plain[i][c];
+         }
+      }
+      candidate.effects_percent = total ? kept * 100 / total : -1;
+      out.push_back(candidate);
+      kept_of.push_back(kept);
+   }
+   std::vector<size_t> order(out.size());
+   for (size_t i = 0; i < order.size(); i++)
+      order[i] = i;
+   std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+      if (out[x].music_silenced != out[y].music_silenced)
+         return out[x].music_silenced > out[y].music_silenced;
+      return kept_of[x] > kept_of[y];
+   });
+   std::vector<NsfMusicPatch> sorted;
+   for (size_t i : order)
+      sorted.push_back(out[i]);
+   return sorted;
 }
 
 bool nsf_channel_activity_patched(const std::vector<uint8_t> &data, int song, int frames,

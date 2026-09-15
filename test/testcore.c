@@ -24,6 +24,7 @@
 #define PLAYING_ADDR 0x61
 /* A jingle request, like Super Mario Bros.' $FC: 01 for two frames at frame 250. */
 #define JINGLE_ADDR  0x62
+#define TAP_ADDR     0x63
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -43,6 +44,10 @@ static struct
 static bool music_on = true;
 /* The cheat code "music=off" patches the music out, the way a code patch stops a game's music code. */
 static bool music_patched;
+/* The cheat code "tap=on" makes the game report each sound it requests at TAP_ADDR (the request
+ * + 1), the way a tap on a game's sound routine does: the song when it changes, and a sound effect
+ * (0x40) every 20 frames. Nothing else in RAM tells the songs apart for a profile to use. */
+static bool tapped;
 static uint16_t pixels[16 * 16];
 
 /* Song schedule; harness.c checks audio against the same frame ranges. */
@@ -146,6 +151,10 @@ RETRO_API void retro_run(void)
    s.ram[STOP_ADDR]    = 0;
    s.ram[PLAYING_ADDR] = s.stopped ? 0 : curr;
    s.ram[JINGLE_ADDR]  = (s.frame == 250 || s.frame == 251) ? 1 : 0;
+   if (tapped && (s.frame == 0 || curr != prev1))
+      s.ram[TAP_ADDR] = (uint8_t)(curr + 1);
+   else if (tapped && s.frame % 20 == 10)
+      s.ram[TAP_ADDR] = 0x41;
    /* Command register pulses the new song ID for 2 frames when it changes, then resets to 0. */
    if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2))
    {
@@ -200,12 +209,21 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
    return true;
 }
 
-RETRO_API void retro_cheat_reset(void) { music_patched = false; }
+RETRO_API void retro_cheat_reset(void) { music_patched = false; tapped = false; }
+/* Codes joined with '+', as FCEUmm takes them. */
 RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code)
 {
    (void)index;
-   if (enabled && code && !strcmp(code, "music=off"))
-      music_patched = true;
+   while (enabled && code && *code)
+   {
+      const char *end = strchr(code, '+');
+      size_t n = end ? (size_t)(end - code) : strlen(code);
+      if (n == 9 && !strncmp(code, "music=off", n))
+         music_patched = true;
+      if (n == 6 && !strncmp(code, "tap=on", n))
+         tapped = true;
+      code = end ? end + 1 : code + n;
+   }
 }
 
 RETRO_API bool retro_load_game(const struct retro_game_info *game)

@@ -594,6 +594,32 @@ static int dsp_scenario(const char *plugin, const char *core_path, const char *d
       end_session();
    }
 
+   /* A tap: the plugin sets it on the running core as soon as the profile loads. */
+   {
+      char tapped[512];
+      snprintf(tapped, sizeof(tapped), "%s/tap.tst", dir);
+      if ((f = fopen(dsp_history, "wb")))
+      {
+         fprintf(f, "{\n  \"version\": \"1.5\",\n  \"items\": [\n    {\n      \"path\": \"%s\",\n      \"core_path\": \"%s\"\n    }\n  ]\n}\n",
+               tapped, core_path);
+         fclose(f);
+      }
+      if (!start_session(tapped, 2))
+         return 1;
+      dsp_data = dsp_impl->init(&info, &config, NULL);
+      if (!dsp_data)
+         return 1;
+      run_frames(0, 720);
+      expect("tap: song 2 wav replacement", 70, 180, 220, true);
+      expect("tap: song 2 game music patched out", 70, 180, 440, false);
+      expect("tap: song 5 mp3 replacement", 370, 480, 550, true);
+      expect("tap: song 9 original music", 490, 540, 440, true);
+      expect("tap: the tap stays with the patch lifted", 610, 720, 220, true);
+      dsp_impl->free(dsp_data);
+      dsp_data = NULL;
+      end_session();
+   }
+
    /* A core sending its audio in several batches a frame: the plugin still counts game frames
     * from time, so a 40-frame debounce holds song 2 (from frame 60) back until frame 100. */
    {
@@ -973,6 +999,22 @@ int main(int argc, char **argv)
    expect("patch: song 4 silence", 306, 360, 440, false);
    expect("patch: unmapped song lifts the patch", 486, 540, 440, true);
    expect("patch: song 1 again plays the game's music", 546, 600, 440, true);
+   end_session();
+
+   /* 11. A tap: the profile's cheat makes the game report its requests, on from the start. */
+   printf("\nscenario: following a tap on the game's sound requests\n");
+   snprintf(content, sizeof(content), "%s/tap.tst", argv[3]);
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 720);
+   expect("tap: song 1 original", 6, 60, 440, true);
+   expect("tap: song 2 wav replacement", 66, 180, 220, true);
+   expect("tap: song 2 game music patched out", 66, 180, 440, false);
+   expect("tap: song 3 through sound effect requests", 186, 300, 330, true);
+   expect("tap: song 4 silence", 306, 360, 330, false);
+   expect("tap: song 5 mp3 replacement", 366, 480, 550, true);
+   expect("tap: song 9 original music", 486, 540, 440, true);
+   expect("tap: the tap stays with the patch lifted", 606, 720, 220, true);
    end_session();
 
    printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");

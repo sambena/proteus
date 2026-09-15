@@ -77,8 +77,30 @@ struct NsfCall
 // routine, and what each song passes it. Routines telling the most songs apart come first.
 std::vector<NsfCall> nsf_init_calls(const std::vector<uint8_t> &nsf, std::string &error);
 
+// Where a call to `address` ends up past jump tables: JMP $xxxx instructions followed (up to four).
+uint16_t nsf_jump_target(const std::vector<uint8_t> &nsf, uint16_t address, std::string &error);
+
 // The bytes at a CPU address once init has set up song 0's banks.
 std::vector<uint8_t> nsf_code_at(const std::vector<uint8_t> &nsf, uint16_t address, size_t length, std::string &error);
+
+struct NsfMusicPatch
+{
+   NsfPatch patch;
+   int music_tested = 0, music_silenced = 0;   // music songs tried, and those it leaves silent
+   int effects_percent = -1;                   // how much of the effects' sound it keeps (-1: no effects)
+};
+
+// Code patches that silence the music (`music`: songs from 0; the first is searched, up to four
+// are checked), those silencing the most songs and keeping the most of the sound effects
+// (`effects`, up to eight) first.
+std::vector<NsfMusicPatch> nsf_music_patch_candidates(const std::vector<uint8_t> &nsf, const std::vector<int> &music,
+      const std::vector<int> &effects, std::string &error);
+// The first of them; false when no patch silences the first song.
+bool nsf_find_music_patch(const std::vector<uint8_t> &nsf, const std::vector<int> &music, const std::vector<int> &effects,
+      NsfMusicPatch &out, std::string &error);
+
+// The songs of an .nsf that sound like sound effects: short bursts on one or two channels.
+std::vector<int> nsf_effect_songs(const std::vector<uint8_t> &nsf, std::string &error);
 
 // Channel activity (see nsf_channel_activity) with code patches applied.
 bool nsf_channel_activity_patched(const std::vector<uint8_t> &nsf, int song, int frames,

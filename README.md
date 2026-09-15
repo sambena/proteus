@@ -195,9 +195,18 @@ NES games work the same way in Studio, with these differences:
   from a moment music plays (many games play none on their title screen), keeping the bytes after which the
   game sounds different. Super Mario Bros. asks for songs through `$FB`, which it reads as bits, and keeps
   the song playing at `$F4`; a song it plays under many numbers is listed under its first number and single
-  bits. Games whose `.nsf` calls the music routine directly (Mega Man 2) are not found this way yet: play
-  them with **Play & rip** (`R` rips the music playing), which names the songs heard and, after three or
-  more, can learn the song address as it does for SNES games.
+  bits.
+- **A tap on the sound routine.** Much music code keeps no song number anywhere: Mega Man 3's `.nsf`
+  starts a song by calling the game's "play this sound" routine (`$8106`) with the song in A. The rip's
+  code is the ROM's own, so Studio taps that routine with cheat codes: its first instructions move to a
+  stub in blank ROM, which writes each request + 1 to a RAM byte no code names and the game leaves alone,
+  then carries on into the routine. The scan checks the tap reports one of the `.nsf`'s songs in the game;
+  that byte becomes the song address (`latch = 1`), every song of the set is listed by the value the game
+  requests it with, and sound effects, which the tap reports too, are left unlisted (`unmapped = keep`).
+  Profiles carry the tap in a `[tap]` section, on for the whole game. Taps are FCEUmm cheat codes, so
+  they need FCEUmm. Games found neither way can be played with **Play & rip** (`R` rips the music
+  playing), which names the songs heard and, after three or more, can learn the song address as it does
+  for SNES games.
 - **Stopping the music, keeping the sound effects.** Most NES games play sound effects on the music's
   channels, so muting channels loses them. After a scan, Studio writes each value of the song request
   while music plays and keeps one that stops the music (Super Mario Bros.: `$FB = 80`); profiles then
@@ -205,7 +214,11 @@ NES games work the same way in Studio, with these differences:
   replacement music starts. The RAM that holds the song playing then reads the silence, so profiles
   follow the requests instead: the song request (`$FB`, `latch = 1`) and the register the `.nsf` starts
   its other songs with, as jingles (`events = 0x00FC`: the death jingle is song 0x101), so the game's own
-  jingles stop the replacement. Games without one (The Legend of Zelda so far) fall back to muting channels:
+  jingles stop the replacement. The `.nsf` also shows how to stop the music code itself: Studio skips each
+  call and flips each branch its play routine runs, and keeps a change that silences the music songs while
+  the `.nsf`'s sound effects keep sounding, when the ROM holds that code (Mega Man 3: `809D` `D0` → `F0`).
+  Profiles carry it as a `[patch]` cheat code, applied only while replacement music plays. Games with
+  neither (The Legend of Zelda so far) fall back to muting channels:
   FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two squares,
   triangle, noise and samples), and Studio mutes the squares and triangle by default. The DSP plugin
   saves those mutes as game options, which stay off for the whole game.
@@ -327,6 +340,18 @@ memory   = system_ram
 address  = 0x00FB       ; Super Mario Bros.
 value    = 0x80
 
+[patch]
+; Optional: cheat codes, per core, that stop the game's music code while replacement music (or
+; silence) plays, keeping its sound effects. A core's lines are joined with '+'.
+fceumm = 809D?D0:F0     ; Mega Man 3
+
+[tap]
+; Optional: cheat codes, per core, on for the whole game, that make it report what it asks its
+; sound routine to play at the song address (see NES games).
+fceumm = 8106?C9:4C+8107?F0:1E+8108?90:8A+8A1E?00:08+8A1F?00:48+8A20?00:18+8A21?00:69+8A22?00:01
+fceumm = 8A23?00:8D+8A24?00:FC+8A25?00:07+8A26?00:68+8A27?00:28+8A28?00:C9+8A29?00:F0+8A2A?00:B0
+fceumm = 8A2B?00:03+8A2C?00:4C+8A2D?00:0D+8A2E?00:81+8A2F?00:4C+8A30?00:0A+8A31?00:81
+
 [mix]
 music_volume = 100      ; percent, up to 200
 game_volume  = 100
@@ -409,7 +434,8 @@ lose some effects; mute fewer channels for those games.
 | `studio/game_db.cpp` | the game database (`games.ini`) |
 | `studio/snes_rom.cpp` | SNES ROM header, CRC32, and CPU address mapping |
 | `studio/reference.cpp` | reference songs: matching rips, finding song tables in the ROM, importing and downloading sets |
-| `studio/nsf_init.cpp` | a small 6502 that runs an `.nsf`'s init routine to see the RAM requests that start its songs |
+| `studio/nsf_init.cpp` | a small 6502 that runs an `.nsf`'s init and play routines: the RAM requests and routine calls that start its songs, and code patches that silence its music |
+| `studio/nes_tap.cpp` | taps on an NES game's sound routine: a stub in blank ROM, as cheat codes, reporting the game's requests |
 | `studio/song_notes.cpp` | a song's notes over time, for matching songs that memory cannot tell apart |
 | `studio/tas_runner.cpp` | TASVideos lookups and downloads, installing BizHawk, playing a movie in BizHawk with a RAM-saving Lua script |
 | `studio/movie_learner.cpp` | names the songs of a movie's moments and learns the song address from them |

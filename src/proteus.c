@@ -326,7 +326,7 @@ static void host_mute(void *userdata, bool muted)
 }
 
 /* Cheats: the frontend's own, kept so the inner core's list can be rebuilt, and the profile's
- * [patch], applied while the original music is muted. Cores turn a cheat off only by a reset. */
+ * ([tap], and [patch] while the original music is muted). Cores turn a cheat off only by a reset. */
 #define PX_MAX_CHEATS 256
 #define PX_PATCH_INDEX 0x7FFF
 
@@ -334,7 +334,7 @@ static struct
 {
    struct { unsigned index; bool enabled; char *code; } list[PX_MAX_CHEATS];
    unsigned count;
-   char patch[512];
+   char patch[2 * PX_PATCH_CODE_MAX + 1];
    bool patched;
 } cheats;
 
@@ -738,6 +738,8 @@ static void after_load(bool ok)
       struct retro_system_av_info av;
       inner.api.get_system_av_info(&av);
       px_engine_set_rate(&engine, av.timing.sample_rate);
+      /* The profile's cheats were set before the game loaded; cores keep cheats per game. */
+      rebuild_cheats();
    }
    else
       px_engine_unload(&engine);

@@ -51,6 +51,7 @@ typedef struct
    } cfg;
 
    bool muted;
+   bool patched;   /* the core has a cheat from the profile */
    bool have_candidate;
    uint32_t candidate;
    unsigned stable_frames;

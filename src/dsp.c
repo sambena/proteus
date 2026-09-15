@@ -101,7 +101,7 @@ static const uint8_t *host_memory(void *userdata, unsigned id, size_t *size)
 
 static const char *base_name(const char *path);
 
-/* A [patch] goes straight to the running core's cheat list. RetroArch runs DSP plugins with the
+/* A [tap] or [patch] goes straight to the running core's cheat list. RetroArch runs DSP plugins with the
  * audio a core hands over after emulating its frame, so the patch takes effect from the next
  * frame. Cores can only turn a cheat off by resetting all of them: cheats set in RetroArch's own
  * menu are lost until they are applied again. */

@@ -10,11 +10,13 @@
 #include <ctime>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 
 #include "gme.h"
 #include "platform.h"
 #include "movie_learner.h"
+#include "nes_tap.h"
 #include "nsf_init.h"
 #include "spc_rip.h"
 
@@ -249,6 +251,8 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    address = SongAddress();
    start = SongStart();
    silence = SongSilence();
+   tap.clear();
+   patch.clear();
    address_source.clear();
    start_source.clear();
 
@@ -266,7 +270,11 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
       start_source = "game database";
    }
    if (in_db)
+   {
       silence = info.silence;
+      tap = info.tap;
+      patch = info.patch;
+   }
 
    profile_path_.clear();
    char found[2048];
@@ -431,6 +439,8 @@ void RomSession::save_to_game_db(const std::string &note)
    info.song = address;
    info.start = start;
    info.silence = silence;
+   info.tap = tap;
+   info.patch = patch;
    info.note = note + " " + today();
    GameDb::get().put(info);
 }
@@ -2313,6 +2323,253 @@ bool RomSession::find_song_start_nes(const SongPrint *baseline)
    return true;
 }
 
+// NES music code that keeps no song number (Mega Man 3): the reference .nsf's init calls the game's
+// sound routine with the song in A, and a tap on that routine (see nes_tap.h) makes the game write
+// each request to a byte of RAM it leaves alone. Once the tap reports one of the .nsf's songs in the
+// game, its byte is the song address, every song of the set is listed under the value the game
+// requests it with, and a code patch that silences the music but not the sound effects is looked for
+// in the .nsf. The core is left anywhere; the caller restores it.
+bool RomSession::scan_with_tap()
+{
+   if (core.library_name().find("FCEUmm") == std::string::npos)
+   {
+      log("taps on the sound routine are cheat codes for FCEUmm; " + core.library_name() + " is running");
+      return false;
+   }
+   const ReferenceSong *nsf_ref = nullptr;
+   for (size_t r = 0; r < references.size() && !nsf_ref; r++)
+   {
+      const auto &d = references.song(r).data;
+      if (d.size() >= 5 && (!memcmp(d.data(), "NESM\x1A", 5) || !memcmp(d.data(), "NSFE", 4)))
+         nsf_ref = &references.song(r);
+   }
+   if (!nsf_ref)
+      return false;
+   const std::vector<uint8_t> nsf = nsf_ref->data;
+   const std::vector<uint8_t> &rom = core.content_data();
+   std::string err;
+   std::vector<NsfCall> calls = nsf_init_calls(nsf, err);
+   if (calls.empty())
+      return false;
+   // A routine where a sound effect is asked for with a listed song's value would play the song's
+   // replacement for it: routines with fewer such values go first.
+   std::set<int> ref_tracks;
+   for (size_t i = 0; i < references.size(); i++)
+      if (references.song(i).path == nsf_ref->path)
+         ref_tracks.insert(references.song(i).track);
+   std::vector<int> effect_songs;
+   for (int s : nsf_effect_songs(nsf, err))
+      if (!ref_tracks.count(s))
+         effect_songs.push_back(s);
+   auto collisions = [&](const NsfCall &call) {
+      std::set<uint8_t> song_values;
+      int n = 0;
+      for (int t : ref_tracks)
+         if (call.song_values.count(t))
+            song_values.insert(call.song_values.at(t));
+      for (int s : effect_songs)
+         n += call.song_values.count(s) && song_values.count(call.song_values.at(s));
+      return n;
+   };
+   std::stable_sort(calls.begin(), calls.end(), [&](const NsfCall &x, const NsfCall &y) { return collisions(x) < collisions(y); });
+
+   // RAM for the tap: bytes no instruction names that stay unchanged while the game runs.
+   set_scan_message("Looking for RAM the game leaves alone...");
+   std::vector<uint16_t> unnamed = nes_unnamed_ram(rom);
+   size_t ram_size = 0;
+   std::vector<uint8_t> settled;
+   std::vector<bool> changed(0x800, false);
+   core.cheat_reset();
+   core.reset();
+   scan_total_ = kWatchFrames;
+   scan_done_ = 0;
+   for (int f = 0; f < kWatchFrames && !cancel_; f++, scan_done_++)
+   {
+      core.run_frame(f > 900 && f % 300 < 6 ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0);
+      core.audio().clear();
+      const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+      if (!ram || ram_size < 0x800)
+         return false;
+      if (f == 120)
+         settled.assign(ram, ram + 0x800);
+      else if (f > 120)
+         for (size_t a = 0; a < 0x800; a++)
+            changed[a] = changed[a] || ram[a] != settled[a];
+   }
+   uint16_t tap_ram = 0;
+   for (uint16_t a : unnamed)
+      if (!changed[a])
+      {
+         tap_ram = a;
+         break;
+      }
+   if (!tap_ram || cancel_)
+   {
+      log("found no RAM the game leaves alone for a tap on its sound routine");
+      return false;
+   }
+
+   for (size_t c = 0; c < calls.size() && c < 3 && !cancel_; c++)
+   {
+      const NsfCall &call = calls[c];
+      NesTap tap;
+      // A jump table entry moves nothing: the tap goes where it jumps.
+      uint16_t body = nsf_jump_target(nsf, call.routine, err);
+      if (!nes_tap_design(rom, body, nsf_code_at(nsf, body, 16, err), tap_ram, tap, err))
+      {
+         log("no tap on $" + hex4(body) + ": " + err);
+         continue;
+      }
+      // The set's songs, by the value the game requests each with (the tap writes request + 1).
+      std::map<uint8_t, int> by_value;
+      for (size_t i = 0; i < references.size(); i++)
+         if (references.song(i).path == nsf_ref->path)
+         {
+            auto v = call.song_values.find(references.song(i).track);
+            if (v != call.song_values.end())
+               by_value.emplace((uint8_t)(v->second + 1), (int)i);
+         }
+      if (by_value.size() < 2)
+         continue;
+
+      set_scan_message("Checking a tap on the sound routine $" + hex4(call.routine) + "...");
+      const std::string cheat = tap.fceumm_cheat();
+      core.cheat_set(0x7FFF, true, cheat);
+      core.reset();
+      int heard = -1;
+      uint8_t heard_value = 0;
+      // The game as the tap reports a song: where Proteus applies a patch when a replacement starts.
+      // The second song reported is better, since the music code then also has the first one's
+      // notes to let go of.
+      std::vector<uint8_t> playing;
+      int changes = 0;
+      scan_done_ = 0;
+      for (int f = 0, last = -1; f < kWatchFrames && changes < 2 && !cancel_; f++, scan_done_++)
+      {
+         core.run_frame(f > 900 && f % 300 < 6 ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0);
+         core.audio().clear();
+         const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
+         if (ram && tap.ram < ram_size && by_value.count(ram[tap.ram]) && ram[tap.ram] != last)
+         {
+            last = ram[tap.ram];
+            if (heard < 0)
+            {
+               heard = f;
+               heard_value = ram[tap.ram];
+            }
+            playing = core.save_state();
+            changes++;
+         }
+      }
+      core.cheat_reset();
+      if (heard < 0)
+      {
+         log("a tap on $" + hex4(call.routine) + " reported none of the reference songs");
+         continue;
+      }
+      log("a tap on the sound routine $" + hex4(call.routine) + " (stub at $" + hex4(tap.stub) + ", request + 1 at $" +
+          hex4(tap.ram) + ") reported \"" + references.song(by_value[heard_value]).title + "\" after " +
+          std::to_string(heard / 60) + " s");
+
+      SongAddress a;
+      a.known = true;
+      a.address = tap.ram;
+      a.size = 1;
+      a.latch = true;
+      a.debounce = 1;
+      scan_address_ = a;
+      scan_address_source_ = "scan (a tap on the sound routine $" + hex4(call.routine) + ")";
+      scan_silence_ = SongSilence();
+      scan_tap_.clear();
+      scan_tap_["fceumm"] = cheat;
+      scan_patch_.clear();
+      scan_changed_ = true;
+
+      std::vector<int> music;
+      std::set<int> listed_tracks;
+      int listed = 0;
+      for (const auto &entry : by_value)
+      {
+         const ReferenceSong &ref = references.song(entry.second);
+         listed_tracks.insert(ref.track);
+         std::lock_guard<std::mutex> lock(songs_mutex);
+         FoundSong song;
+         song.value = entry.first;
+         if (!use_reference(song, ref, err))
+            continue;
+         if (song.kind == SONG_MUSIC)
+            music.push_back(ref.track);
+         FoundSong *existing = find_song(entry.first);
+         if (existing && existing->reference == song.reference)
+            continue;
+         add_song_locked(song);
+         listed++;
+         scan_found_++;
+      }
+      log("listed " + std::to_string(listed) + " songs by the value the game requests them with");
+
+      // Stopping the music code while a replacement plays keeps the sound effects. A patch that
+      // silences the .nsf may still leave a note hanging in the game, so each is heard there: from
+      // the song the tap reported, the game must go quiet with it.
+      set_scan_message("Looking for a way to stop the music but not the sound effects...");
+      auto loudness = [&](const std::string &codes) {
+         core.load_state(playing);
+         core.cheat_reset();
+         core.cheat_set(0x7FFF, true, codes);
+         double sum = 0;
+         size_t n = 0;
+         for (int f = 0; f < 240; f++)
+         {
+            core.run_frame(0);
+            if (f >= 60)
+               for (int16_t v : core.audio())
+               {
+                  sum += (double)v * v;
+                  n++;
+               }
+            core.audio().clear();
+         }
+         core.cheat_reset();
+         return n ? std::sqrt(sum / n) : 0.0;
+      };
+      std::vector<NsfMusicPatch> candidates;
+      if (!music.empty() && !playing.empty())
+         candidates = nsf_music_patch_candidates(nsf, music, effect_songs, err);
+      double plain = candidates.empty() ? 0.0 : loudness(cheat);
+      int heard_patches = 0;
+      for (const NsfMusicPatch &mp : candidates)
+      {
+         if (mp.music_silenced < mp.music_tested || heard_patches >= 6 || cancel_ || plain < 200.0)
+            break;
+         std::vector<uint8_t> around = nsf_code_at(nsf, mp.patch.address, 12, err);
+         if (around.size() < mp.patch.original.size() ||
+               !std::equal(mp.patch.original.begin(), mp.patch.original.end(), around.begin()) ||
+               !nes_rom_holds(rom, mp.patch.address, around))
+            continue;
+         heard_patches++;
+         std::string code = fceumm_cheat(mp.patch.address, mp.patch.original, mp.patch.bytes);
+         double patched = loudness(cheat + "+" + code);
+         if (patched > plain * 0.1)
+         {
+            log("a code patch at $" + hex4(mp.patch.address) + " silences the .nsf but leaves " +
+                std::to_string((int)(patched * 100 / plain)) + "% of the sound in the game");
+            continue;
+         }
+         scan_patch_["fceumm"] = code;
+         log("a code patch at $" + hex4(mp.patch.address) + " silences the music (" + std::to_string(mp.music_silenced) +
+             " songs in the .nsf, " + std::to_string((int)(patched * 100 / plain)) + "% of the sound left in the game) and keeps " +
+             (mp.effects_percent < 0 ? std::string("sound effects the .nsf lacks") :
+                                       std::to_string(mp.effects_percent) + "% of the sound effects in the .nsf"));
+         break;
+      }
+      if (scan_patch_.empty())
+         log(plain < 200.0 && !candidates.empty() ? "the song the tap reported was too quiet to check a code patch; profiles mute the sound channels instead" :
+             "found no code patch that silences the music in the game; profiles mute the sound channels instead");
+      return true;
+   }
+   return false;
+}
+
 // Stopping the game's music without muting its channels: most NES music code takes a request that
 // silences it until the next song (Super Mario Bros.: $FB = 80). From the scan start, with music
 // playing and no one pressing buttons, each value of the song request is written; one after which
@@ -2465,6 +2722,8 @@ void RomSession::start_scan(int first, int last)
    scan_address_ = address;
    scan_start_ = start;
    scan_silence_ = silence;
+   scan_tap_ = tap;
+   scan_patch_ = patch;
    scan_address_source_ = address_source;
    scan_start_source_ = start_source;
    scan_changed_ = false;
@@ -2520,6 +2779,8 @@ void RomSession::apply_scan_results()
    address = scan_address_;
    start = scan_start_;
    silence = scan_silence_;
+   tap = scan_tap_;
+   patch = scan_patch_;
    address_source = scan_address_source_;
    start_source = scan_start_source_;
    save_to_game_db("confirmed by a scan");
@@ -2590,6 +2851,19 @@ void RomSession::scan_thread(int first, int last)
    // An .nsf that starts songs through RAM names the bytes to try: faster than playing the game.
    if (!usable && !cancel_ && nes_ && !nsf_table.empty())
       usable = find_song_start_nes(base_print);
+   // Music code keeping no song number: the game's requests, through a tap on its sound routine.
+   if (!usable && !cancel_ && nes_ && !references.empty() && scan_with_tap())
+   {
+      core.load_state(scan_state_);
+      core.audio().clear();
+      core.set_skip_video(false);
+      core_lock.unlock();
+      save_library();
+      set_scan_message((cancel_ ? "Scan stopped: " : "Scan finished: ") + std::to_string((int)scan_found_) +
+            " songs listed by the requests a tap on the game's sound routine reports.");
+      scanning_ = false;
+      return;
+   }
    if (!usable && !cancel_ && !references.empty() && find_song_variable())
    {
       usable = true;
@@ -3184,6 +3458,8 @@ void RomSession::start_movie(const std::string &movie_path, int speed, bool show
    scan_address_ = address;
    scan_start_ = start;
    scan_silence_ = silence;
+   scan_tap_ = tap;
+   scan_patch_ = patch;
    scan_address_source_ = address_source;
    scan_start_source_ = start_source;
    scan_changed_ = false;

@@ -280,6 +280,38 @@ static bool parse_pattern(const char *s, uint8_t *pattern, uint8_t *mask,
    return true;
 }
 
+/* A core's code, or one more line of it: long codes (a tap is dozens of cheats) span lines. */
+static bool add_patch(px_patch *patches, unsigned *count, const char *core, const char *code,
+      char *err, size_t errlen)
+{
+   px_patch *o = NULL;
+   size_t have;
+   for (unsigned i = 0; i < *count; i++)
+      if (!strcasecmp(patches[i].core, core))
+         o = &patches[i];
+   if (!o)
+   {
+      if (*count >= PX_MAX_PATCH)
+      {
+         snprintf(err, errlen, "too many cores (max %d)", PX_MAX_PATCH);
+         return false;
+      }
+      o = &patches[(*count)++];
+      snprintf(o->core, sizeof(o->core), "%s", core);
+      o->code[0] = '\0';
+   }
+   have = strlen(o->code);
+   if (have + (have ? 1 : 0) + strlen(code) >= sizeof(o->code))
+   {
+      snprintf(err, errlen, "code for %s is too long (max %d characters)", core, PX_PATCH_CODE_MAX - 1);
+      return false;
+   }
+   if (have)
+      strcat(o->code, "+");
+   strcat(o->code, code);
+   return true;
+}
+
 static bool handle_entry(px_profile *p, const char *dir, const char *section,
       char *key, char *val, char *err, size_t errlen)
 {
@@ -354,18 +386,9 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
       snprintf(o->key, sizeof(o->key), "%s", key);
       snprintf(o->value, sizeof(o->value), "%s", val);
    }
-   else if (!strcmp(section, "patch"))
-   {
-      px_option *o;
-      if (p->patch_count >= PX_MAX_PATCH)
-      {
-         snprintf(err, errlen, "too many patches (max %d)", PX_MAX_PATCH);
-         return false;
-      }
-      o = &p->patch[p->patch_count++];
-      snprintf(o->key, sizeof(o->key), "%s", key);
-      snprintf(o->value, sizeof(o->value), "%s", val);
-   }
+   else if (!strcmp(section, "patch") || !strcmp(section, "tap"))
+      return add_patch(!strcmp(section, "tap") ? p->tap : p->patch,
+            !strcmp(section, "tap") ? &p->tap_count : &p->patch_count, key, val, err, errlen);
    else if (!strcmp(section, "silence"))
    {
       if (!strcmp(key, "memory"))
@@ -562,15 +585,15 @@ int px_profile_find(const px_profile *p, uint32_t value)
    return -1;
 }
 
-const char *px_profile_patch_for(const px_profile *p, const char *core)
+const char *px_profile_patch_for(const px_patch *patches, unsigned count, const char *core)
 {
    if (!core)
       return NULL;
-   for (unsigned i = 0; i < p->patch_count; i++)
+   for (unsigned i = 0; i < count; i++)
    {
-      size_t n = strlen(p->patch[i].key);
-      if (n && !strncasecmp(core, p->patch[i].key, n) && (core[n] == '\0' || core[n] == '_' || core[n] == '.'))
-         return p->patch[i].value;
+      size_t n = strlen(patches[i].core);
+      if (n && !strncasecmp(core, patches[i].core, n) && (core[n] == '\0' || core[n] == '_' || core[n] == '.'))
+         return patches[i].code;
    }
    return NULL;
 }

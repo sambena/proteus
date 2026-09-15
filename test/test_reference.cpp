@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "nes_tap.h"
 #include "nsf_init.h"
 #include "platform.h"
 #include "reference.h"
@@ -293,6 +294,68 @@ static void test_nsf_init()
    TEST(requests.size() == 2 && requests[1].address == 0x602 && requests[1].song_values[2] == 0x40, "a second request byte");
 }
 
+static void test_nes_tap()
+{
+   printf("scenario: a tap on an NES game's sound routine\n");
+   // The rip's init calls the sound routine with the song in A, like Mega Man 3's:
+   //   8000 JSR $8100 / RTS
+   //   8100 CMP #$F0 / BCC +3 / JMP $8120 / STA $0600 / RTS      8120 RTS
+   const uint8_t init[] = { 0x20, 0x00, 0x81, 0x60 };
+   const uint8_t routine[] = { 0xC9, 0xF0, 0x90, 0x03, 0x4C, 0x20, 0x81, 0x8D, 0x00, 0x06, 0x60 };
+   std::vector<uint8_t> nsf(0x80 + 0x200, 0);
+   memcpy(nsf.data(), "NESM\x1A\x01", 6);
+   nsf[6] = 3;
+   nsf[7] = 1;
+   nsf[8] = 0x00; nsf[9] = 0x80;
+   nsf[10] = 0x00; nsf[11] = 0x80;
+   nsf[12] = 0x20; nsf[13] = 0x81;
+   memcpy(&nsf[0x80], init, sizeof(init));
+   memcpy(&nsf[0x80 + 0x100], routine, sizeof(routine));
+   nsf[0x80 + 0x120] = 0x60;
+
+   std::string err;
+   std::vector<NsfCall> calls = nsf_init_calls(nsf, err);
+   TEST(calls.size() == 1 && calls[0].routine == 0x8100 && calls[0].song_values[2] == 2, "init calls the sound routine with the song");
+
+   // The game: one 16KB bank (NROM), blank but for the routine and code naming RAM.
+   std::vector<uint8_t> rom(16 + 0x4000, 0xFF);
+   memcpy(rom.data(), "NES\x1A", 4);
+   rom[4] = 1;
+   rom[5] = 0;
+   rom[6] = 0;
+   rom[7] = 0;
+   for (int i = 8; i < 16; i++)
+      rom[i] = 0;
+   memcpy(&rom[16 + 0x100], routine, sizeof(routine));
+   const uint8_t names[] = { 0x9D, 0xF8, 0x07, 0x8D, 0xF5, 0x07 };   // STA $07F8,X / STA $07F5
+   memcpy(&rom[16 + 0x3000], names, sizeof(names));
+
+   std::vector<uint16_t> free_ram = nes_unnamed_ram(rom);
+   TEST(!free_ram.empty() && free_ram[0] == 0x07F7, "RAM no instruction names, from the end");
+
+   NesTap tap;
+   bool ok = nes_tap_design(rom, 0x8100, nsf_code_at(nsf, 0x8100, sizeof(routine), err), 0x07F7, tap, err);
+   TEST(ok, "designs a tap");
+   if (!ok)
+   {
+      printf("    %s\n", err.c_str());
+      return;
+   }
+   TEST(tap.stub == 0xC004, "the stub goes in blank ROM of the fixed bank");
+   const uint8_t stub[] = { 0x08, 0x48, 0x18, 0x69, 0x01, 0x8D, 0xF7, 0x07, 0x68, 0x28,   // store request + 1
+                            0xC9, 0xF0, 0xB0, 0x03, 0x4C, 0x07, 0x81,                     // CMP, the branch moved
+                            0x4C, 0x04, 0x81 };                                           // back into the routine
+   bool same = tap.patches.size() == 3 + sizeof(stub);
+   for (size_t i = 0; same && i < sizeof(stub); i++)
+      same = tap.patches[3 + i].address == 0xC004 + i && tap.patches[3 + i].compare == 0xFF && tap.patches[3 + i].value == stub[i];
+   TEST(same, "the stub stores the request and runs the moved instructions");
+   TEST(tap.fceumm_cheat().compare(0, 33, "8100?C9:4C+8101?F0:04+8102?90:C0+") == 0, "the routine jumps to the stub");
+   TEST(nes_rom_holds(rom, 0x8100, std::vector<uint8_t>(routine, routine + sizeof(routine))), "finds the rip's code in the ROM");
+   std::vector<uint8_t> other(routine, routine + sizeof(routine));
+   other[5] = 0x30;
+   TEST(!nes_rom_holds(rom, 0x8100, other), "code the ROM lacks is not found");
+}
+
 int main(int argc, char **argv)
 {
    std::string work = argc > 1 ? argv[1] : ".";
@@ -302,6 +365,7 @@ int main(int argc, char **argv)
    test_import(work);
    test_nsf_sets(work);
    test_nsf_init();
+   test_nes_tap();
    printf(g_failures ? "\nFAILED (%d failures)\n" : "\nPASSED (0 failures)\n", g_failures);
    return g_failures ? 1 : 0;
 }

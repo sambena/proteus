@@ -73,6 +73,9 @@ struct SongSilence
    uint8_t value = 0;
 };
 
+// Cheat codes by core ("fceumm" -> "809D?D0:F0"), in each core's format.
+using CoreCodes = std::map<std::string, std::string>;
+
 struct GameInfo
 {
    uint32_t crc32 = 0;
@@ -80,6 +83,11 @@ struct GameInfo
    SongAddress song;
    SongStart start;
    SongSilence silence;
+   // A tap makes the game report the sounds it requests at the song address (a latch whose
+   // unlisted values, sound effects, leave the music alone); a patch stops its music code
+   // while a replacement plays, keeping its sound effects.
+   CoreCodes tap;
+   CoreCodes patch;
    std::string note;            // how the entry was confirmed
 };
 
