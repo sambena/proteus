@@ -280,6 +280,65 @@ static bool parse_pattern(const char *s, uint8_t *pattern, uint8_t *mask,
    return true;
 }
 
+/* Hex digits with an optional 0x: the value and its size in bytes (1, 2 or 4). */
+static bool parse_hex_sized(const char *s, uint32_t *value, unsigned *size)
+{
+   size_t digits;
+   char *end;
+   if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+      s += 2;
+   digits = strlen(s);
+   if (digits != 2 && digits != 4 && digits != 8)
+      return false;
+   *value = (uint32_t)strtoul(s, &end, 16);
+   *size  = (unsigned)digits / 2;
+   return *end == '\0';
+}
+
+/* "0x128B8C = 00000000", "0x128B8C = 00000000, 3F800000" or "0x128B60 |= 04" (the key keeps the '|'). */
+static bool parse_hold(px_profile *p, char *key, char *val, char *err, size_t errlen)
+{
+   px_hold *h;
+   char *comma, *bar = key + strlen(key);
+   uint64_t n;
+
+   if (p->hold_count >= PX_MAX_HOLD)
+   {
+      snprintf(err, errlen, "too many [hold] writes (max %d)", PX_MAX_HOLD);
+      return false;
+   }
+   h = &p->hold[p->hold_count];
+   memset(h, 0, sizeof(*h));
+   if (bar > key && bar[-1] == '|')
+   {
+      h->or_bits = true;
+      bar[-1] = '\0';
+      key = trim(key);
+   }
+   if (!parse_uint(key, &n) || n > 0xFFFFFFFFu)
+   {
+      snprintf(err, errlen, "[hold] address '%s' is not a number", key);
+      return false;
+   }
+   h->address = (uint32_t)n;
+   if ((comma = strchr(val, ',')))
+   {
+      unsigned size;
+      *comma = '\0';
+      if (h->or_bits || !parse_hex_sized(trim(comma + 1), &h->release, &size))
+         goto bad;
+      h->has_release = true;
+   }
+   if (!parse_hex_sized(trim(val), &h->value, &h->size)
+         || (h->has_release && strlen(trim(comma + 1)) != strlen(trim(val))))
+      goto bad;
+   p->hold_count++;
+   return true;
+bad:
+   snprintf(err, errlen, "bad [hold] value for %s (hex bytes, like 00000000 or 00000000, 3F800000; |= takes no release value)", key);
+   return false;
+}
+
 /* A core's code, or one more line of it: long codes (a tap is dozens of cheats) span lines. */
 static bool add_patch(px_patch *patches, unsigned *count, const char *core, const char *code,
       char *err, size_t errlen)
@@ -365,6 +424,36 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
          if (!parse_bool(val, &p->latch))
             goto bad_value;
       }
+      else if (!strcmp(key, "byte_order"))
+      {
+         if (!strcmp(val, "n64"))
+            p->n64 = true;
+         else if (!strcmp(val, "little"))
+            p->n64 = false;
+         else
+            goto bad_value;
+      }
+      else if (!strcmp(key, "active"))
+      {
+         /* "0x128B60 & 0x80" */
+         char buf[64], *amp;
+         snprintf(buf, sizeof(buf), "%s", val);
+         if (!(amp = strchr(buf, '&')))
+            goto bad_value;
+         *amp = '\0';
+         if (!parse_uint(trim(buf), &n) || n > 0xFFFFFFFFu)
+            goto bad_value;
+         p->active_address = (uint32_t)n;
+         if (!parse_uint(trim(amp + 1), &n) || !n || n > 0xFF)
+            goto bad_value;
+         p->active_mask = (uint8_t)n;
+         p->active = true;
+      }
+      else if (!strcmp(key, "stopped"))
+      {
+         if (!parse_action(val, &p->stopped))
+            goto bad_value;
+      }
       else if (!strcmp(key, "bytes"))
       {
          if (!parse_pattern(val, p->pattern, p->pattern_mask, &p->pattern_length, &p->pattern_offset))
@@ -412,6 +501,8 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
       else
          goto bad_key;
    }
+   else if (!strcmp(section, "hold"))
+      return parse_hold(p, key, val, err, errlen);
    else if (!strcmp(section, "mix"))
    {
       if (!strcmp(key, "music_volume"))
@@ -494,6 +585,7 @@ bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen)
    p->mask         = 0xFFFFFFFFu;
    p->debounce     = 1;
    p->unmapped     = PX_ACTION_ORIGINAL;
+   p->stopped      = PX_ACTION_ORIGINAL;
    p->music_volume = 1.0f;
    p->game_volume  = 1.0f;
    p->crossfade_ms = 400;

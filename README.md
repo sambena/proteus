@@ -356,6 +356,9 @@ debounce = 2            ; frames a new value must hold before it counts
 latch    = 1            ; optional: address is a command register (ignores 0, keeps playing last song)
 events   = 0x00FC       ; optional: a second command register for jingles, read as song 0x100 + command
 unmapped = original     ; what unlisted values do: original | silence | keep
+byte_order = n64        ; optional: N64 addresses in RDRAM kept as host-order 32-bit words (Mupen64Plus)
+active   = 0x80128B60 & 0x80 ; optional: while these bits are clear no song plays (a sequence player's flag)
+stopped  = original     ; what a clear `active` flag does: original | silence | keep
 
 [mute]
 ; Core options forced while replacement music (or silence) is active.
@@ -368,6 +371,14 @@ snes9x_sndchan_volume_2 = 0
 memory   = system_ram
 address  = 0x00FB       ; Super Mario Bros.
 value    = 0x80
+
+[hold]
+; Optional: RAM written before every frame while replacement music (or silence) is active, silencing
+; the game's music player; sound effects play on. Values are hex bytes (big endian with
+; byte_order = n64). After a comma, what is written back when the mute lifts (by default, what was
+; there); |= sets bits, and sets them once more after the mute (a "recalculate volume" flag).
+0x80128B8C = 00000000, 3F800000   ; Ocarina of Time: the BGM player's volume scale
+0x80128B60 |= 04
 
 [patch]
 ; Optional: cheat codes, per core, that stop the game's music code while replacement music (or
@@ -430,7 +441,23 @@ the candidate in `[song] address`, turn on **Song change notifications**, and wa
 the on-screen values while walking between areas.
 
 For SNES, `system_ram` is the 128 KB work RAM, so address `$7E0ABC` becomes
-`0x0ABC`. For NES it is the 2 KB of RAM at `$0000`-`$07FF`.
+`0x0ABC`. For NES it is the 2 KB of RAM at `$0000`-`$07FF`. For N64 (Mupen64Plus-Next) it is the
+8 MB of RDRAM; with `byte_order = n64`, write addresses as the game sees them (`0x80222618`).
+
+### N64 games (Nintendo EAD sound engine)
+
+Super Mario 64 and Ocarina of Time play music with sequence players: structures in RAM with the
+sequence (song) number, a playing flag and volumes, one player for background music and others for
+fanfares and sound effects. The profile follows the BGM player's sequence number and holds its
+volume at zero while replacing, so the sound effects on the other players are untouched.
+
+| Game | Player | Song | Playing flag | Silence it |
+| --- | --- | --- | --- | --- |
+| Super Mario 64 (USA) | `0x80222618` (size 0x140) | `+0x05` | `+0x00 & 0x80` | fade volume `+0x18 = 00000000, 3F800000` |
+| Ocarina of Time (USA 1.0) | `0x80128B60` (size 0x160) | `+0x04` | `+0x00 & 0x80` | volume scale `+0x2C = 00000000, 3F800000` and `+0x00 \|= 04` (recalculate) |
+
+Sequence numbers are the decompilations' (`seq_ids.h` in n64decomp/sm64, `sequence_table.h` in
+zeldaret/oot): Ocarina of Time's title is `0x1E`, file select `0x57`, Hyrule Field `0x02`.
 
 ### Muting the original music
 

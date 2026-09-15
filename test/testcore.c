@@ -26,6 +26,13 @@
 #define JINGLE_ADDR  0x62
 #define TAP_ADDR     0x63
 #define RESTART_FRAME 120
+/* For hold.tst, an N64-style sequence player in RAM kept as little-endian 32-bit words, like
+ * Mupen64Plus's RDRAM (N64 address a is at (a & ~3) + 3 - (a & 3)): at N64 0x80 flags (0x80 playing,
+ * 0x04 recalculate the volume), 0x81 its song, 0x84 its volume scale (f32). Like Ocarina of Time,
+ * the music uses the volume last applied, and the scale applies only while 0x04 is set. */
+#define PLAYER_ADDR   0x80
+#define STOPPED_FROM  160
+#define STOPPED_UNTIL 180
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -40,7 +47,12 @@ static struct
    double sample_debt;
    uint8_t ram[RAM_SIZE];
    bool stopped;
+   float applied_volume;
 } s;
+
+static bool n64_player;
+
+static uint8_t *n64_byte(uint32_t address) { return &s.ram[(address & ~3u) + 3 - (address & 3)]; }
 
 static bool music_on = true;
 /* The cheat code "music=off" patches the music out, the way a code patch stops a game's music code. */
@@ -97,7 +109,13 @@ RETRO_API void retro_set_audio_sample(retro_audio_sample_t cb) { (void)cb; }
 RETRO_API void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_cb = cb; }
 RETRO_API void retro_set_input_poll(retro_input_poll_t cb) { poll_cb = cb; }
 RETRO_API void retro_set_input_state(retro_input_state_t cb) { (void)cb; }
-RETRO_API void retro_init(void) { memset(&s, 0, sizeof(s)); }
+RETRO_API void retro_init(void)
+{
+   uint32_t one = 0x3F800000u;
+   memset(&s, 0, sizeof(s));
+   s.applied_volume = 1.0f;
+   memcpy(&s.ram[PLAYER_ADDR + 4], &one, 4); /* the host-order word holding 1.0f */
+}
 RETRO_API void retro_deinit(void) {}
 RETRO_API unsigned retro_api_version(void) { return RETRO_API_VERSION; }
 
@@ -176,6 +194,26 @@ RETRO_API void retro_run(void)
       s.ram[BLOCK_ADDR + 3] = 0x00;
    }
 
+   if (n64_player)
+   {
+      bool playing = !(s.frame >= STOPPED_FROM && s.frame < STOPPED_UNTIL);
+      uint8_t flags = *n64_byte(PLAYER_ADDR);
+      *n64_byte(PLAYER_ADDR + 1) = curr;
+      if (flags & 0x04)
+      {
+         uint32_t word;
+         float scale;
+         memcpy(&word, &s.ram[PLAYER_ADDR + 4], 4);
+         memcpy(&scale, &word, 4);
+         s.applied_volume = scale;
+      }
+      *n64_byte(PLAYER_ADDR) = (uint8_t)(playing ? 0x80 : 0x00);
+      if (!playing)
+         s.stopped = true;
+      else if (s.frame == STOPPED_UNTIL)
+         s.stopped = false;
+   }
+
    s.sample_debt += RATE / FPS;
    frames = (size_t)s.sample_debt;
    s.sample_debt -= (double)frames;
@@ -184,7 +222,7 @@ RETRO_API void retro_run(void)
    {
       double v = 4000.0 * sin(s.sfx_phase);
       if (music_on && !s.stopped && !music_patched)
-         v += 8000.0 * sin(s.music_phase);
+         v += 8000.0 * s.applied_volume * sin(s.music_phase);
       buf[i * 2] = buf[i * 2 + 1] = (int16_t)lrint(v);
       s.music_phase = fmod(s.music_phase + 2.0 * M_PI * 440.0 / RATE, 2.0 * M_PI);
       s.sfx_phase   = fmod(s.sfx_phase + 2.0 * M_PI * 1000.0 / RATE, 2.0 * M_PI);
@@ -232,7 +270,7 @@ RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code)
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
 {
    enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_RGB565;
-   (void)game;
+   n64_player = game && game->path && strstr(game->path, "hold.tst");
    check_variables();
    return env_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt);
 }

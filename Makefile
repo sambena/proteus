@@ -126,16 +126,16 @@ $(TESTDIR)/harness$(EXE): test/harness.c | $(TESTDIR)
 $(TESTDIR)/proteus_testcore_libretro.$(EXT): $(CORE) | $(TESTDIR)
 	cp $< $@
 
-$(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini test/stop.proteus.ini test/requests.proteus.ini test/patch.proteus.ini test/tap.proteus.ini
+$(TESTDIR)/assets.stamp: $(TESTDIR)/harness$(EXE) test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini test/stop.proteus.ini test/requests.proteus.ini test/patch.proteus.ini test/tap.proteus.ini test/hold.proteus.ini
 	$(TESTDIR)/harness$(EXE) gen $(TESTDIR)
 	sox $(TESTDIR)/tone_330.wav $(TESTDIR)/tone_330.ogg
 	sox $(TESTDIR)/tone_550.wav $(TESTDIR)/tone_550.mp3
 	rm $(TESTDIR)/tone_330.wav $(TESTDIR)/tone_550.wav
 	gzip -9 -n -f $(TESTDIR)/tone_500.vgm
 	mv $(TESTDIR)/tone_500.vgm.gz $(TESTDIR)/tone_500.vgz
-	cp test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini test/stop.proteus.ini test/requests.proteus.ini test/patch.proteus.ini test/tap.proteus.ini $(TESTDIR)/
+	cp test/game.proteus.ini test/latch.proteus.ini test/pattern.proteus.ini test/stop.proteus.ini test/requests.proteus.ini test/patch.proteus.ini test/tap.proteus.ini test/hold.proteus.ini $(TESTDIR)/
 	touch $(TESTDIR)/game.tst $(TESTDIR)/other.tst $(TESTDIR)/latch.tst $(TESTDIR)/pattern.tst $(TESTDIR)/stop.tst \
-	      $(TESTDIR)/requests.tst $(TESTDIR)/patch.tst $(TESTDIR)/tap.tst $@
+	      $(TESTDIR)/requests.tst $(TESTDIR)/patch.tst $(TESTDIR)/tap.tst $(TESTDIR)/hold.tst $@
 
 $(TESTDIR)/test_ra$(EXE): test/test_ra.cpp studio/md5.cpp studio/ra_client.cpp studio/http.cpp | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -o $@ $^ -lwininet

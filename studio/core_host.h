@@ -36,14 +36,18 @@ public:
    CoreHost();
    ~CoreHost();
 
-   // Loads `core_path` and the ROM at `rom_path` (zip archives are opened in memory).
+   // Loads `core_path` and the ROM at `rom_path` (zip archives are opened in memory). `overrides`
+   // are option values the core sees from the start (N64 cores pick their renderer on loading).
    bool load(const std::string &core_path, const std::string &rom_path,
-         const std::string &system_dir, const std::string &save_dir, std::string &error);
+         const std::string &system_dir, const std::string &save_dir, std::string &error,
+         const std::map<std::string, std::string> &overrides = {});
    void unload();
    bool loaded() const { return game_loaded_; }
 
    // Runs one frame with the given joypad button mask (bit n = RETRO_DEVICE_ID_JOYPAD_n).
    void run_frame(uint16_t buttons);
+   // The left analog stick for the next frames (N64 games), -32768..32767.
+   void set_analog(int16_t x, int16_t y) { analog_x_ = x; analog_y_ = y; }
    void reset();
 
    // Audio produced since the last call, interleaved stereo at sample_rate().
@@ -116,6 +120,7 @@ private:
 
    std::vector<int16_t> audio_;
    uint16_t buttons_ = 0;
+   int16_t analog_x_ = 0, analog_y_ = 0;
 
    std::vector<CoreOption> options_;
    std::map<std::string, std::string> overrides_;

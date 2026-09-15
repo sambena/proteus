@@ -219,7 +219,8 @@ static bool unzip_first(const std::vector<uint8_t> &zip, const std::string &vali
 // ---------------------------------------------------------------------------
 
 bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
-      const std::string &system_dir, const std::string &save_dir, std::string &error)
+      const std::string &system_dir, const std::string &save_dir, std::string &error,
+      const std::map<std::string, std::string> &overrides)
 {
    unload();
    system_dir_ = system_dir;
@@ -280,7 +281,7 @@ bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
 
    const TrampSet &t = kTramps[slot_];
    options_.clear();
-   overrides_.clear();
+   overrides_ = overrides;
    api_->set_environment(t.env);
    api_->set_video_refresh(t.video);
    api_->set_audio_sample(t.audio_sample);
@@ -340,6 +341,8 @@ bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
    if (!api_->load_game(&game))
    {
       error = "the core could not load " + rom_path;
+      for (auto &l : take_log())
+         error += "\n  | " + l;
       unload();
       return false;
    }
@@ -708,7 +711,8 @@ size_t CoreHost::audio_batch(const int16_t *data, size_t frames)
 
 int16_t CoreHost::input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
-   (void)index;
+   if (port == 0 && (device & RETRO_DEVICE_MASK) == RETRO_DEVICE_ANALOG && index == RETRO_DEVICE_INDEX_ANALOG_LEFT)
+      return id == RETRO_DEVICE_ID_ANALOG_X ? analog_x_ : id == RETRO_DEVICE_ID_ANALOG_Y ? analog_y_ : 0;
    if (port != 0 || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD)
       return 0;
    if (id == RETRO_DEVICE_ID_JOYPAD_MASK)

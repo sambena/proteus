@@ -204,12 +204,8 @@ int main(int argc, char **argv)
       CoreHost core;
       std::string err, save = app_data_dir() + "\\cli\\saves";
       make_dirs(save);
-      if (!core.load(argv[2], argv[3], argv[4], save, err))
-      {
-         fprintf(stderr, "load: %s\n", err.c_str());
-         return 1;
-      }
       // PROTEUS_OPTIONS=key=value,key=value: core options, as set in RetroArch's Quick Menu.
+      std::map<std::string, std::string> options;
       if (const char *o = getenv("PROTEUS_OPTIONS"))
       {
          std::string opts = o;
@@ -219,9 +215,14 @@ int main(int argc, char **argv)
             if (comma == std::string::npos)
                comma = opts.size();
             if (eq != std::string::npos && eq < comma)
-               core.set_option(opts.substr(p, eq - p), opts.substr(eq + 1, comma - eq - 1));
+               options[opts.substr(p, eq - p)] = opts.substr(eq + 1, comma - eq - 1);
             p = comma + 1;
          }
+      }
+      if (!core.load(argv[2], argv[3], argv[4], save, err, options))
+      {
+         fprintf(stderr, "load: %s\n", err.c_str());
+         return 1;
       }
       int frames = (int)(atof(argv[5]) * 60);
       // PROTEUS_WATCH=1DFB,0DDA: print work RAM bytes whenever they change.

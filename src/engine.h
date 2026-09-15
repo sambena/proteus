@@ -67,6 +67,9 @@ typedef struct
    /* A command register read zero since the song was applied: a command for that song again is
     * the game starting it again. */
    bool idle;
+   /* [hold] writes are applied; `hold_saved` has what each address held before them. */
+   bool holding;
+   uint32_t hold_saved[PX_MAX_HOLD];
 } px_engine;
 
 #define PX_ENGINE_STATE_SIZE 48u

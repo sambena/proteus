@@ -1019,6 +1019,25 @@ int main(int argc, char **argv)
    expect("tap: the tap stays with the patch lifted", 606, 720, 220, true);
    end_session();
 
+   /* 12. Holding RAM writes that silence an N64-style sequence player, and writing back after. */
+   printf("\nscenario: holding a sequence player's volume at zero (N64 byte order)\n");
+   snprintf(content, sizeof(content), "%s/hold.tst", argv[3]);
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 600);
+   expect("hold: song 1 original", 6, 60, 440, true);
+   expect("hold: song 2 wav replacement", 66, 156, 220, true);
+   expect("hold: song 2 player silenced", 66, 156, 440, false);
+   expect("hold: song 2 sound effects kept", 66, 156, 1000, true);
+   expect("hold: stopped player stops the replacement", 166, 180, 220, false);
+   expect("hold: song 3 ogg replacement", 186, 300, 330, true);
+   expect("hold: song 3 player silenced", 186, 300, 440, false);
+   expect("hold: song 4 silence", 306, 360, 440, false);
+   expect("hold: song 5 mp3 replacement", 366, 480, 550, true);
+   expect("hold: unmapped song gets the volume back", 486, 540, 440, true);
+   expect("hold: song 1 again plays the game's music", 546, 600, 440, true);
+   end_session();
+
    printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");
    return failures ? 1 : 0;
 }

@@ -91,6 +91,80 @@ static void reset_state(px_engine *e)
    e->silencing      = 0;
    e->have_silenced  = false;
    e->idle           = false;
+   /* The game (or its memory) is going away: nothing is written back. */
+   e->holding        = false;
+}
+
+/* Where `address` is in the core's memory: N64 addresses are masked to physical RDRAM, and each
+ * 32-bit word is in the host's (little endian) byte order. */
+static size_t byte_index(const px_profile *p, uint32_t address)
+{
+   if (!p->n64)
+      return address;
+   address &= 0x1FFFFFFFu;
+   return (address & ~3u) + (3 - (address & 3));
+}
+
+/* Whether `n` bytes at `address` are inside the core's `size` bytes. */
+static bool in_range(const px_profile *p, size_t size, uint32_t address, unsigned n)
+{
+   if (p->n64)
+      return ((uint64_t)(address & 0x1FFFFFFFu) + n + 3) / 4 * 4 <= size;
+   return (uint64_t)address + n <= size;
+}
+
+/* `n` (1 to 4) bytes at `address` (little endian, or big endian for N64), false when outside `size`. */
+static bool read_value(const px_profile *p, const uint8_t *data, size_t size, uint32_t address, unsigned n, uint32_t *out)
+{
+   uint32_t v = 0;
+   if (!in_range(p, size, address, n))
+      return false;
+   for (unsigned i = 0; i < n; i++)
+   {
+      uint8_t b = data[byte_index(p, address + i)];
+      v = p->n64 ? v << 8 | b : v | (uint32_t)b << (8 * i);
+   }
+   *out = v;
+   return true;
+}
+
+static void write_value(const px_profile *p, uint8_t *data, uint32_t address, unsigned n, uint32_t v)
+{
+   for (unsigned i = 0; i < n; i++)
+      data[byte_index(p, address + i)] = (uint8_t)(p->n64 ? v >> (8 * (n - 1 - i)) : v >> (8 * i));
+}
+
+/* Applies the profile's [hold] writes while the original music is muted, and writes back what was
+ * there once the mute lifts. Called before each frame the core runs. */
+static void apply_holds(px_engine *e)
+{
+   const px_profile *p = &e->profile;
+   size_t size = 0;
+   uint8_t *data;
+
+   if (!p->hold_count || !e->host.memory || (!e->muted && !e->holding))
+      return;
+   if (!(data = (uint8_t*)e->host.memory(e->host.userdata, p->memory_id, &size)))
+      return;
+   for (unsigned i = 0; i < p->hold_count; i++)
+   {
+      const px_hold *h = &p->hold[i];
+      uint32_t v;
+      if (!read_value(p, data, size, h->address, h->size, &v))
+         continue;
+      if (e->muted)
+      {
+         if (!e->holding)
+            e->hold_saved[i] = v;
+         write_value(p, data, h->address, h->size, h->or_bits ? v | h->value : h->value);
+      }
+      /* |= sets flags (a "recalculate the volume" request): set once more so the restored volume applies. */
+      else if (h->or_bits)
+         write_value(p, data, h->address, h->size, v | h->value);
+      else
+         write_value(p, data, h->address, h->size, h->has_release ? h->release : e->hold_saved[i]);
+   }
+   e->holding = e->muted;
 }
 
 /* Frames in which the game reacts to the silence request (its music code runs once a frame). */
@@ -107,9 +181,9 @@ static void stop_game_music(px_engine *e)
       return;
    /* retro_get_memory_data gives the core's own, writable memory. */
    data = (uint8_t*)e->host.memory(e->host.userdata, p->silence_memory, &size);
-   if (!data || p->silence_address >= size)
+   if (!data || byte_index(p, p->silence_address) >= size)
       return;
-   data[p->silence_address] = p->silence_value;
+   data[byte_index(p, p->silence_address)] = p->silence_value;
    e->silencing     = PX_SILENCE_FRAMES;
    e->have_silenced = false;
 }
@@ -320,6 +394,11 @@ static void resolve_song(px_engine *e, uint32_t value, px_choice *c)
    memset(c, 0, sizeof(*c));
    c->loop   = true;
    c->volume = 1.0f;
+   if (value == PX_SONG_STOPPED && p->active)
+   {
+      c->action = p->stopped;
+      return;
+   }
    if (index < 0)
    {
       c->action = p->unmapped;
@@ -410,7 +489,12 @@ static void apply_song(px_engine *e, uint32_t value, bool announce)
    e->idle         = false;
 
    /* Song changes are always logged; notifications only shows them on screen. */
-   if (announce)
+   if (announce && value == PX_SONG_STOPPED && e->profile.active)
+   {
+      static const char *names[] = { "", "silence", "original music", "keep playing" };
+      elog(e, RETRO_LOG_INFO, "song stopped -> %s", names[c.action]);
+   }
+   else if (announce)
    {
       static const char *names[] = { "", "silence", "original music", "keep playing" };
       const char *what = c.action == PX_ACTION_FILE ? c.path : names[c.action];
@@ -463,14 +547,20 @@ void px_engine_options_changed(px_engine *e)
       apply_song(e, e->applied, false);
 }
 
+static void follow_song(px_engine *e);
+
 static bool read_song_value(px_engine *e, uint32_t *out)
 {
    const px_profile *p = &e->profile;
    size_t size = 0;
    const uint8_t *data = e->host.memory ? e->host.memory(e->host.userdata, p->memory_id, &size) : NULL;
-   uint32_t v = 0;
+   uint32_t v = 0, flags;
 
-   if (!data || (uint64_t)p->address + p->size > size)
+   /* N64 cores hand out their RAM once the game is running. */
+   if (!data)
+      return false;
+   if (!in_range(p, size, p->address, p->pattern_length ? p->pattern_length : p->size)
+         || (!p->pattern_length && !read_value(p, data, size, p->address, p->size, &v)))
    {
       if (!e->warned_memory)
       {
@@ -481,9 +571,15 @@ static bool read_song_value(px_engine *e, uint32_t *out)
       return false;
    }
 
-   if (p->events && p->events_address < size && data[p->events_address])
+   if (p->active && read_value(p, data, size, p->active_address, 1, &flags) && !(flags & p->active_mask))
    {
-      *out = 0x100u | data[p->events_address];
+      *out = PX_SONG_STOPPED;
+      return true;
+   }
+
+   if (p->events && byte_index(p, p->events_address) < size && data[byte_index(p, p->events_address)])
+   {
+      *out = 0x100u | data[byte_index(p, p->events_address)];
       return true;
    }
 
@@ -491,25 +587,32 @@ static bool read_song_value(px_engine *e, uint32_t *out)
    {
       for (unsigned i = 0; i < p->pattern_length; i++)
       {
-         if ((data[p->address + i] & p->pattern_mask[i]) != (p->pattern[i] & p->pattern_mask[i]))
+         if ((data[byte_index(p, p->address + i)] & p->pattern_mask[i]) != (p->pattern[i] & p->pattern_mask[i]))
             return false;
       }
-      *out = (uint32_t)data[p->address + p->pattern_offset];
+      *out = (uint32_t)data[byte_index(p, p->address + p->pattern_offset)];
       return true;
    }
 
-   for (unsigned i = 0; i < p->size; i++)
-      v |= (uint32_t)data[p->address + i] << (8 * i);
    *out = v & p->mask;
    return true;
 }
 
 void px_engine_frame(px_engine *e)
 {
+   if (!e->profile.loaded)
+      return;
+   if (e->cfg.enabled)
+      follow_song(e);
+   /* After following the song, so a mute holds from this frame; with replacement turned off this
+    * writes back what the holds replaced. */
+   apply_holds(e);
+}
+
+static void follow_song(px_engine *e)
+{
    uint32_t v;
 
-   if (!e->profile.loaded || !e->cfg.enabled)
-      return;
    /* Frames pass whether or not the song address reads anything. */
    bool silencing = e->silencing > 0;
    if (silencing)

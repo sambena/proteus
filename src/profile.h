@@ -17,6 +17,10 @@ extern "C" {
 #define PX_MAX_LIBRARY 8
 #define PX_MAX_PATTERN 16
 #define PX_MAX_PATCH  8
+#define PX_MAX_HOLD   16
+
+/* The song value while the [song] active flag is clear: the game plays no music. */
+#define PX_SONG_STOPPED 0xFFFFFFFFu
 
 typedef enum
 {
@@ -51,6 +55,19 @@ typedef struct
    char code[PX_PATCH_CODE_MAX];
 } px_patch;
 
+/* A RAM write held every frame while the original music is muted: "0x128B8C = 00000000" (as many
+ * bytes as hex digits) or "0x128B60 |= 04", with ", <value>" written back when the mute lifts
+ * (otherwise what was there before). */
+typedef struct
+{
+   uint32_t address;
+   unsigned size;
+   uint32_t value;
+   bool or_bits;
+   bool has_release;
+   uint32_t release;
+} px_hold;
+
 typedef struct
 {
    bool loaded;
@@ -59,8 +76,17 @@ typedef struct
    /* [song] */
    unsigned memory_id;  /* RETRO_MEMORY_* */
    uint32_t address;
-   unsigned size;       /* 1, 2 or 4 bytes, little endian */
+   unsigned size;       /* 1, 2 or 4 bytes, little endian (big endian with byte_order = n64) */
    uint32_t mask;
+   /* byte_order = n64: addresses are N64 ones (0x80000000 or physical) in RDRAM that the core keeps
+    * as 32-bit words in the host's byte order, as Mupen64Plus does */
+   bool n64;
+   /* active = <address> & <mask>: while those bits are clear the song value is PX_SONG_STOPPED,
+    * which gets the `stopped` action (a sequence player that is not playing) */
+   bool active;
+   uint32_t active_address;
+   uint8_t active_mask;
+   px_action stopped;
    unsigned debounce;   /* frames a value must be stable before it counts */
    bool latch;          /* the address is a one-shot command: ignore zero, keep the last song */
    px_action unmapped;
@@ -95,6 +121,10 @@ typedef struct
    unsigned silence_memory;   /* RETRO_MEMORY_* */
    uint32_t silence_address;
    uint8_t silence_value;
+
+   /* [hold] RAM writes that silence the game's music player while a replacement (or silence) plays */
+   px_hold hold[PX_MAX_HOLD];
+   unsigned hold_count;
 
    /* [mix] */
    float music_volume;
