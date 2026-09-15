@@ -91,6 +91,10 @@ public:
       return read_raw(a);
    }
 
+   // Subroutine calls made so far: target -> A at each call, in order.
+   std::vector<std::pair<uint16_t, uint8_t>> calls;
+   bool record_calls = false;
+
    // Code patches, like a cheat code's: the byte read at a CPU address.
    void patch(uint16_t address, uint8_t value) { patches_[address] = value; }
    // Addresses of the branches and subroutine calls executed so far.
@@ -258,7 +262,15 @@ private:
       switch (op)
       {
          case 0x00: return false;                                   // BRK: not in music code
-         case 0x20: { uint16_t t = fetch16(); push16((uint16_t)(pc - 1)); pc = t; return true; }
+         case 0x20:
+         {
+            uint16_t t = fetch16();
+            if (record_calls && t >= 0x8000)
+               calls.push_back({ t, a });
+            push16((uint16_t)(pc - 1));
+            pc = t;
+            return true;
+         }
          case 0x40: p = pull(); pc = pull16(); return true;
          case 0x60: pc = (uint16_t)(pull16() + 1); return true;
          case 0x08: push(p | 0x30); return true;
@@ -482,6 +494,100 @@ std::vector<NsfPatch> nsf_music_patches(const std::vector<uint8_t> &data, int so
    std::stable_sort(out.begin(), out.end(), [](const NsfPatch &x, const NsfPatch &y) {
       return __builtin_popcount(x.silenced) > __builtin_popcount(y.silenced);
    });
+   return out;
+}
+
+std::vector<uint8_t> nsf_code_at(const std::vector<uint8_t> &data, uint16_t address, size_t length, std::string &error)
+{
+   std::vector<uint8_t> out;
+   Nsf nsf;
+   if (!parse(data, nsf, error))
+      return out;
+   Machine m(nsf);
+   m.call(nsf.init, 0, 0);
+   for (size_t i = 0; i < length; i++)
+      out.push_back(m.read_raw((uint16_t)(address + i)));
+   return out;
+}
+
+std::vector<NsfCall> nsf_init_calls(const std::vector<uint8_t> &data, std::string &error)
+{
+   std::vector<NsfCall> out;
+   Nsf nsf;
+   if (!parse(data, nsf, error))
+      return out;
+   std::map<uint16_t, NsfCall> by_routine;
+   for (int song = 0; song < nsf.songs; song++)
+   {
+      Machine m(nsf);
+      m.record_calls = true;
+      m.call(nsf.init, (uint8_t)song, 0);
+      // The last call to each routine carries the song (earlier ones may reset the driver).
+      for (const auto &c : m.calls)
+      {
+         NsfCall &r = by_routine[c.first];
+         r.routine = c.first;
+         r.song_values[song] = c.second;
+      }
+   }
+   for (auto &e : by_routine)
+   {
+      std::set<uint8_t> values;
+      for (const auto &v : e.second.song_values)
+         values.insert(v.second);
+      e.second.distinct = (int)values.size();
+      if (e.second.distinct >= 2)
+         out.push_back(e.second);
+   }
+   std::stable_sort(out.begin(), out.end(), [](const NsfCall &x, const NsfCall &y) { return x.distinct > y.distinct; });
+   return out;
+}
+
+std::vector<NsfVariable> nsf_song_variables(const std::vector<uint8_t> &data, const std::vector<int> &songs, std::string &error)
+{
+   std::vector<NsfVariable> out;
+   Nsf nsf;
+   if (!parse(data, nsf, error))
+      return out;
+   std::map<uint16_t, NsfVariable> by_address;
+   std::set<uint16_t> unsteady;
+   for (int song : songs)
+   {
+      Machine m(nsf);
+      m.call(nsf.init, (uint8_t)song, 0);
+      uint8_t samples[3][0x800];
+      for (int f = 1, k = 0; f <= 180; f++)
+      {
+         m.call(nsf.play, 0, 0);
+         if (f % 60 == 0)
+            memcpy(samples[k++], m.ram(), 0x800);
+      }
+      for (uint16_t at = 0; at < 0x800; at++)
+      {
+         if (at >= 0x100 && at < 0x200)
+            continue;
+         if (samples[0][at] != samples[1][at] || samples[1][at] != samples[2][at])
+         {
+            unsteady.insert(at);
+            continue;
+         }
+         NsfVariable &v = by_address[at];
+         v.address = at;
+         v.song_values[song] = samples[2][at];
+      }
+   }
+   for (auto &e : by_address)
+   {
+      if (unsteady.count(e.first) || e.second.song_values.size() != songs.size())
+         continue;
+      std::set<uint8_t> values;
+      for (const auto &v : e.second.song_values)
+         values.insert(v.second);
+      e.second.distinct = (int)values.size();
+      if (e.second.distinct >= 2)
+         out.push_back(e.second);
+   }
+   std::stable_sort(out.begin(), out.end(), [](const NsfVariable &x, const NsfVariable &y) { return x.distinct > y.distinct; });
    return out;
 }
 

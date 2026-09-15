@@ -789,6 +789,59 @@ int main(int argc, char **argv)
       }
       return 0;
    }
+   if (cmd == "nsfdump" && argc >= 4)
+   {
+      // proteus-cli nsfdump <file.nsf> <hex address> [count]: code bytes as the .nsf maps them.
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      uint16_t at = (uint16_t)strtoul(argv[3], nullptr, 16);
+      size_t n = argc > 4 ? (size_t)atoi(argv[4]) : 32;
+      std::vector<uint8_t> bytes = nsf_code_at(data, at, n, err);
+      for (size_t i = 0; i < bytes.size(); i++)
+         printf("%s%02X", i % 16 ? " " : (i ? "\n" : ""), bytes[i]);
+      printf("\n");
+      return 0;
+   }
+   if (cmd == "nsfcalls" && argc >= 3)
+   {
+      // proteus-cli nsfcalls <file.nsf>: routines the .nsf's init calls with a song-dependent A.
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      for (const auto &c : nsf_init_calls(data, err))
+      {
+         printf("  JSR $%04X  %d values:", c.routine, c.distinct);
+         int shown = 0;
+         for (const auto &v : c.song_values)
+            if (shown++ < 24)
+               printf(" %d=%02X", v.first + 1, v.second);
+         printf("\n");
+      }
+      return 0;
+   }
+   if (cmd == "nsfvars" && argc >= 4)
+   {
+      // proteus-cli nsfvars <file.nsf> <song from 1>...: RAM the music code holds steady per song.
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      std::vector<int> songs;
+      for (int a = 3; a < argc; a++)
+         songs.push_back(atoi(argv[a]) - 1);
+      std::vector<NsfVariable> vars = nsf_song_variables(data, songs, err);
+      for (size_t i = 0; i < vars.size() && i < 16; i++)
+      {
+         printf("  $%04X  %d values:", vars[i].address, vars[i].distinct);
+         for (const auto &v : vars[i].song_values)
+            printf(" %d=%02X", v.first + 1, v.second);
+         printf("\n");
+      }
+      return 0;
+   }
    if (cmd == "nsfcode" && argc >= 4)
    {
       // proteus-cli nsfcode <file.nsf> <rom>: where the .nsf's code (32-byte runs) appears in the ROM.

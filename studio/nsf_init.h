@@ -54,6 +54,32 @@ struct NsfPatch
 // Code patches to the music code (skipping a subroutine call, or changing a branch) that make
 // song `song` stop using channels it uses. Patches silencing the most channels come first.
 std::vector<NsfPatch> nsf_music_patches(const std::vector<uint8_t> &nsf, int song, int &used, std::string &error);
+struct NsfVariable
+{
+   uint16_t address = 0;
+   std::map<int, uint8_t> song_values;   // song (from 0) -> the value held while it plays
+   int distinct = 0;                     // different values among those songs
+};
+
+// RAM the music code keeps steady while each of `songs` plays (read after 1, 2 and 3 seconds),
+// with a value that tells the songs apart: where the game may keep its song playing. Bytes
+// telling the most songs apart come first.
+std::vector<NsfVariable> nsf_song_variables(const std::vector<uint8_t> &nsf, const std::vector<int> &songs, std::string &error);
+
+struct NsfCall
+{
+   uint16_t routine = 0;                 // CPU address the .nsf's init calls
+   std::map<int, uint8_t> song_values;   // song (from 0) -> A when it calls
+   int distinct = 0;
+};
+
+// The subroutines init calls with A depending on the song: the game's own "play this sound"
+// routine, and what each song passes it. Routines telling the most songs apart come first.
+std::vector<NsfCall> nsf_init_calls(const std::vector<uint8_t> &nsf, std::string &error);
+
+// The bytes at a CPU address once init has set up song 0's banks.
+std::vector<uint8_t> nsf_code_at(const std::vector<uint8_t> &nsf, uint16_t address, size_t length, std::string &error);
+
 // Channel activity (see nsf_channel_activity) with code patches applied.
 bool nsf_channel_activity_patched(const std::vector<uint8_t> &nsf, int song, int frames,
       const std::vector<std::pair<uint16_t, uint8_t>> &patches, int activity[NSF_CHANNELS], std::string &error);
