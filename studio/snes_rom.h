@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // An SNES ROM image: its header, checksum, and where CPU addresses land in it.
 #pragma once
 

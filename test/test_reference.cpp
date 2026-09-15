@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Reference songs: matching rips, finding a song table in a ROM, names and imports.
 #include <cstdio>
 #include <cstdlib>

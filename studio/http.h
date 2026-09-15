@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Small blocking HTTPS client for Proteus Studio's worker threads (WinINet on Windows).
 #pragma once
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Reference song sets: a game's soundtrack from an archive such as SNESmusic.org or Zophar's
 // Domain. SNES sets are .spc files: each holds the sound CPU's RAM while its song plays, so it
 // names rips (the song data a rip loaded matches one reference) and shows where the songs sit

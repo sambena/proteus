@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Scans every ROM in a folder, one after another, in the background: downloads each game's
 // reference songs, runs the song scan (and, when asked, plays a TAS movie for games the scan
 // cannot number), and rates how well the game's songs could be told apart. Results go to each

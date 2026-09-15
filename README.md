@@ -516,9 +516,9 @@ lose some effects; mute fewer channels for those games.
 
 ## License
 
-Proteus Retune is licensed under the GNU Lesser General Public License v2.1 or later
-(`LGPL-2.1-or-later`); see [LICENSE](LICENSE). Bundled libraries in `deps/` keep their
-own licenses:
+Proteus Retune is licensed under the GNU General Public License v3 or later
+(`GPL-3.0-or-later`); see [LICENSE](LICENSE). Releases up to 0.2.0 were LGPL-2.1-or-later.
+Bundled libraries in `deps/` keep their own licenses:
 
 | Library | License |
 | --- | --- |
@@ -527,7 +527,6 @@ own licenses:
 | `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
-| `studio/md5.cpp` | follows RFC 1321; derived from the RSA Data Security, Inc. MD5 Message-Digest Algorithm |
 
 Proteus Retune includes no games, ROMs, soundtracks or movies. Studio downloads, only when asked,
 SPC sets from Zophar's Domain and SNESmusic.org, input movies from TASVideos, and BizHawk (MIT) from

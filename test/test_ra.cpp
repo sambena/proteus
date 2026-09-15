@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Unit tests for ROM MD5 calculation and RetroAchievements code notes parsing.
 #include <cassert>
 #include <cstdio>
@@ -32,6 +32,24 @@ static void test_md5()
         "MD5(\"message digest\")");
    TEST(md5_hex((const uint8_t*)"abcdefghijklmnopqrstuvwxyz", 26) == "c3fcd3d76192e4007dfb496cca67e13b",
         "MD5(alphabet)");
+   TEST(md5_hex((const uint8_t*)"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", 62) ==
+        "d174ab98d277d9f5a5611c2c9f419d9f", "MD5(62 characters: padding spills into a second block)");
+   {
+      const char *eighty = "12345678901234567890123456789012345678901234567890123456789012345678901234567890";
+      TEST(md5_hex((const uint8_t*)eighty, 80) == "57edf4a22be3c955ac49da2e2107b67a", "MD5(80 digits: more than one block)");
+      // Fed in uneven pieces, the same digest.
+      Md5Context ctx;
+      uint8_t d[16];
+      char hex[33];
+      md5_init(&ctx);
+      md5_update(&ctx, (const uint8_t*)eighty, 3);
+      md5_update(&ctx, (const uint8_t*)eighty + 3, 64);
+      md5_update(&ctx, (const uint8_t*)eighty + 67, 13);
+      md5_final(&ctx, d);
+      for (int i = 0; i < 16; i++)
+         snprintf(hex + i * 2, 3, "%02x", d[i]);
+      TEST(std::string(hex) == "57edf4a22be3c955ac49da2e2107b67a", "MD5(80 digits in pieces)");
+   }
 }
 
 static void test_ra_json_parser()

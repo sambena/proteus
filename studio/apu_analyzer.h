@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Static 65816 analysis of SNES ROMs to find APU I/O port communication ($2140-$2143),
 // song RAM addresses, command latching, and playback routine entry points.
 #pragma once

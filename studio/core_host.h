@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // A minimal libretro frontend: runs a software-rendered core for Proteus Studio.
 // Up to four hosts can be open at once; each may run on its own thread. Hosts after
 // the first load a private copy of the core DLL, written to the save directory.

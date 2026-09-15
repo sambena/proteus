@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // RetroAchievements code notes client: queries the public RA API by ROM MD5 hash
 // to discover documented BGM and music RAM addresses.
 #pragma once

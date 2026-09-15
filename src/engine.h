@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* The music swapping logic shared by the wrapper core and the DSP plugin:
  * song detection, choosing what to play, and mixing. */
 #ifndef PROTEUS_ENGINE_H

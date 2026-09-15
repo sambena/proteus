@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Turns a snes9x save state into an .spc file: the SNES sound CPU's RAM, registers
 // and DSP at that moment. Played back by libgme, it continues the song that was
 // playing, with its own loops, independent of the game.

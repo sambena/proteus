@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Audio output for Proteus Studio: plays one song file at a time (any format Proteus
 // plays) mixed with live game audio.
 #pragma once

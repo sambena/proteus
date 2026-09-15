@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Learns a game's song address from moments of a long playthrough (a TAS movie): at each
 // moment the sound CPU's RAM names the song against the reference songs, and the game RAM
 // byte that holds one value per song, and a different one for each, is the song address.

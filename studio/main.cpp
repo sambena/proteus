@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Proteus Studio: open the game to change and a game to take music from, find the
 // songs in both, listen to any of them, and generate the Proteus profile.
 #include <algorithm>

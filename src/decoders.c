@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Audio sources: WAV, MP3 and Ogg Vorbis through dr_wav, dr_mp3 and stb_vorbis;
  * SPC, NSF, VGM, GBS and other chip music emulated by libgme. */
 #include <stdlib.h>

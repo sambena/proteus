@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Proteus as a RetroArch audio DSP plugin: works with any core, unchanged.
  *
  * RetroArch hands DSP plugins nothing but audio, so the plugin finds the rest

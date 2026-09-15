@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // What Proteus Studio knows about each game, keyed by ROM checksum: where it keeps its
 // song number and how its songs are started. Stored in %APPDATA%\ProteusStudio\games.ini,
 // written whenever a scan confirms something, and editable by hand.

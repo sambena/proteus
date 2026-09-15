@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Finds the RAM byte that holds a game's current song.
 //
 // While the game runs, every byte's recent changes are tracked. The player marks

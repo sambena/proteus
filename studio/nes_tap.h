@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // A tap on an NES game's sound routine: cheat codes that make the game write each sound it
 // requests to a byte of RAM, for games whose music code keeps no song number there.
 //

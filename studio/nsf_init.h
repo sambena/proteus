@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // What an .nsf's init routine does to the NES's RAM when it starts a song. NSF rips contain the
 // game's own music code, and many start a song the way the game does: by writing a request to
 // the RAM its music code polls (The Legend of Zelda: $0600 = 80 for the title song). Running

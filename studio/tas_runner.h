@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // TAS movies as a way to hear every song of a game: finds and downloads a game's movies from
 // TASVideos, installs BizHawk (the emulator they were made with, so they stay in sync), and
 // plays a movie in BizHawk with a Lua script that saves the sound CPU and game RAM every

@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Builds everything and packs build/ProteusRetune-<version>-win64.zip for a GitHub release.
 # Run from an MSYS2 UCRT64 shell at the repository root: tools/package-release.sh 0.1.0
 set -e
@@ -49,11 +49,10 @@ then pick replacements under Quick Menu > Core Options > Proteus.
 
 No games, ROMs or music are included. Use games you own.
 
-Proteus Retune is LGPL-2.1-or-later; the source is at the address above. Bundled
+Proteus Retune is GPL-3.0-or-later; the source is at the address above. Bundled
 libraries keep their own licenses (see licenses\\): libgme (LGPL-2.1), Dear ImGui (MIT),
 SDL2 (zlib), zlib (zlib), dr_wav / dr_mp3 (public domain or MIT-0), stb_vorbis
-(public domain or MIT), emu2413 (MIT). MD5 is derived from the RSA Data Security, Inc.
-MD5 Message-Digest Algorithm.
+(public domain or MIT), emu2413 (MIT).
 EOF
 
 (cd build && rm -f "$name.zip" && powershell -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'")

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
-// Standard MD5 message-digest algorithm (RFC 1321).
+// SPDX-License-Identifier: GPL-3.0-or-later
+// The MD5 message digest (RFC 1321), for ROM and file checksums.
 #pragma once
 
 #include <cstddef>
@@ -8,9 +8,10 @@
 
 struct Md5Context
 {
-   uint32_t state[4];
-   uint32_t count[2];
-   uint8_t buffer[64];
+   uint32_t h[4];
+   uint64_t length;     // bytes hashed so far
+   uint8_t block[64];
+   size_t used;         // bytes waiting in `block`
 };
 
 void md5_init(Md5Context *ctx);

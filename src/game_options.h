@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* RetroArch's per-game core options files (Quick Menu > Core Options > Save Game Options).
  * The DSP plugin cannot change a core's options while it runs, so the profile's [mute]
  * options are saved there instead and apply from the next time the game is loaded. */

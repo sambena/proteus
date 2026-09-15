@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // proteus-cli: Proteus Studio's song work without the window, for scripts and testing.
 //
 //   proteus-cli table <rom> <spc folder>

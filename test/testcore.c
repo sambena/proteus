@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* A fake game core for testing Proteus.
  *
  * Audio: a 440 Hz "music" tone that the core option testcore_music can mute,

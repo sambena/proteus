@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // N64 games with Nintendo EAD's sound engine (Super Mario 64, Ocarina of Time): finds the sequence
 // players in RDRAM while the game runs, and writes a profile that follows the background music
 // player's song and holds its volume at zero while replacing.

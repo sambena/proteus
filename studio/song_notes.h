@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // How a song's notes run: the strength of each of the 12 pitch classes over its first
 // seconds. Songs that share instruments and loudness still differ in their melodies, so
 // this tells apart songs whose sound CPU memory does not (drivers that load a whole group

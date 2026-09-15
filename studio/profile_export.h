@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Writes the Proteus profile for the game being changed: its song address, the
 // songs mapped to replacements, and the music files copied next to the profile.
 #pragma once

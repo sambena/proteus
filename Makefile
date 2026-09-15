@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build from an MSYS2 UCRT64 shell (or any gcc toolchain on Linux/macOS).
 #   make          build build/proteus_libretro.<ext>
 #   make test     build the test core + harness and run the scenarios

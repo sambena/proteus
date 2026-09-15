@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // One ROM open in Proteus Studio: its emulator, how it keeps and starts songs, and the
 // songs found in it. Songs are ripped to .spc files that play without the game.
 #pragma once
