@@ -59,7 +59,8 @@ typedef struct
 
 void px_engine_init(px_engine *e, const px_host *host);
 /* Looks for "<content dir>/<name>.proteus.ini", then "<system dir>/proteus/<name>.ini".
- * Handles "archive.zip#game.sfc" content paths. */
+ * For "archive.zip#game.sfc" the name is the game's, then the archive's; for a bare .zip
+ * (RetroArch's history), the archive's, then each game's inside it. */
 bool px_engine_find_profile(const char *content_path, const char *system_dir, char *out, size_t n);
 /* Resets all state and loads a profile; logs and returns false on errors. */
 bool px_engine_load(px_engine *e, const char *profile_path);

@@ -512,7 +512,7 @@ static int dsp_scenario(const char *plugin, const char *core_path, const char *d
    };
    const struct dspfilter_implementation *(*get_impl)(dspfilter_simd_mask_t);
    struct dspfilter_info info = { (float)RATE };
-   char content[512], wrapper[512];
+   char content[512], wrapper[512], zip[512];
    void *lib = LOAD(plugin);
    FILE *f;
 
@@ -526,16 +526,34 @@ static int dsp_scenario(const char *plugin, const char *core_path, const char *d
    check("plugin API version 1 (RetroArch 1.22)", dsp_impl->api_version == 1, "");
    check("plugin short ident", !strcmp(dsp_impl->short_ident, "proteus"), dsp_impl->short_ident);
 
-   /* RetroArch records the running game in its history when content starts. */
+   /* RetroArch records the running game in its history when content starts. A zipped game is
+    * recorded as the archive alone ("games.zip"), so the plugin finds game.proteus.ini through
+    * the name of the game inside it. */
    snprintf(content, sizeof(content), "%s/game.tst", dir);
+   snprintf(zip, sizeof(zip), "%s/games.zip", dir);
    snprintf(dsp_system, sizeof(dsp_system), "%s", dir);
    snprintf(dsp_history, sizeof(dsp_history), "%s/history.lpl", dir);
    snprintf(dsp_log, sizeof(dsp_log), "%s/proteus.log", dir);
+   if ((f = fopen(zip, "wb")))
+   {
+      /* One empty stored file, "game.tst": local header, central directory, end record. */
+      static const unsigned char local[30] = { 'P', 'K', 3, 4, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0 };
+      static const unsigned char central[46] = { 'P', 'K', 1, 2, 10, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+      static const unsigned char end[22] = { 'P', 'K', 5, 6, 0, 0, 0, 0, 1, 0, 1, 0, 54, 0, 0, 0, 38, 0, 0, 0, 0, 0 };
+      fwrite(local, 1, 30, f);
+      fwrite("game.tst", 1, 8, f);
+      fwrite(central, 1, 46, f);
+      fwrite("game.tst", 1, 8, f);
+      fwrite(end, 1, 22, f);
+      fclose(f);
+   }
    if ((f = fopen(dsp_history, "wb")))
    {
       fprintf(f, "{\n  \"version\": \"1.5\",\n  \"default_core_path\": \"\",\n  \"items\": [\n"
             "    {\n      \"path\": \"%s\",\n      \"label\": \"game\",\n      \"core_path\": \"%s\"\n    }\n  ]\n}\n",
-            content, core_path);
+            zip, core_path);
       fclose(f);
    }
 

@@ -234,7 +234,8 @@ std::string sanitize_filename(const std::string &name)
       else if (c == ' ' || c == '(' || c == ')' || c == '[' || c == ']' || c == '/')
          r.push_back('_');
    }
-   while (!r.empty() && r.back() == '_')
+   // Windows drops a trailing dot from file and folder names ("Super Mario Bros." from its ROM name).
+   while (!r.empty() && (r.back() == '_' || r.back() == '.'))
       r.pop_back();
    return r.empty() ? "track" : r;
 }

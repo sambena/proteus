@@ -72,12 +72,92 @@ void px_engine_init(px_engine *e, const px_host *host)
    e->cfg.enabled = true;
 }
 
+/* A profile named `stem`, next to the content in `dir` or in the system folder. */
+static bool profile_named(const char *dir, const char *stem, const char *system_dir, char *out, size_t n)
+{
+   snprintf(out, n, "%s/%s.proteus.ini", dir, stem);
+   if (px_file_exists(out))
+      return true;
+   if (system_dir && *system_dir)
+   {
+      snprintf(out, n, "%s/proteus/%s.ini", system_dir, stem);
+      if (px_file_exists(out))
+         return true;
+   }
+   return false;
+}
+
+static uint32_t le32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static uint16_t le16(const unsigned char *p) { return (uint16_t)(p[0] | p[1] << 8); }
+
+/* Looks for a profile named after each file inside a zip archive (from its central directory). */
+static bool profile_in_zip(const char *zip_path, const char *dir, const char *system_dir, char *out, size_t n)
+{
+   FILE *f = px_fopen(zip_path, "rb");
+   unsigned char *buf = NULL;
+   long size, tail_start;
+   size_t tail;
+   bool found = false;
+
+   if (!f)
+      return false;
+   fseek(f, 0, SEEK_END);
+   size = ftell(f);
+   /* The end record is in the last 22 bytes plus a comment of up to 65535. */
+   tail_start = size > 65557 ? size - 65557 : 0;
+   tail = (size_t)(size - tail_start);
+   if (size < 22 || !(buf = (unsigned char*)malloc(tail)))
+      goto done;
+   fseek(f, tail_start, SEEK_SET);
+   if (fread(buf, 1, tail, f) != tail)
+      goto done;
+   for (size_t at = tail - 22 + 1; at-- > 0;)
+   {
+      uint32_t cd_size, cd_offset;
+      unsigned count;
+      unsigned char *cd;
+      size_t pos = 0;
+
+      if (le32(buf + at) != 0x06054b50)
+         continue;
+      count = le16(buf + at + 10);
+      cd_size = le32(buf + at + 12);
+      cd_offset = le32(buf + at + 16);
+      if ((long)cd_offset + (long)cd_size > size || !(cd = (unsigned char*)malloc(cd_size ? cd_size : 1)))
+         break;
+      fseek(f, (long)cd_offset, SEEK_SET);
+      if (fread(cd, 1, cd_size, f) == cd_size)
+         for (unsigned i = 0; i < count && pos + 46 <= cd_size && !found; i++)
+         {
+            char name[512], stem[256];
+            unsigned name_len = le16(cd + pos + 28);
+            size_t next = pos + 46 + name_len + le16(cd + pos + 30) + le16(cd + pos + 32);
+            if (le32(cd + pos) != 0x02014b50 || pos + 46 + name_len > cd_size)
+               break;
+            if (name_len && name_len < sizeof(name) && cd[pos + 46 + name_len - 1] != '/')
+            {
+               memcpy(name, cd + pos + 46, name_len);
+               name[name_len] = '\0';
+               px_path_stem(name, stem, sizeof(stem));
+               found = profile_named(dir, stem, system_dir, out, n);
+            }
+            pos = next;
+         }
+      free(cd);
+      break;
+   }
+done:
+   free(buf);
+   fclose(f);
+   return found;
+}
+
 bool px_engine_find_profile(const char *content_path, const char *system_dir, char *out, size_t n)
 {
    char path[PX_PATH_MAX];
    char dir[PX_PATH_MAX];
    char stem[256];
-   const char *hash;
+   const char *hash, *ext;
 
    if (!content_path || !*content_path)
       return false;
@@ -86,24 +166,21 @@ bool px_engine_find_profile(const char *content_path, const char *system_dir, ch
    hash = strchr(path, '#');
    if (hash)
    {
+      /* "archive.zip#game.nes": named after the game, or failing that the archive. */
       px_path_stem(hash + 1, stem, sizeof(stem));
       path[hash - path] = '\0';
-   }
-   else
-      px_path_stem(path, stem, sizeof(stem));
-   px_path_dir(path, dir, sizeof(dir));
-
-   snprintf(out, n, "%s/%s.proteus.ini", dir, stem);
-   if (px_file_exists(out))
-      return true;
-
-   if (system_dir && *system_dir)
-   {
-      snprintf(out, n, "%s/proteus/%s.ini", system_dir, stem);
-      if (px_file_exists(out))
+      px_path_dir(path, dir, sizeof(dir));
+      if (profile_named(dir, stem, system_dir, out, n))
          return true;
    }
-   return false;
+   px_path_dir(path, dir, sizeof(dir));
+   px_path_stem(path, stem, sizeof(stem));
+   if (profile_named(dir, stem, system_dir, out, n))
+      return true;
+
+   /* RetroArch's history names only the archive (the DSP plugin's view): try the games inside. */
+   ext = strrchr(path, '.');
+   return !hash && ext && !strcasecmp(ext, ".zip") && profile_in_zip(path, dir, system_dir, out, n);
 }
 
 bool px_engine_load(px_engine *e, const char *profile_path)
