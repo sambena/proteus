@@ -47,7 +47,8 @@ ProteusStudio.exe finds a game's songs and writes its profile. Choose your Retro
 folder under Settings the first time. proteus-cli.exe does the same work from the
 command line. README.md has the full guide.
 
-Super Mario 64 and Ocarina of Time: write their profiles, every song listed by name, with
+Super Mario 64 and Ocarina of Time: open them in Studio (choose Mupen64Plus-Next as the N64 core
+in Settings), or write their profiles, every song listed by name, with
     .\\proteus-cli.exe n64 D:\\RetroArch\\cores\\mupen64plus_next_libretro.dll "D:\\Roms\\Nintendo 64" D:\\RetroArch\\system\\proteus
 then pick replacements under Quick Menu > Core Options > Proteus.
 
