@@ -26,6 +26,7 @@
 #include "reference.h"
 #include "folder_scan.h"
 #include "movie_learner.h"
+#include "music.h"
 #include "n64_scan.h"
 #include "nes_tap.h"
 #include "profile_export.h"
@@ -971,6 +972,42 @@ int main(int argc, char **argv)
       int n = download_reference_songs({ argv[2] }, argv[3], [](const std::string &m) { printf("  %s\n", m.c_str()); }, err, sources);
       printf("%d songs%s\n", n, err.empty() ? "" : (": " + err).c_str());
       return n > 0 ? 0 : 1;
+   }
+   if (cmd == "render" && argc >= 5)
+   {
+      // proteus-cli render <music file> <seconds> <out.wav> [track] [--once]: plays a file the way the
+      // engine does (at 44.1 kHz), timing it.
+      unsigned track = argc > 5 && argv[5][0] != '-' ? (unsigned)atoi(argv[5]) : 1;
+      bool loop = !(argc > 5 && !strcmp(argv[argc - 1], "--once"));
+      char err[512] = "";
+      auto t0 = std::chrono::steady_clock::now();
+      px_source *src = px_source_open(argv[2], track ? track - 1 : 0, loop, 44100, err, sizeof(err));
+      if (!src)
+      {
+         fprintf(stderr, "%s\n", err);
+         return 1;
+      }
+      double opened = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      size_t want = (size_t)(atof(argv[3]) * px_source_rate(src)), got = 0;
+      std::vector<int16_t> all(want * 2);
+      while (got < want)
+      {
+         size_t n = px_source_read(src, all.data() + got * 2, std::min<size_t>(4096, want - got));
+         if (!n)
+            break;
+         got += n;
+      }
+      double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      uint32_t rate = px_source_rate(src), bytes = (uint32_t)(got * 4);
+      px_source_close(src);
+      std::string h = "RIFF    WAVEfmt                     data    ";
+      auto put = [&](size_t at, uint32_t v, int n) { for (int i = 0; i < n; i++) h[at + i] = (char)(v >> (8 * i)); };
+      put(4, 36 + bytes, 4); put(16, 16, 4); put(20, 1, 2); put(22, 2, 2); put(24, rate, 4);
+      put(28, rate * 4, 4); put(32, 4, 2); put(34, 16, 2); put(40, bytes, 4);
+      write_text(argv[4], h + std::string((const char*)all.data(), bytes));
+      printf("%.1f s at %u Hz in %.2f s (opening %.2f s)%s\n", (double)got / rate, rate, secs, opened,
+            got < want ? ", ended early" : "");
+      return 0;
    }
    if (cmd == "n64" && argc >= 4)
    {

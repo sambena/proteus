@@ -18,6 +18,10 @@ cp tools/install-core.ps1 README.md "$out/"
 cp LICENSE "$out/licenses/Proteus-LICENSE.txt"
 cp deps/gme/LICENSE "$out/licenses/libgme-LICENSE.txt"
 cp deps/imgui/LICENSE.txt "$out/licenses/DearImGui-LICENSE.txt"
+cp deps/lazyusf2/COPYING "$out/licenses/lazyusf2-COPYING.txt"
+cp deps/lazyusf2/LICENSE-n64_cic_nus_6105.txt "$out/licenses/lazyusf2-n64_cic_nus_6105-LICENSE.txt"
+cp deps/lazyusf2/PROTEUS.md "$out/licenses/lazyusf2-NOTICE.md"
+cp deps/psflib/LICENSE "$out/licenses/psflib-LICENSE.txt"
 prefix="${MINGW_PREFIX:-/ucrt64}"
 cp "$prefix/share/licenses/SDL2/LICENSE.txt" "$out/licenses/SDL2-LICENSE.txt"
 cp "$prefix/share/licenses/zlib/LICENSE" "$out/licenses/zlib-LICENSE.txt"
@@ -50,9 +54,10 @@ then pick replacements under Quick Menu > Core Options > Proteus.
 No games, ROMs or music are included. Use games you own.
 
 Proteus Retune is GPL-3.0-or-later; the source is at the address above. Bundled
-libraries keep their own licenses (see licenses\\): libgme (LGPL-2.1), Dear ImGui (MIT),
-SDL2 (zlib), zlib (zlib), dr_wav / dr_mp3 (public domain or MIT-0), stb_vorbis
-(public domain or MIT), emu2413 (MIT).
+libraries keep their own licenses (see licenses\\): libgme (LGPL-2.1), lazyusf2
+(GPL-2.0-or-later; its RSP interpreter CC0, its CIC-NUS-6105 code BSD-2-Clause), psflib (MIT),
+Dear ImGui (MIT), SDL2 (zlib), zlib (zlib), dr_wav / dr_mp3 (public domain or MIT-0),
+stb_vorbis (public domain or MIT), emu2413 (MIT).
 EOF
 
 (cd build && rm -f "$name.zip" && powershell -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'")

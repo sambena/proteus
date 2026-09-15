@@ -11,7 +11,8 @@ Proteus works alongside an existing core (Snes9x, Genesis Plus GX, Mesen, ...). 
    - a recording: WAV, MP3 or Ogg Vorbis, or
    - another game's music on its original sound chip, emulated by libgme: SNES `.spc`,
      NES `.nsf`/`.nsfe`, Genesis/Master System `.vgm`/`.vgz`/`.gym`, Game Boy `.gbs`,
-     PC Engine `.hes`, MSX `.kss`, ZX Spectrum `.ay` and Atari `.sap`.
+     PC Engine `.hes`, MSX `.kss`, ZX Spectrum `.ay` and Atari `.sap`, or Nintendo 64
+     `.usf`/`.miniusf` rips (with their `.usflib`), emulated by lazyusf2.
 
 Proteus comes in two forms that share profiles and music files:
 
@@ -493,6 +494,7 @@ lose some effects; mute fewer channels for those games.
 | `src/profile.c` | profile parser |
 | `src/music.c` | resampling mixer with crossfades and loops |
 | `src/decoders.c` | WAV / MP3 / Ogg decoders and libgme sources |
+| `src/usf_play.c` | N64 USF rips through lazyusf2 and psflib |
 | `studio/main.cpp` | Proteus Studio's window: the two song lists, replacements, Advanced tabs |
 | `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, finding how songs start, live ripping, song library |
 | `studio/game_db.cpp` | the game database (`games.ini`) |
@@ -524,6 +526,8 @@ Bundled libraries in `deps/` keep their own licenses:
 | --- | --- |
 | `deps/gme` — libgme 0.6.5 | LGPL-2.1-or-later (`deps/gme/LICENSE`); `ext/emu2413` is MIT |
 | `deps/imgui` — Dear ImGui 1.92.x | MIT (`deps/imgui/LICENSE.txt`) |
+| `deps/lazyusf2` — lazyusf2 (modified Mupen64Plus) | GPL-2.0-or-later (`deps/lazyusf2/COPYING`); its RSP interpreter is CC0, `si/n64_cic_nus_6105.c` BSD-2-Clause; see `deps/lazyusf2/PROTEUS.md` |
+| `deps/psflib` — psflib | MIT (`deps/psflib/LICENSE`) |
 | `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
