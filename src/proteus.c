@@ -325,8 +325,52 @@ static void host_mute(void *userdata, bool muted)
    st.options_dirty = true;
 }
 
+/* Cheats: the frontend's own, kept so the inner core's list can be rebuilt, and the profile's
+ * [patch], applied while the original music is muted. Cores turn a cheat off only by a reset. */
+#define PX_MAX_CHEATS 256
+#define PX_PATCH_INDEX 0x7FFF
+
+static struct
+{
+   struct { unsigned index; bool enabled; char *code; } list[PX_MAX_CHEATS];
+   unsigned count;
+   char patch[512];
+   bool patched;
+} cheats;
+
+static void rebuild_cheats(void)
+{
+   if (!inner.ok)
+      return;
+   inner.api.cheat_reset();
+   for (unsigned i = 0; i < cheats.count; i++)
+      if (cheats.list[i].enabled)
+         inner.api.cheat_set(cheats.list[i].index, true, cheats.list[i].code);
+   if (cheats.patched)
+      inner.api.cheat_set(PX_PATCH_INDEX, true, cheats.patch);
+}
+
+static void host_patch(void *userdata, const char *code)
+{
+   (void)userdata;
+   if (!code == !cheats.patched && (!code || !strcmp(code, cheats.patch)))
+      return;
+   cheats.patched = code != NULL;
+   snprintf(cheats.patch, sizeof(cheats.patch), "%s", code ? code : "");
+   rebuild_cheats();
+}
+
+static const char *host_core_file(void *userdata)
+{
+   const char *base = inner.path + strlen(inner.path);
+   (void)userdata;
+   while (base > inner.path && base[-1] != '/' && base[-1] != '\\')
+      base--;
+   return base;
+}
+
 static const px_host engine_host = {
-   NULL, host_memory, host_option, host_log, host_notify, host_mute
+   NULL, host_memory, host_option, host_log, host_notify, host_mute, host_patch, host_core_file
 };
 
 /* ---------------------------------------------------------------------------
@@ -660,14 +704,31 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
 
 RETRO_API void retro_cheat_reset(void)
 {
-   if (inner.ok)
-      inner.api.cheat_reset();
+   for (unsigned i = 0; i < cheats.count; i++)
+      free(cheats.list[i].code);
+   cheats.count = 0;
+   rebuild_cheats();
 }
 
 RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code)
 {
-   if (inner.ok)
-      inner.api.cheat_set(index, enabled, code);
+   unsigned i;
+   if (!inner.ok || !code)
+      return;
+   for (i = 0; i < cheats.count && cheats.list[i].index != index; i++)
+      ;
+   if (i == cheats.count)
+   {
+      if (cheats.count >= PX_MAX_CHEATS)
+         return;
+      cheats.count++;
+      cheats.list[i].code = NULL;
+   }
+   free(cheats.list[i].code);
+   cheats.list[i].index   = index;
+   cheats.list[i].enabled = enabled;
+   cheats.list[i].code    = strdup(code);
+   inner.api.cheat_set(index, enabled, code);
 }
 
 static void after_load(bool ok)

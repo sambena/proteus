@@ -558,10 +558,45 @@ static int dsp_scenario(const char *plugin, const char *core_path, const char *d
    }
 
    system_dir = dir;
-   if (!open_core(core_path) || !start_session(content, 2))
+
+   /* First a game whose profile stops its music with a code patch: the plugin sets the
+    * running core's cheat while it replaces, so nothing is muted for the whole game. */
+   {
+      char patched[512];
+      snprintf(patched, sizeof(patched), "%s/patch.tst", dir);
+      if ((f = fopen(dsp_history, "wb")))
+      {
+         fprintf(f, "{\n  \"version\": \"1.5\",\n  \"items\": [\n    {\n      \"path\": \"%s\",\n      \"core_path\": \"%s\"\n    }\n  ]\n}\n",
+               patched, core_path);
+         fclose(f);
+      }
+      if (!open_core(core_path) || !start_session(patched, 2))
+         return 1;
+      dsp_data = dsp_impl->init(&info, &config, NULL);
+      check("plugin init", dsp_data != NULL, "");
+      if (!dsp_data)
+         return 1;
+      run_frames(0, 600);
+      expect("patch: song 1 original", 6, 60, 440, true);
+      expect("patch: song 2 wav replacement", 66, 180, 220, true);
+      expect("patch: song 2 game music patched out", 70, 180, 440, false);
+      expect("patch: song 2 sound effects kept", 66, 180, 1000, true);
+      expect("patch: unmapped song lifts the patch", 490, 540, 440, true);
+      dsp_impl->free(dsp_data);
+      dsp_data = NULL;
+      end_session();
+   }
+   if ((f = fopen(dsp_history, "wb")))
+   {
+      fprintf(f, "{\n  \"version\": \"1.5\",\n  \"default_core_path\": \"\",\n  \"items\": [\n"
+            "    {\n      \"path\": \"%s\",\n      \"label\": \"game\",\n      \"core_path\": \"%s\"\n    }\n  ]\n}\n",
+            zip, core_path);
+      fclose(f);
+   }
+
+   if (!start_session(content, 2))
       return 1;
    dsp_data = dsp_impl->init(&info, &config, NULL);
-   check("plugin init", dsp_data != NULL, "");
    if (!dsp_data)
       return 1;
    /* The plugin can't mute; per-game core options do it. */
@@ -864,6 +899,21 @@ int main(int argc, char **argv)
    expect("requests: jingle stops the replacement", 256, 300, 330, false);
    expect("requests: sound effects kept", 256, 300, 1000, true);
    expect("requests: song 4 silence", 306, 360, 330, false);
+   end_session();
+
+   /* 10. Stopping the game's music with a code patch: the core's cheat, on while replacing. */
+   printf("\nscenario: stopping the game's music with a code patch\n");
+   snprintf(content, sizeof(content), "%s/patch.tst", argv[3]);
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 600);
+   expect("patch: song 1 original", 6, 60, 440, true);
+   expect("patch: song 2 wav replacement", 66, 180, 220, true);
+   expect("patch: song 2 game music patched out", 66, 180, 440, false);
+   expect("patch: song 2 sound effects kept", 66, 180, 1000, true);
+   expect("patch: song 4 silence", 306, 360, 440, false);
+   expect("patch: unmapped song lifts the patch", 486, 540, 440, true);
+   expect("patch: song 1 again plays the game's music", 546, 600, 440, true);
    end_session();
 
    printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");

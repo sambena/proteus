@@ -41,6 +41,8 @@ static struct
 } s;
 
 static bool music_on = true;
+/* The cheat code "music=off" patches the music out, the way a code patch stops a game's music code. */
+static bool music_patched;
 static uint16_t pixels[16 * 16];
 
 /* Song schedule; harness.c checks audio against the same frame ranges. */
@@ -169,7 +171,7 @@ RETRO_API void retro_run(void)
    for (size_t i = 0; i < frames; i++)
    {
       double v = 4000.0 * sin(s.sfx_phase);
-      if (music_on && !s.stopped)
+      if (music_on && !s.stopped && !music_patched)
          v += 8000.0 * sin(s.music_phase);
       buf[i * 2] = buf[i * 2 + 1] = (int16_t)lrint(v);
       s.music_phase = fmod(s.music_phase + 2.0 * M_PI * 440.0 / RATE, 2.0 * M_PI);
@@ -198,8 +200,13 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
    return true;
 }
 
-RETRO_API void retro_cheat_reset(void) {}
-RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code) { (void)index; (void)enabled; (void)code; }
+RETRO_API void retro_cheat_reset(void) { music_patched = false; }
+RETRO_API void retro_cheat_set(unsigned index, bool enabled, const char *code)
+{
+   (void)index;
+   if (enabled && code && !strcmp(code, "music=off"))
+      music_patched = true;
+}
 
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
 {

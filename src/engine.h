@@ -28,6 +28,10 @@ typedef struct
    void (*notify)(void *userdata, const char *msg);
    /* The original music should be muted (or unmuted). Optional. */
    void (*mute)(void *userdata, bool muted);
+   /* Applies a [patch] cheat code, or removes it (NULL). Optional. */
+   void (*patch)(void *userdata, const char *code);
+   /* The running core's file name ("fceumm_libretro.dll"), to pick its [patch]. Optional. */
+   const char *(*core_file)(void *userdata);
 } px_host;
 
 typedef struct

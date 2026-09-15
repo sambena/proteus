@@ -67,6 +67,10 @@ public:
    const uint8_t *memory(unsigned id, size_t *size) const;
    uint8_t *memory_mut(unsigned id, size_t *size);
 
+   // The core's cheat codes (retro_cheat_*); what codes mean is up to the core.
+   void cheat_reset();
+   void cheat_set(unsigned index, bool enabled, const std::string &code);
+
    std::vector<uint8_t> save_state();
    bool load_state(const std::vector<uint8_t> &state);
 

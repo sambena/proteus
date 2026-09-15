@@ -40,6 +40,8 @@ struct CoreHost::Api
    void (*unload_game)(void);
    void *(*get_memory_data)(unsigned);
    size_t (*get_memory_size)(unsigned);
+   void (*cheat_reset)(void);
+   void (*cheat_set)(unsigned, bool, const char*);
 };
 
 // libretro callbacks carry no context, so every host gets a slot with its own set
@@ -257,6 +259,8 @@ bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
    SYM(unload_game, "retro_unload_game");
    SYM(get_memory_data, "retro_get_memory_data");
    SYM(get_memory_size, "retro_get_memory_size");
+   SYM(cheat_reset, "retro_cheat_reset");
+   SYM(cheat_set, "retro_cheat_set");
 #undef SYM
    if (!ok)
    {
@@ -390,6 +394,18 @@ uint8_t *CoreHost::memory_mut(unsigned id, size_t *size)
 {
    *size = game_loaded_ ? api_->get_memory_size(id) : 0;
    return game_loaded_ ? (uint8_t*)api_->get_memory_data(id) : nullptr;
+}
+
+void CoreHost::cheat_reset()
+{
+   if (game_loaded_)
+      api_->cheat_reset();
+}
+
+void CoreHost::cheat_set(unsigned index, bool enabled, const std::string &code)
+{
+   if (game_loaded_)
+      api_->cheat_set(index, enabled, code.c_str());
 }
 
 std::vector<uint8_t> CoreHost::save_state()

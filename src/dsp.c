@@ -98,6 +98,38 @@ static const uint8_t *host_memory(void *userdata, unsigned id, size_t *size)
    return d->memory_data ? (const uint8_t*)d->memory_data(id) : NULL;
 }
 
+static const char *base_name(const char *path);
+
+/* A [patch] goes straight to the running core's cheat list. RetroArch runs DSP plugins with the
+ * audio a core hands over after emulating its frame, so the patch takes effect from the next
+ * frame. Cores can only turn a cheat off by resetting all of them: cheats set in RetroArch's own
+ * menu are lost until they are applied again. */
+#define DSP_PATCH_INDEX 0x7FFF
+static void host_patch(void *userdata, const char *code)
+{
+   proteus_dsp *d = (proteus_dsp*)userdata;
+#ifdef _WIN32
+   typedef void (*cheat_reset_t)(void);
+   typedef void (*cheat_set_t)(unsigned, bool, const char*);
+   cheat_reset_t reset = d->core ? (cheat_reset_t)(void*)GetProcAddress(d->core, "retro_cheat_reset") : NULL;
+   cheat_set_t set = d->core ? (cheat_set_t)(void*)GetProcAddress(d->core, "retro_cheat_set") : NULL;
+   if (!reset || !set)
+      return;
+   reset();
+   if (code)
+      set(DSP_PATCH_INDEX, true, code);
+#else
+   (void)d;
+   (void)code;
+#endif
+}
+
+static const char *host_core_file(void *userdata)
+{
+   proteus_dsp *d = (proteus_dsp*)userdata;
+   return base_name(d->core_path);
+}
+
 /* ---------------------------------------------------------------------------
  * Finding RetroArch's folders
  * ------------------------------------------------------------------------- */
@@ -447,9 +479,11 @@ static void *dsp_init(const struct dspfilter_info *info, const struct dspfilter_
    if (!d)
       return NULL;
    memset(&host, 0, sizeof(host));
-   host.userdata = d;
-   host.memory   = host_memory;
-   host.log      = host_log;
+   host.userdata  = d;
+   host.memory    = host_memory;
+   host.log       = host_log;
+   host.patch     = host_patch;
+   host.core_file = host_core_file;
 
    px_engine_init(&d->engine, &host);
    d->rate = info->input_rate;

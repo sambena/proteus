@@ -47,6 +47,13 @@ static void set_muted(px_engine *e, bool muted)
    e->muted = muted;
    if (e->host.mute)
       e->host.mute(e->host.userdata, muted);
+   /* A [patch] for this core stops the game's music code while the original is muted. */
+   if (e->host.patch && e->profile.loaded && e->host.core_file)
+   {
+      const char *code = px_profile_patch_for(&e->profile, e->host.core_file(e->host.userdata));
+      if (code)
+         e->host.patch(e->host.userdata, muted ? code : NULL);
+   }
 }
 
 static void reset_state(px_engine *e)

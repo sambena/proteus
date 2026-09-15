@@ -320,6 +320,18 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
       snprintf(o->key, sizeof(o->key), "%s", key);
       snprintf(o->value, sizeof(o->value), "%s", val);
    }
+   else if (!strcmp(section, "patch"))
+   {
+      px_option *o;
+      if (p->patch_count >= PX_MAX_PATCH)
+      {
+         snprintf(err, errlen, "too many patches (max %d)", PX_MAX_PATCH);
+         return false;
+      }
+      o = &p->patch[p->patch_count++];
+      snprintf(o->key, sizeof(o->key), "%s", key);
+      snprintf(o->value, sizeof(o->value), "%s", val);
+   }
    else if (!strcmp(section, "silence"))
    {
       if (!strcmp(key, "memory"))
@@ -514,4 +526,17 @@ int px_profile_find(const px_profile *p, uint32_t value)
       if (p->tracks[i].value == value)
          return (int)i;
    return -1;
+}
+
+const char *px_profile_patch_for(const px_profile *p, const char *core)
+{
+   if (!core)
+      return NULL;
+   for (unsigned i = 0; i < p->patch_count; i++)
+   {
+      size_t n = strlen(p->patch[i].key);
+      if (n && !strncasecmp(core, p->patch[i].key, n) && (core[n] == '\0' || core[n] == '_' || core[n] == '.'))
+         return p->patch[i].value;
+   }
+   return NULL;
 }

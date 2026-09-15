@@ -11,6 +11,8 @@
 //   proteus-cli folder <core> <rom folder> [--movies] [--rescan] [--nes-core <fceumm_libretro.dll>]
 //   proteus-cli dumps <spc folder> <dump folder>
 #include <algorithm>
+#include <array>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -217,20 +219,38 @@ int main(int argc, char **argv)
             p = *end ? end + 1 : end;
          }
       std::vector<int> last(watch.size(), -1);
-      // PROTEUS_POKE=600:FB=04,900:FB=08: write work RAM bytes at those frames (after the frame runs).
-      struct Poke { int frame; uint32_t address; uint8_t value; };
-      std::vector<Poke> pokes;
-      if (const char *p = getenv("PROTEUS_POKE"))
-         for (const char *s = p; *s;)
+      // PROTEUS_CHEAT=code;code: cheat codes set before the first frame, as RetroArch's cheat menu would.
+      if (const char *c = getenv("PROTEUS_CHEAT"))
+      {
+         std::string all = c;
+         unsigned index = 0;
+         for (size_t p = 0; p <= all.size();)
          {
-            char *end;
-            Poke k;
-            k.frame = (int)strtol(s, &end, 10);
-            k.address = (uint32_t)strtoul(end + 1, &end, 16);
-            k.value = (uint8_t)strtoul(end + 1, &end, 16);
-            pokes.push_back(k);
-            s = *end ? end + 1 : end;
+            size_t semi = all.find(';', p);
+            if (semi == std::string::npos)
+               semi = all.size();
+            if (semi > p)
+               core.cheat_set(index++, true, all.substr(p, semi - p));
+            p = semi + 1;
          }
+      }
+      // PROTEUS_POKE=600:FB=04,900:FB=08: write work RAM bytes at those frames (after the frame runs).
+      // PROTEUS_HOLD=600:CC=80: the same, written again after every frame from then on.
+      struct Poke { int frame; uint32_t address; uint8_t value; bool hold; };
+      std::vector<Poke> pokes;
+      for (const char *var : { "PROTEUS_POKE", "PROTEUS_HOLD" })
+         if (const char *p = getenv(var))
+            for (const char *s = p; *s;)
+            {
+               char *end;
+               Poke k;
+               k.frame = (int)strtol(s, &end, 10);
+               k.address = (uint32_t)strtoul(end + 1, &end, 16);
+               k.value = (uint8_t)strtoul(end + 1, &end, 16);
+               k.hold = !strcmp(var, "PROTEUS_HOLD");
+               pokes.push_back(k);
+               s = *end ? end + 1 : end;
+            }
       // PROTEUS_START=240,600: tap Start at those frames only, instead of every 3 seconds.
       std::vector<int> taps;
       if (const char *t = getenv("PROTEUS_START"))
@@ -272,6 +292,10 @@ int main(int argc, char **argv)
       {
          bool tap = !presses.empty() ? false : taps.empty() ? f > 240 && f % 180 < 6
                                  : std::any_of(taps.begin(), taps.end(), [&](int at) { return f >= at && f < at + 6; });
+         // PROTEUS_CHEAT_RESET=frame: remove every cheat at that frame, as RetroArch does to turn one off.
+         if (const char *r = getenv("PROTEUS_CHEAT_RESET"))
+            if (atoi(r) == f)
+               core.cheat_reset();
          uint16_t buttons = tap ? (1 << RETRO_DEVICE_ID_JOYPAD_START) : 0;
          for (const auto &p : presses)
             if (f >= p.at && f < p.at + p.frames)
@@ -280,7 +304,7 @@ int main(int argc, char **argv)
          size_t ram_size = 0;
          uint8_t *ram = core.memory_mut(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
          for (const auto &k : pokes)
-            if (k.frame == f && ram && k.address < ram_size)
+            if ((k.frame == f || (k.hold && f >= k.frame)) && ram && k.address < ram_size)
                ram[k.address] = k.value;
          for (size_t i = 0; i < watch.size() && ram; i++)
             if (watch[i] < ram_size && ram[watch[i]] != last[i])
@@ -608,6 +632,200 @@ int main(int argc, char **argv)
             printf(" %d=%02X", v.first + 1, v.second);
          printf("\n");
       }
+      return 0;
+   }
+   if (cmd == "nsfswitch" && argc >= 4)
+   {
+      // proteus-cli nsfswitch <file.nsf> <song from 1> [addr=val ...]: channel activity, and the RAM
+      // bytes that silence the song's channels when held.
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      int song = atoi(argv[3]) - 1;
+      std::vector<std::pair<uint16_t, uint8_t>> holds;
+      for (int i = 4; i < argc; i++)
+      {
+         char *end;
+         uint16_t at = (uint16_t)strtoul(argv[i], &end, 16);
+         holds.push_back({ at, (uint8_t)strtoul(end + 1, nullptr, 16) });
+      }
+      int act[NSF_CHANNELS];
+      nsf_channel_activity(data, song, 240, holds, act, err);
+      printf("activity (frames of 240): pulse1 %d  pulse2 %d  triangle %d  noise %d  samples %d%s\n", act[0], act[1], act[2], act[3], act[4],
+            holds.empty() ? "" : "  (with holds)");
+      if (!holds.empty())
+         return 0;
+      int used = 0;
+      std::vector<NsfSwitch> sw = nsf_music_switches(data, song, used, err);
+      if (!err.empty())
+         fprintf(stderr, "%s\n", err.c_str());
+      printf("channels used: %02X; %zu switches\n", used, sw.size());
+      for (size_t i = 0; i < sw.size() && i < 24; i++)
+         printf("  $%04X = %02X silences %02X\n", sw[i].address, sw[i].value, sw[i].silenced);
+      return 0;
+   }
+   if (cmd == "nsfpatch" && argc >= 4)
+   {
+      // proteus-cli nsfpatch <file.nsf> <song from 1> [more songs...]: code patches that silence the
+      // first song, with how each leaves the other songs (sound effects, say).
+      std::vector<uint8_t> data;
+      std::string err;
+      if (!read_file_bytes(argv[2], data))
+         return 1;
+      int used = 0;
+      std::vector<NsfPatch> patches = nsf_music_patches(data, atoi(argv[3]) - 1, used, err);
+      if (!err.empty())
+         fprintf(stderr, "%s\n", err.c_str());
+      printf("channels used: %02X; %zu patches\n", used, patches.size());
+      for (size_t i = 0; i < patches.size() && i < 20; i++)
+      {
+         const NsfPatch &p = patches[i];
+         printf("  %04X:", p.address);
+         for (uint8_t b : p.original) printf(" %02X", b);
+         printf(" ->");
+         for (uint8_t b : p.bytes) printf(" %02X", b);
+         printf("  silences %02X", p.silenced);
+         std::vector<std::pair<uint16_t, uint8_t>> pp;
+         for (size_t k = 0; k < p.bytes.size(); k++)
+            pp.push_back({ (uint16_t)(p.address + k), p.bytes[k] });
+         for (int a = 4; a < argc; a++)
+         {
+            int plain[NSF_CHANNELS], patched[NSF_CHANNELS];
+            nsf_channel_activity_patched(data, atoi(argv[a]) - 1, 240, {}, plain, err);
+            nsf_channel_activity_patched(data, atoi(argv[a]) - 1, 240, pp, patched, err);
+            printf("  | song %s:", argv[a]);
+            for (int c = 0; c < NSF_CHANNELS; c++)
+               printf(" %d>%d", plain[c], patched[c]);
+         }
+         printf("\n");
+      }
+      return 0;
+   }
+   if (cmd == "nsfsurvey" && argc >= 3)
+   {
+      // proteus-cli nsfsurvey <file.nsf>...: for each .nsf, the code patch that silences its music
+      // tracks while keeping its short tracks (sound effects) sounding.
+      for (int a = 2; a < argc; a++)
+      {
+         std::vector<uint8_t> data;
+         std::string err;
+         if (!read_file_bytes(argv[a], data) || data.size() < 0x80)
+            continue;
+         int songs = data[6];
+         // Music: three or more channels sounding through most of 4 seconds. Effects: short bursts.
+         std::vector<int> music, effects;
+         std::vector<std::array<int, NSF_CHANNELS>> act(songs);
+         for (int s = 0; s < songs && s < 128; s++)
+         {
+            nsf_channel_activity(data, s, 240, {}, act[s].data(), err);
+            int long_channels = 0, total = 0, busiest = 0;
+            for (int c = 0; c < 4; c++)
+            {
+               long_channels += act[s][c] >= 120;
+               total += act[s][c];
+               busiest = std::max(busiest, act[s][c]);
+            }
+            if (long_channels >= 3)
+               music.push_back(s);
+            else if (total > 0 && long_channels <= 1 && act[s][0] + act[s][1] + act[s][2] < 150)
+               effects.push_back(s);
+         }
+         std::string name = file_name(argv[a]).substr(0, 40);
+         if (music.empty())
+         {
+            printf("%-40s  no music tracks found (%d songs)\n", name.c_str(), songs);
+            continue;
+         }
+         int used = 0;
+         std::vector<NsfPatch> patches = nsf_music_patches(data, music[0], used, err);
+         // Rank: music tracks fully silenced, then effect channels kept.
+         const NsfPatch *best = nullptr;
+         int best_music = -1, best_kept = -1, best_total = 0;
+         for (const auto &p : patches)
+         {
+            if (p.silenced != used)
+               continue;
+            std::vector<std::pair<uint16_t, uint8_t>> pp;
+            for (size_t k = 0; k < p.bytes.size(); k++)
+               pp.push_back({ (uint16_t)(p.address + k), p.bytes[k] });
+            int silenced_music = 0, kept = 0, total = 0;
+            for (size_t i = 0; i < music.size() && i < 4; i++)
+            {
+               int x[NSF_CHANNELS];
+               nsf_channel_activity_patched(data, music[i], 240, pp, x, err);
+               silenced_music += x[0] + x[1] + x[2] + x[3] <= 48;
+            }
+            for (size_t i = 0; i < effects.size() && i < 8; i++)
+            {
+               int x[NSF_CHANNELS];
+               nsf_channel_activity_patched(data, effects[i], 240, pp, x, err);
+               for (int c = 0; c < 4; c++)
+               {
+                  kept += std::min(x[c], act[effects[i]][c]);
+                  total += act[effects[i]][c];
+               }
+            }
+            if (silenced_music > best_music || (silenced_music == best_music && kept > best_kept))
+            {
+               best = &p;
+               best_music = silenced_music;
+               best_kept = kept;
+               best_total = total;
+            }
+         }
+         printf("%-40s  music %zu effects %zu  ", name.c_str(), music.size(), effects.size());
+         if (!best)
+            printf("no patch silences it (%zu partial)\n", patches.size());
+         else
+         {
+            printf("%04X:", best->address);
+            for (size_t k = 0; k < best->bytes.size(); k++)
+               printf("%s%02X>%02X", k ? "," : "", best->original[k], best->bytes[k]);
+            printf("  silences %d/%zu music, keeps %d%% of effects\n", best_music, std::min<size_t>(music.size(), 4),
+                  best_total ? best_kept * 100 / best_total : -1);
+         }
+         fflush(stdout);
+      }
+      return 0;
+   }
+   if (cmd == "nsfcode" && argc >= 4)
+   {
+      // proteus-cli nsfcode <file.nsf> <rom>: where the .nsf's code (32-byte runs) appears in the ROM.
+      std::vector<uint8_t> nsf, rom;
+      if (!read_file_bytes(argv[2], nsf) || !read_file_bytes(argv[3], rom) || nsf.size() < 0x80 + 32)
+         return 1;
+      std::vector<uint8_t> data(nsf.begin() + 0x80, nsf.end());
+      size_t found = 0, runs = 0, first_nsf = 0, first_rom = 0;
+      std::map<long, size_t> deltas;   // rom offset - nsf offset -> runs
+      for (size_t o = 0; o + 32 <= data.size(); o += 32)
+      {
+         runs++;
+         bool flat = true;
+         for (int i = 1; i < 32; i++)
+            flat = flat && data[o + i] == data[o];
+         if (flat)
+            continue;
+         for (size_t r = 16; r + 32 <= rom.size(); r++)
+            if (!memcmp(&rom[r], &data[o], 32))
+            {
+               if (!found)
+               {
+                  first_nsf = o;
+                  first_rom = r;
+               }
+               found++;
+               deltas[(long)r - (long)o]++;
+               break;
+            }
+      }
+      printf("%zu of %zu 32-byte runs of the .nsf are in the ROM (first: nsf 0x%zX = rom 0x%zX)\n", found, runs, first_nsf, first_rom);
+      std::vector<std::pair<size_t, long>> top;
+      for (auto &d : deltas)
+         top.push_back({ d.second, d.first });
+      std::sort(top.rbegin(), top.rend());
+      for (size_t i = 0; i < top.size() && i < 5; i++)
+         printf("  %zu runs at rom = nsf + 0x%lX\n", top[i].first, top[i].second);
       return 0;
    }
    if (cmd == "notes" && argc >= 3)

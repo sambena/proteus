@@ -16,6 +16,7 @@ extern "C" {
 #define PX_MAX_MUTE   64
 #define PX_MAX_LIBRARY 8
 #define PX_MAX_PATTERN 16
+#define PX_MAX_PATCH  8
 
 typedef enum
 {
@@ -68,6 +69,12 @@ typedef struct
    px_option mute[PX_MAX_MUTE];
    unsigned mute_count;
 
+   /* [patch] code patches that stop the game's own music while a replacement (or silence)
+    * plays, keeping its sound effects: cheat codes, one per core, in that core's format
+    * ("fceumm = 809D?D0:F0") */
+   px_option patch[PX_MAX_PATCH];
+   unsigned patch_count;
+
    /* [silence] a request written to the game's RAM to stop its own music while a replacement
     * (or silence) plays; the sound channels stay on for sound effects */
    bool silence;
@@ -95,6 +102,8 @@ typedef struct
 bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen);
 /* Returns the index of the track mapped to `value`, or -1. */
 int px_profile_find(const px_profile *p, uint32_t value);
+/* The [patch] code for a core ("fceumm" matches fceumm_libretro), or NULL. */
+const char *px_profile_patch_for(const px_profile *p, const char *core);
 
 #ifdef __cplusplus
 }

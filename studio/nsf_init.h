@@ -22,3 +22,38 @@ struct NsfRequest
 // The RAM bytes init writes with a value that depends on the song: for each, the value of every
 // song that writes it. Bytes most songs write come first.
 std::vector<NsfRequest> nsf_song_requests(const std::vector<uint8_t> &nsf, std::string &error);
+
+enum { NSF_CHANNELS = 5 };   // pulse 1, pulse 2, triangle, noise, samples
+
+// How song `song` uses the sound channels: for each channel, the frames (of `frames`, after init)
+// it is left audible. `holds` are RAM bytes set to their values before every frame, as a profile
+// would hold them in the game.
+bool nsf_channel_activity(const std::vector<uint8_t> &nsf, int song, int frames,
+      const std::vector<std::pair<uint16_t, uint8_t>> &holds, int activity[NSF_CHANNELS], std::string &error);
+
+struct NsfSwitch
+{
+   uint16_t address = 0;
+   uint8_t value = 0;
+   int silenced = 0;   // channels (bit 0 pulse 1 .. bit 4 samples) the song stops using
+};
+
+// The RAM bytes that, held at a value, make song `song` stop using channels it uses: the music
+// code's own switches (a track's pointer, its "playing" flag). `used` receives the channels the
+// song uses. Switches silencing the most channels come first.
+std::vector<NsfSwitch> nsf_music_switches(const std::vector<uint8_t> &nsf, int song, int &used, std::string &error);
+
+struct NsfPatch
+{
+   uint16_t address = 0;           // CPU address of the patched instruction
+   std::vector<uint8_t> bytes;     // what it becomes
+   std::vector<uint8_t> original;  // what the song's banks hold there (a cheat's compare bytes)
+   int silenced = 0;
+};
+
+// Code patches to the music code (skipping a subroutine call, or changing a branch) that make
+// song `song` stop using channels it uses. Patches silencing the most channels come first.
+std::vector<NsfPatch> nsf_music_patches(const std::vector<uint8_t> &nsf, int song, int &used, std::string &error);
+// Channel activity (see nsf_channel_activity) with code patches applied.
+bool nsf_channel_activity_patched(const std::vector<uint8_t> &nsf, int song, int frames,
+      const std::vector<std::pair<uint16_t, uint8_t>> &patches, int activity[NSF_CHANNELS], std::string &error);

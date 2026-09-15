@@ -9,7 +9,7 @@ namespace {
 
 struct Nsf
 {
-   uint16_t load = 0, init = 0;
+   uint16_t load = 0, init = 0, play = 0;
    uint8_t banks[8] = { 0 };
    bool banked = false;
    int songs = 0;
@@ -24,6 +24,7 @@ bool parse(const std::vector<uint8_t> &d, Nsf &n, std::string &error)
       n.songs = d[6];
       n.load = word(8);
       n.init = word(10);
+      n.play = word(12);
       memcpy(n.banks, &d[0x70], 8);
       n.data.assign(d.begin() + 0x80, d.end());
    }
@@ -40,6 +41,7 @@ bool parse(const std::vector<uint8_t> &d, Nsf &n, std::string &error)
          {
             n.load = word(body);
             n.init = word(body + 2);
+            n.play = word(body + 4);
             n.songs = d[body + 8];
          }
          else if (!memcmp(id, "BANK", 4))
@@ -80,6 +82,23 @@ public:
 
    uint8_t read(uint16_t a) const
    {
+      if (a >= 0x8000 && !patches_.empty())
+      {
+         auto p = patches_.find(a);
+         if (p != patches_.end())
+            return p->second;
+      }
+      return read_raw(a);
+   }
+
+   // Code patches, like a cheat code's: the byte read at a CPU address.
+   void patch(uint16_t address, uint8_t value) { patches_[address] = value; }
+   // Addresses of the branches and subroutine calls executed so far.
+   const std::set<uint16_t> &branches() const { return branches_; }
+   void record_branches(bool on) { record_ = on; }
+
+   uint8_t read_raw(uint16_t a) const
+   {
       if (a < 0x2000)
          return ram_[a & 0x7FF];
       if (a == 0x2002)
@@ -104,6 +123,8 @@ public:
          ram_[a & 0x7FF] = v;
          written_.insert(a & 0x7FF);
       }
+      else if (a >= 0x4000 && a <= 0x4015)
+         apu_[a - 0x4000] = v;
       else if (a >= 0x5FF8 && a <= 0x5FFF)
          page_[a - 0x5FF8] = v;
       else if (a >= 0x6000 && a < 0x8000)
@@ -126,11 +147,36 @@ public:
    }
 
    const uint8_t *ram() const { return ram_; }
+   uint8_t *ram_mut() { return ram_; }
    const std::set<uint16_t> &written() const { return written_; }
+   // Channels the sound registers leave audible (bit 0 pulse 1 .. bit 4 samples): enabled, with
+   // a volume (or envelope) and a pitch. Length counters are not emulated, so a note left
+   // enabled counts as sounding, which is what matters here.
+   int audible() const
+   {
+      int on = 0, enabled = apu_[0x15];
+      auto volume = [&](int reg) { return (apu_[reg] & 0x10) ? (apu_[reg] & 0x0F) != 0 : true; };
+      for (int c = 0; c < 2; c++)
+      {
+         int base = c * 4, period = apu_[base + 2] | (apu_[base + 3] & 7) << 8;
+         if ((enabled >> c & 1) && volume(base) && period >= 8)
+            on |= 1 << c;
+      }
+      if ((enabled & 4) && (apu_[8] & 0x7F) && (apu_[0x0A] | (apu_[0x0B] & 7) << 8) >= 2)
+         on |= 4;
+      if ((enabled & 8) && volume(0x0C))
+         on |= 8;
+      if (enabled & 0x10)
+         on |= 0x10;
+      return on;
+   }
 
 private:
    const Nsf &nsf_;
-   uint8_t ram_[0x800], wram_[0x2000], page_[8];
+   uint8_t ram_[0x800], wram_[0x2000], page_[8], apu_[0x16] = { 0 };
+   std::map<uint16_t, uint8_t> patches_;
+   std::set<uint16_t> branches_;
+   bool record_ = false;
    std::set<uint16_t> written_;
    uint8_t a = 0, x = 0, y = 0, p = 0x24, s = 0xFD;
    uint16_t pc = 0;
@@ -192,6 +238,12 @@ private:
 
    bool step()
    {
+      if (record_ && pc >= 0x8000)
+      {
+         uint8_t at = read(pc);
+         if ((at & 0x1F) == 0x10 || at == 0x20)
+            branches_.insert(pc);
+      }
       uint8_t op = fetch();
       // Branches: xxy10000.
       if ((op & 0x1F) == 0x10)
@@ -329,6 +381,170 @@ bool nsf_init_ram(const std::vector<uint8_t> &data, int song, std::map<uint16_t,
       if (at < 0x100 || at >= 0x200)   // the stack changes with every call
          writes[at] = m.ram()[at];
    return true;
+}
+
+// Runs init for `song`, then play once a frame with `holds` applied; `on_frame` sees each frame's
+// channel changes.
+static bool run_song(const std::vector<uint8_t> &data, int song, int frames,
+      const std::vector<std::pair<uint16_t, uint8_t>> &holds, int activity[NSF_CHANNELS],
+      std::set<uint16_t> *written, std::string &error,
+      const std::vector<std::pair<uint16_t, uint8_t>> &patches = {}, std::set<uint16_t> *branches = nullptr)
+{
+   Nsf nsf;
+   if (!parse(data, nsf, error))
+      return false;
+   Machine m(nsf);
+   m.call(nsf.init, (uint8_t)song, 0);
+   // Patches apply to the music code as it runs, like cheat codes set once the game has started.
+   for (const auto &p : patches)
+      m.patch(p.first, p.second);
+   m.record_branches(branches != nullptr);
+   for (int c = 0; c < NSF_CHANNELS; c++)
+      activity[c] = 0;
+   for (int f = 0; f < frames; f++)
+   {
+      for (const auto &h : holds)
+         if (h.first < 0x800)
+            m.ram_mut()[h.first] = h.second;
+      m.call(nsf.play, 0, 0);
+      int on = m.audible();
+      for (int c = 0; c < NSF_CHANNELS; c++)
+         activity[c] += (on >> c) & 1;
+   }
+   if (written)
+      *written = m.written();
+   if (branches)
+      *branches = m.branches();
+   return true;
+}
+
+std::vector<NsfPatch> nsf_music_patches(const std::vector<uint8_t> &data, int song, int &used, std::string &error)
+{
+   const int kFrames = 240, kUsed = 24, kSilent = 12;
+   std::vector<NsfPatch> out;
+   int base[NSF_CHANNELS];
+   std::set<uint16_t> branches;
+   used = 0;
+   if (!run_song(data, song, kFrames, {}, base, nullptr, error, {}, &branches))
+      return out;
+   for (int c = 0; c < NSF_CHANNELS; c++)
+      if (base[c] >= kUsed)
+         used |= 1 << c;
+   if (!used)
+      return out;
+   Nsf nsf;
+   parse(data, nsf, error);
+   for (uint16_t pc : branches)
+   {
+      // The code bytes as the song leaves them banked in (the play routine's own banks).
+      Machine m(nsf);
+      m.call(nsf.init, (uint8_t)song, 0);
+      uint8_t op = m.read_raw(pc);
+      std::vector<std::vector<uint8_t>> variants;
+      if (op == 0x20)
+         variants.push_back({ 0xEA, 0xEA, 0xEA });   // skip the call
+      else
+      {
+         variants.push_back({ 0x24 });                // never branch (BIT zp)
+         variants.push_back({ (uint8_t)(op ^ 0x20) }); // branch on the opposite condition
+      }
+      int best = 0;
+      const std::vector<uint8_t> *best_bytes = nullptr;
+      for (const auto &v : variants)
+      {
+         std::vector<std::pair<uint16_t, uint8_t>> patches;
+         for (size_t i = 0; i < v.size(); i++)
+            patches.push_back({ (uint16_t)(pc + i), v[i] });
+         int act[NSF_CHANNELS];
+         if (!run_song(data, song, kFrames, {}, act, nullptr, error, patches))
+            return out;
+         int silenced = 0;
+         for (int c = 0; c < NSF_CHANNELS; c++)
+            if ((used >> c & 1) && act[c] <= kSilent)
+               silenced |= 1 << c;
+         if (__builtin_popcount(silenced) > __builtin_popcount(best))
+         {
+            best = silenced;
+            best_bytes = &v;
+         }
+      }
+      if (best)
+      {
+         NsfPatch p;
+         p.address = pc;
+         p.bytes = *best_bytes;
+         for (size_t i = 0; i < p.bytes.size(); i++)
+            p.original.push_back(m.read_raw((uint16_t)(pc + i)));
+         p.silenced = best;
+         out.push_back(p);
+      }
+   }
+   std::stable_sort(out.begin(), out.end(), [](const NsfPatch &x, const NsfPatch &y) {
+      return __builtin_popcount(x.silenced) > __builtin_popcount(y.silenced);
+   });
+   return out;
+}
+
+bool nsf_channel_activity_patched(const std::vector<uint8_t> &data, int song, int frames,
+      const std::vector<std::pair<uint16_t, uint8_t>> &patches, int activity[NSF_CHANNELS], std::string &error)
+{
+   return run_song(data, song, frames, {}, activity, nullptr, error, patches);
+}
+
+bool nsf_channel_activity(const std::vector<uint8_t> &data, int song, int frames,
+      const std::vector<std::pair<uint16_t, uint8_t>> &holds, int activity[NSF_CHANNELS], std::string &error)
+{
+   return run_song(data, song, frames, holds, activity, nullptr, error);
+}
+
+std::vector<NsfSwitch> nsf_music_switches(const std::vector<uint8_t> &data, int song, int &used, std::string &error)
+{
+   const int kFrames = 240, kUsed = 24, kSilent = 12;
+   std::vector<NsfSwitch> out;
+   int base[NSF_CHANNELS];
+   std::set<uint16_t> written;
+   used = 0;
+   if (!run_song(data, song, kFrames, {}, base, &written, error))
+      return out;
+   for (int c = 0; c < NSF_CHANNELS; c++)
+      if (base[c] >= kUsed)
+         used |= 1 << c;
+   if (!used)
+      return out;
+   for (uint16_t at : written)
+   {
+      if (at >= 0x100 && at < 0x200)
+         continue;
+      int best = 0;
+      uint8_t best_value = 0;
+      for (uint8_t v : { (uint8_t)0x00, (uint8_t)0xFF, (uint8_t)0x80 })
+      {
+         int act[NSF_CHANNELS];
+         if (!run_song(data, song, kFrames, { { at, v } }, act, nullptr, error))
+            return out;
+         int silenced = 0;
+         for (int c = 0; c < NSF_CHANNELS; c++)
+            if ((used >> c & 1) && act[c] <= kSilent)
+               silenced |= 1 << c;
+         if (__builtin_popcount(silenced) > __builtin_popcount(best))
+         {
+            best = silenced;
+            best_value = v;
+         }
+      }
+      if (best)
+      {
+         NsfSwitch s;
+         s.address = at;
+         s.value = best_value;
+         s.silenced = best;
+         out.push_back(s);
+      }
+   }
+   std::stable_sort(out.begin(), out.end(), [](const NsfSwitch &x, const NsfSwitch &y) {
+      return __builtin_popcount(x.silenced) > __builtin_popcount(y.silenced);
+   });
+   return out;
 }
 
 std::vector<NsfRequest> nsf_song_requests(const std::vector<uint8_t> &data, std::string &error)
