@@ -299,7 +299,9 @@ Proteus looks for a profile in this order:
 1. next to the ROM: `Super Game (USA).proteus.ini`
 2. in RetroArch's system folder: `system/proteus/Super Game (USA).ini`
 
-Paths are relative to the profile.
+Paths are relative to the profile. Lines starting with `;` or `#` are comments; after a value,
+` ;` starts one (a `#` there is part of the value, as in `music/Stage #1.ogg`). A file name holding
+`;` or `|` goes in double quotes: `0x05 = "music/Act 1; Part 2.ogg" | loop=0`.
 
 ```ini
 [song]

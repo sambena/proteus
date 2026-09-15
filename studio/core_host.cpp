@@ -70,7 +70,7 @@ template <int N> struct Tramp
       while (len && (msg[len - 1] == '\n' || msg[len - 1] == '\r'))
          msg[--len] = '\0';
       if (g_hosts[N])
-         g_hosts[N]->log().push_back(msg);
+         g_hosts[N]->add_log(msg);
    }
 };
 
@@ -139,9 +139,18 @@ static std::string core_copy_for_slot(const std::string &core_path, int slot, co
 
 void CoreHost::add_log(const std::string &line)
 {
+   std::lock_guard<std::mutex> lock(log_mutex_);
    log_.push_back(line);
    if (log_.size() > 2000)
       log_.erase(log_.begin(), log_.begin() + 500);
+}
+
+std::vector<std::string> CoreHost::take_log()
+{
+   std::lock_guard<std::mutex> lock(log_mutex_);
+   std::vector<std::string> lines;
+   lines.swap(log_);
+   return lines;
 }
 
 // ---------------------------------------------------------------------------

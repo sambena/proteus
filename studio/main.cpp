@@ -334,7 +334,7 @@ static void assign(App &a, uint32_t value, const FoundSong &song, const std::str
 {
    Assignment as;
    as.kind = Assignment::FILE;
-   as.path = song.spc_path;
+   as.path = song.path;
    as.track = (unsigned)song.track + 1;
    as.label = game + ": " + song.title;
    a.assignments[value] = as;
@@ -781,7 +781,7 @@ static void draw_title_cell(App &a, int side, size_t index, const FoundSong &son
          snprintf(a.rename_buf, sizeof(a.rename_buf), "%s", song.title.c_str());
       }
       if (ImGui::MenuItem("Show file"))
-         open_folder(dir_of(song.spc_path));
+         open_folder(dir_of(song.path));
       if (ImGui::MenuItem("Remove from list"))
       {
          if (side == TARGET)
@@ -859,7 +859,7 @@ static void draw_replacement_cell(App &a, const FoundSong &song)
             const FoundSong &b = a.snap[SOURCE][i];
             ImGui::PushID((int)i);
             std::string label = (b.has_value ? hex(b.value) + "  " : "") + b.title;
-            if (ImGui::Selectable(label.c_str(), current.kind == Assignment::FILE && current.path == b.spc_path))
+            if (ImGui::Selectable(label.c_str(), current.kind == Assignment::FILE && current.path == b.path))
                assign(a, song.value, b, src.display_name());
             ImGui::PopID();
          }
@@ -941,10 +941,10 @@ static void draw_song_table(App &a, int side)
       bool selected = side == TARGET && a.have_selected && song.has_value && song.value == a.selected_target;
 
       ImGui::TableSetColumnIndex(0);
-      std::string id = std::string(side == TARGET ? "A:" : "B:") + song.spc_path;
+      std::string id = std::string(side == TARGET ? "A:" : "B:") + song.path;
       bool playing = a.audio.playing_id() == id;
       if (icon_button("##play", playing ? ICON_STOP : ICON_PLAY, fh, P.side[side], playing))
-         play_song(a, id, song.spc_path, (unsigned)song.track + 1);
+         play_song(a, id, song.path, (unsigned)song.track + 1);
 
       ImGui::TableSetColumnIndex(1);
       ImGui::AlignTextToFramePadding();
@@ -1014,7 +1014,7 @@ static std::string describe_playing(App &a)
    int side = id[0] == 'A' ? TARGET : SOURCE;
    std::string path = id.substr(2);
    for (auto &s : a.snap[side])
-      if (s.spc_path == path)
+      if (s.path == path)
          return a.sessions[side].display_name() + ": " + s.title;
    return file_name(path);
 }

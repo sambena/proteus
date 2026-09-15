@@ -88,14 +88,17 @@ bool render_music(const std::vector<uint8_t> &data, int track, int rate, int sec
          return false;
       }
       unsigned channels = wav.channels, from_rate = wav.sampleRate;
-      std::vector<int16_t> pcm((size_t)(wav.totalPCMFrameCount * channels));
-      size_t frames = (size_t)drwav_read_pcm_frames_s16(&wav, wav.totalPCMFrameCount, pcm.data());
-      drwav_uninit(&wav);
-      if (!channels || !from_rate)
+      if (!channels || !from_rate || channels > 8 || from_rate > 384000)
       {
+         drwav_uninit(&wav);
          error = "empty .wav file";
          return false;
       }
+      // Only `seconds` are measured; a header claiming more (or a corrupt one) reads no further.
+      drwav_uint64 want = std::min<drwav_uint64>(wav.totalPCMFrameCount, (drwav_uint64)from_rate * seconds + 2);
+      std::vector<int16_t> pcm((size_t)(want * channels));
+      size_t frames = (size_t)drwav_read_pcm_frames_s16(&wav, want, pcm.data());
+      drwav_uninit(&wav);
       // Linear resampling is plenty for measuring loudness and notes. A recording shorter than
       // `seconds` is measured over its own length: silence after it would count as different notes.
       double step = (double)from_rate / rate;

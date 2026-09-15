@@ -162,7 +162,11 @@ ApuAnalysisResult analyze_snes_apu(const SnesRom &rom)
    {
       const auto &st = stores[si];
       size_t off = st.rom_offset;
-      size_t bank_start = off & ~0xFFFF;
+      // The code's CPU bank: JSR and JMP operands are 16-bit addresses within it. A LoROM
+      // bank holds 32KB of ROM at $8000-$FFFF; a HiROM bank holds 64KB.
+      bool lorom = rom.map != SnesRom::HIROM && rom.map != SnesRom::EXHIROM;
+      size_t bank_mask = lorom ? 0x7FFF : 0xFFFF;
+      size_t bank_start = off & ~bank_mask;
       size_t lookback = std::min<size_t>(off, 64);
       size_t start_off = off - lookback;
 
@@ -304,9 +308,10 @@ ApuAnalysisResult analyze_snes_apu(const SnesRom &rom)
 
       // If func_entry is an internal helper called by JSR $hhll, find the caller
       size_t parent_entry = func_entry;
+      uint16_t func_cpu = (uint16_t)(rom_to_snes(rom, func_entry) & 0xFFFF);
       for (size_t ci = bank_start; ci + 3 <= off; ci++)
       {
-         if (d[ci] == 0x20 && (uint16_t)(d[ci + 1] | (d[ci + 2] << 8)) == (uint16_t)(func_entry & 0xFFFF))
+         if (d[ci] == 0x20 && (uint16_t)(d[ci + 1] | (d[ci + 2] << 8)) == func_cpu)
          {
             // Found caller at ci! Find start of caller function
             for (size_t pbi = ci; pbi >= bank_start; pbi--)
@@ -334,10 +339,15 @@ ApuAnalysisResult analyze_snes_apu(const SnesRom &rom)
          if (d[ji] == 0x4C) // JMP $xxxx
          {
             uint16_t tgt = d[ji + 1] | (d[ji + 2] << 8);
+            if (lorom && tgt < 0x8000)
+            {
+               ji += 2;
+               continue;   // RAM or I/O, not this bank's ROM
+            }
             JumpEntry je;
             je.vector_snes = rom_to_snes(rom, ji);
             je.target = tgt;
-            je.target_rom = bank_start | (tgt & 0xFFFF);
+            je.target_rom = bank_start | (tgt & bank_mask);
             jump_table.push_back(je);
             ji += 2;
          }

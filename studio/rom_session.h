@@ -37,7 +37,8 @@ struct FoundSong
    uint32_t value = 0;          // song number
    bool has_value = true;       // false for rips made while playing without a song number
    std::string title;
-   std::string spc_path;        // the song's file: an .spc rip, a .wav rip (NES), or a reference file
+   std::string path;            // the song's file in the library: an .spc rip, a .wav rip (NES), or a reference file
+   std::vector<uint8_t> data;   // the file's bytes, until the song is added to the library
    int track = 0;               // song within a multi-song file (.nsf), from 0
    std::string reference;       // title of the reference song it matched, if any
    SongKind kind = SONG_MUSIC;

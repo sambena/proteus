@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <memory>
 
 #include "platform.h"
 
@@ -90,7 +91,10 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
                copy_plan->push_back({ as.path, dest });
             file = rel;
          }
-         spec = file;
+         // Quotes keep ';' (a comment) and '|' (options) in a file name.
+         bool quote = file.find_first_of(";|") != std::string::npos ||
+               (!file.empty() && (file.front() == ' ' || file.back() == ' '));
+         spec = quote ? "\"" + file + "\"" : file;
          if (as.track > 1)
             spec += " | track=" + std::to_string(as.track);
       }
@@ -143,7 +147,8 @@ bool export_profile(RomSession &target, const Assignments &assignments, const Pr
 
 void load_profile_mapping(const std::string &profile_path, Assignments &assignments, ProfileOptions &options)
 {
-   static px_profile p;
+   auto profile = std::make_unique<px_profile>();   // large; folder scans load profiles at the same time
+   px_profile &p = *profile;
    char err[1200];
    if (!px_profile_load(&p, profile_path.c_str(), err, sizeof(err)))
       return;

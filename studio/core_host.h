@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -81,7 +82,9 @@ public:
    void set_override(const std::string &key, const std::string &value);
    void clear_overrides();
 
-   std::vector<std::string> &log() { return log_; }
+   // The core's log lines since the last call (the newest 2000). Cores may log from threads of their own.
+   std::vector<std::string> take_log();
+   void add_log(const std::string &line);
 
    // libretro callbacks (static trampolines use the single active host).
    bool environment(unsigned cmd, void *data);
@@ -94,7 +97,6 @@ private:
    void declare_v2(const retro_core_options_v2 *opts);
    void declare_v1(const retro_core_option_definition *defs);
    void declare_v0(const retro_variable *vars);
-   void add_log(const std::string &line);
 
    int slot_ = -1;
    void *lib_ = nullptr;
@@ -118,5 +120,6 @@ private:
    std::vector<CoreOption> options_;
    std::map<std::string, std::string> overrides_;
    bool options_updated_ = false;
+   std::mutex log_mutex_;
    std::vector<std::string> log_;
 };

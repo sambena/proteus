@@ -134,14 +134,34 @@ void AudioOut::fill(int16_t *out, size_t frames)
       while (SDL_AudioStreamAvailable(song_stream_) < (int)(frames * 4))
       {
          size_t got = px_source_read(song_, buf, 1024);
+         // Songs loop, as they do in the game.
+         if (!got && song_frames_ && px_source_seek(song_, 0))
+         {
+            song_frames_ = 0;
+            got = px_source_read(song_, buf, 1024);
+         }
          if (!got)
+         {
+            // Nothing more to play: finish what is queued, then stop.
+            if (SDL_AudioStreamAvailable(song_stream_) == 0)
+            {
+               px_source_close(song_);
+               SDL_FreeAudioStream(song_stream_);
+               song_ = nullptr;
+               song_stream_ = nullptr;
+               song_id_.clear();
+            }
             break;
+         }
          song_frames_ += got;
          SDL_AudioStreamPut(song_stream_, buf, (int)(got * 4));
       }
-      int got = SDL_AudioStreamGet(song_stream_, tmp.data(), (int)(frames * 4));
-      for (int i = 0; i < std::max(0, got) / 2; i++)
-         mix[i] += tmp[i];
+      if (song_stream_)
+      {
+         int got = SDL_AudioStreamGet(song_stream_, tmp.data(), (int)(frames * 4));
+         for (int i = 0; i < std::max(0, got) / 2; i++)
+            mix[i] += tmp[i];
+      }
    }
    if (game_stream_)
    {

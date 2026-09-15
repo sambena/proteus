@@ -9,6 +9,7 @@
 #include <chrono>
 #include <ctime>
 #include <map>
+#include <memory>
 #include <sstream>
 
 #include "gme.h"
@@ -159,8 +160,8 @@ static std::string default_title(uint32_t value, SongKind kind)
    return (kind == SONG_JINGLE ? "Jingle " : "Song ") + hex2(value);
 }
 
-// Makes `song` the reference song: its name, how it sounds, and its file (kept in spc_path
-// until the song is added), which plays it from its start.
+// Makes `song` the reference song: its name, how it sounds, and its file (kept in data until
+// the song is added), which plays it from its start.
 static bool use_reference(FoundSong &song, const ReferenceSong &ref, std::string &error)
 {
    SongPrint print;
@@ -171,7 +172,7 @@ static bool use_reference(FoundSong &song, const ReferenceSong &ref, std::string
       song.kind = SONG_JINGLE;
    song.title = ref.title;
    song.reference = ref.title;
-   song.spc_path.assign((const char*)ref.data.data(), ref.data.size());
+   song.data = ref.data;
    song.track = ref.track;
    return true;
 }
@@ -271,7 +272,8 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
    char found[2048];
    if (px_engine_find_profile(content.c_str(), system_dir.c_str(), found, sizeof(found)))
    {
-      static px_profile p;   // large; only used here, on the UI thread
+      auto profile = std::make_unique<px_profile>();   // large; folder scans open games on their own thread
+      px_profile &p = *profile;
       char err[1200];
       if (px_profile_load(&p, found, err, sizeof(err)))
       {
@@ -751,8 +753,7 @@ bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *
 {
    if (references.empty())
       return false;
-   std::vector<uint8_t> rip(song.spc_path.begin(), song.spc_path.end());
-   ReferenceSet::Match m = references.match_spc(rip, before);
+   ReferenceSet::Match m = references.match_spc(song.data, before);
 
    // Some drivers load a whole group of songs at once and start one by moving a pointer, so
    // little memory tells those songs apart. A weak memory match must also sound like its
@@ -766,7 +767,7 @@ bool RomSession::name_by_reference(FoundSong &song, const std::vector<uint8_t> *
    {
       SongNotes notes;
       std::string err;
-      if (!spc_notes(rip, notes, err))
+      if (!spc_notes(song.data, notes, err))
          return false;
       // What was playing before, still playing exactly as far along as the time that passed:
       // the number changed nothing. The same song started over lines up elsewhere.
@@ -895,13 +896,14 @@ std::vector<uint8_t> RomSession::record_music(double seconds)
 // ---------------------------------------------------------------------------
 
 // The file extension for a song's bytes.
-static const char *music_extension(const std::string &bytes)
+static const char *music_extension(const std::vector<uint8_t> &bytes)
 {
-   if (bytes.compare(0, 4, "RIFF") == 0)
+   auto starts = [&](const char *magic, size_t n) { return bytes.size() >= n && !memcmp(bytes.data(), magic, n); };
+   if (starts("RIFF", 4))
       return "wav";
-   if (bytes.compare(0, 5, "NESM\x1A") == 0)
+   if (starts("NESM\x1A", 5))
       return "nsf";
-   if (bytes.compare(0, 4, "NSFE") == 0)
+   if (starts("NSFE", 4))
       return "nsfe";
    return "spc";
 }
@@ -921,7 +923,7 @@ void RomSession::save_library()
    for (const auto &s : songs)
    {
       out << s.value << '\t' << (s.has_value ? 1 : 0) << '\t' << (int)s.kind << '\t'
-          << file_name(s.spc_path) << '\t' << s.title << '\t' << s.reference << '\t' << s.track << '\t'
+          << file_name(s.path) << '\t' << s.title << '\t' << s.reference << '\t' << s.track << '\t'
           << s.print.loudness << ' ' << s.print.tail
           << ' ' << s.print.envelope.size();
       for (float e : s.print.envelope)
@@ -968,13 +970,13 @@ void RomSession::load_library()
       s.value = (uint32_t)strtoul(f[0].c_str(), nullptr, 10);
       s.has_value = f[1] == "1";
       s.kind = f[2] == "1" ? SONG_JINGLE : SONG_MUSIC;
-      s.spc_path = dir + "\\" + f[3];
+      s.path = dir + "\\" + f[3];
       s.title = f[4];
       if (v3)
          s.reference = f[5];
       if (v4)
          s.track = atoi(f[6].c_str());
-      if (!file_exists(s.spc_path))
+      if (!file_exists(s.path))
          continue;
       std::istringstream nums(line.substr(pos));
       size_t count = 0;
@@ -988,7 +990,7 @@ void RomSession::load_library()
       {
          std::vector<uint8_t> spc;
          std::string err;
-         if (!read_file_bytes(s.spc_path, spc) || !analyze_music(spc, s.track, s.print, err))
+         if (!read_file_bytes(s.path, spc) || !analyze_music(spc, s.track, s.print, err))
             continue;
       }
       songs.push_back(s);
@@ -1040,8 +1042,8 @@ bool RomSession::rip_state(const std::vector<uint8_t> &state, uint32_t value, bo
       error = "silent";
       return false;
    }
-   // Keep the bytes in spc_path until the song is accepted.
-   out.spc_path.assign((const char*)spc.data(), spc.size());
+   // Keep the bytes until the song is accepted.
+   out.data = spc;
    return true;
 }
 
@@ -1050,7 +1052,7 @@ void RomSession::add_song_locked(FoundSong song)
    std::string dir = library_dir();
    make_dirs(dir);
    char name[64];
-   const char *ext = music_extension(song.spc_path);
+   const char *ext = music_extension(song.data);
    if (song.has_value)
       snprintf(name, sizeof(name), "%02X.%s", (unsigned)song.value, ext);
    else
@@ -1072,9 +1074,11 @@ void RomSession::add_song_locked(FoundSong song)
    FILE *f = px_fopen(path.c_str(), "wb");
    if (!f)
       return;
-   fwrite(song.spc_path.data(), 1, song.spc_path.size(), f);
+   fwrite(song.data.data(), 1, song.data.size(), f);
    fclose(f);
-   song.spc_path = path;
+   song.path = path;
+   song.data.clear();
+   song.data.shrink_to_fit();
 
    for (auto it = songs.begin(); it != songs.end(); ++it)
       if (song.has_value && it->has_value && it->value == song.value)
@@ -1286,10 +1290,10 @@ bool RomSession::choose_song_address(const SongStart &s, bool &by_address)
       t.song = v;
       run_frames(s.settle_frames);
       const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
-      t.settled.assign(ram, ram + ram_size);
+      t.settled.assign(ram, ram + (ram ? ram_size : 0));
       run_frames(120);
       ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
-      t.later.assign(ram, ram + ram_size);
+      t.later.assign(ram, ram + (ram ? ram_size : 0));
       trials.push_back(std::move(t));
    }
 
@@ -2552,7 +2556,7 @@ void RomSession::scan_thread(int first, int last)
    if (!keep_rips_dir.empty())
    {
       make_dirs(keep_rips_dir);
-      write_text(keep_rips_dir + "\\before." + music_extension(std::string(scan_before_spc_.begin(), scan_before_spc_.end())),
+      write_text(keep_rips_dir + "\\before." + music_extension(scan_before_spc_),
             std::string(scan_before_spc_.begin(), scan_before_spc_.end()));
    }
    if (song_table.found)
@@ -2568,7 +2572,7 @@ void RomSession::scan_thread(int first, int last)
    core.load_state(scan_state_);
    size_t ram_size = 0;
    const uint8_t *ram = core.memory(RETRO_MEMORY_SYSTEM_RAM, &ram_size);
-   std::vector<uint8_t> ram_before(ram, ram + ram_size);
+   std::vector<uint8_t> ram_before(ram, ram + (ram ? ram_size : 0));
    run_frames(kRoutineSettle);
    choose_stub_area(ram_before);
    bool have_baseline = rip_state(core.save_state(), 0, false, baseline, err);
@@ -2686,7 +2690,7 @@ void RomSession::scan_thread(int first, int last)
       if (rip_state(onset.empty() ? core.save_state() : onset, key, true, song, err))
       {
          if (!keep_rips_dir.empty())
-            write_text(keep_rips_dir + "\\rip_" + hex2(key).substr(2) + "." + music_extension(song.spc_path), song.spc_path);
+            write_text(keep_rips_dir + "\\rip_" + hex2(key).substr(2) + "." + music_extension(song.data), std::string(song.data.begin(), song.data.end()));
          // The song already listed under this number, and the versions the ROM table has for it.
          std::vector<std::string> same;
          {
@@ -3229,7 +3233,7 @@ void RomSession::movie_thread(std::string movie_path, bool show)
          // The unnumbered entry gives way to the numbered one.
          if (has_value && it->reference == ref.title && !it->has_value)
          {
-            std::remove(it->spc_path.c_str());
+            std::remove(it->path.c_str());
             it = songs.erase(it);
          }
          else

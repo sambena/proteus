@@ -194,6 +194,7 @@ static int16_t RETRO_CALLCONV input_cb(unsigned a, unsigned b, unsigned c, unsig
 /* A DSP plugin to run the core's audio through, as RetroArch would. */
 static const struct dspfilter_implementation *dsp_impl;
 static void *dsp_data;
+static unsigned dsp_split = 1;   /* batches each frame's audio reaches the plugin in */
 
 static size_t RETRO_CALLCONV batch_cb(const int16_t *data, size_t frames)
 {
@@ -206,21 +207,27 @@ static size_t RETRO_CALLCONV batch_cb(const int16_t *data, size_t frames)
    if (dsp_data)
    {
       static float buf[8192 * 2];
-      struct dspfilter_input in;
-      struct dspfilter_output out;
+      size_t done = 0;
       if (frames > 8192)
          frames = 8192;
       for (size_t i = 0; i < frames * 2; i++)
          buf[i] = data[i] / 32768.0f;
-      in.samples = buf;
-      in.frames  = (unsigned)frames;
-      dsp_impl->process(dsp_data, &out, &in);
-      for (size_t i = 0; i < out.frames * 2; i++)
+      for (unsigned part = 0; part < dsp_split; part++)
       {
-         float v = out.samples[i] * 32768.0f;
-         audio[audio_frames * 2 + i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+         struct dspfilter_input in;
+         struct dspfilter_output out;
+         size_t n = part + 1 == dsp_split ? frames - done : frames / dsp_split;
+         in.samples = buf + done * 2;
+         in.frames  = (unsigned)n;
+         dsp_impl->process(dsp_data, &out, &in);
+         for (size_t i = 0; i < out.frames * 2; i++)
+         {
+            float v = out.samples[i] * 32768.0f;
+            audio[audio_frames * 2 + i] = (int16_t)(v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : lrintf(v));
+         }
+         audio_frames += out.frames;
+         done += n;
       }
-      audio_frames += out.frames;
       return frames;
    }
 
@@ -586,6 +593,58 @@ static int dsp_scenario(const char *plugin, const char *core_path, const char *d
       dsp_data = NULL;
       end_session();
    }
+
+   /* A core sending its audio in several batches a frame: the plugin still counts game frames
+    * from time, so a 40-frame debounce holds song 2 (from frame 60) back until frame 100. */
+   {
+      char split[512], split_profile[512];
+      snprintf(split, sizeof(split), "%s/split.tst", dir);
+      snprintf(split_profile, sizeof(split_profile), "%s/split.proteus.ini", dir);
+      /* The track's file name holds " #", which is not a comment after a value. */
+      {
+         char from[512], to[512], buf[4096];
+         FILE *in, *out;
+         size_t n;
+         snprintf(from, sizeof(from), "%s/tone_220.wav", dir);
+         snprintf(to, sizeof(to), "%s/Stage #2.wav", dir);
+         if ((in = fopen(from, "rb")))
+         {
+            if ((out = fopen(to, "wb")))
+            {
+               while ((n = fread(buf, 1, sizeof(buf), in)) > 0)
+                  fwrite(buf, 1, n, out);
+               fclose(out);
+            }
+            fclose(in);
+         }
+      }
+      if ((f = fopen(split_profile, "wb")))
+      {
+         fprintf(f, "# split batches\n[song]\naddress = 0x42\ndebounce = 40 ; frames\n[mix]\ncrossfade_ms = 0\n"
+               "[tracks]\n2 = Stage #2.wav ; song 2\n");
+         fclose(f);
+      }
+      if ((f = fopen(dsp_history, "wb")))
+      {
+         fprintf(f, "{\n  \"version\": \"1.5\",\n  \"items\": [\n    {\n      \"path\": \"%s\",\n      \"core_path\": \"%s\"\n    }\n  ]\n}\n",
+               split, core_path);
+         fclose(f);
+      }
+      if (!start_session(split, 2))
+         return 1;
+      dsp_data = dsp_impl->init(&info, &config, NULL);
+      if (!dsp_data)
+         return 1;
+      dsp_split = 8;
+      run_frames(0, 180);
+      dsp_split = 1;
+      expect("split batches: debounce still waits 40 frames", 64, 94, 220, false);
+      expect("split batches: song 2 replaced after the debounce", 106, 178, 220, true);
+      dsp_impl->free(dsp_data);
+      dsp_data = NULL;
+      end_session();
+   }
+
    if ((f = fopen(dsp_history, "wb")))
    {
       fprintf(f, "{\n  \"version\": \"1.5\",\n  \"default_core_path\": \"\",\n  \"items\": [\n"

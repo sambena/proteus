@@ -19,13 +19,24 @@ static char *trim(char *s)
    return s;
 }
 
-/* Comments start with ';' or '#' at the start of a line or after whitespace,
- * so paths like "music/track#2.ogg" survive. */
+/* Lines starting with ';' or '#' are comments. After a value, only ';' following whitespace
+ * starts one, so paths like "music/Stage #1.ogg" survive; text in double quotes never does. */
 static void strip_comment(char *s)
 {
-   for (char *p = s; *p; p++)
+   bool quoted = false;
+   char *p = s;
+   while (isspace((unsigned char)*p))
+      p++;
+   if (*p == ';' || *p == '#')
    {
-      if ((*p == ';' || *p == '#') && (p == s || isspace((unsigned char)p[-1])))
+      *p = '\0';
+      return;
+   }
+   for (; *p; p++)
+   {
+      if (*p == '"')
+         quoted = !quoted;
+      else if (!quoted && *p == ';' && isspace((unsigned char)p[-1]))
       {
          *p = '\0';
          return;
@@ -123,6 +134,29 @@ static bool parse_track(px_profile *p, const char *dir, uint32_t value, char *sp
    t->value  = value;
    t->loop   = true;
    t->volume = 1.0f;
+
+   /* A file in double quotes may hold any character, '|' and ';' included. */
+   if (*spec == '"')
+   {
+      char *close = strchr(spec + 1, '"');
+      char *rest;
+      if (!close)
+      {
+         snprintf(err, errlen, "unterminated quote");
+         return false;
+      }
+      *close = '\0';
+      rest = trim(close + 1);
+      if (*rest && *rest != '|')
+      {
+         snprintf(err, errlen, "expected '|' after the quoted file");
+         return false;
+      }
+      t->action = PX_ACTION_FILE;
+      px_path_join(dir, spec + 1, t->path, sizeof(t->path));
+      first = false;
+      spec  = rest;
+   }
 
    for (part = strtok_r(spec, "|", &save); part; part = strtok_r(NULL, "|", &save))
    {

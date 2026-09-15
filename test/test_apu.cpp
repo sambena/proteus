@@ -67,6 +67,45 @@ static void test_synthetic_lorom()
    }
 }
 
+static void test_synthetic_lorom_public_routine()
+{
+   printf("scenario: Static 65816 APU analysis - LoROM public routine through a jump table\n");
+
+   std::vector<uint8_t> rom_data(0x8000, 0xEA);
+   const char *title = "LOROM ROUTINE TEST   ";
+   for (int i = 0; i < 21; i++)
+      rom_data[0x7FC0 + i] = (uint8_t)title[i];
+   rom_data[0x7FD5] = 0x20;
+   rom_data[0x7FDE] = 0xFF;
+   rom_data[0x7FDF] = 0xFF;
+   rom_data[0x7FFC] = 0x00;
+   rom_data[0x7FFD] = 0x80;
+
+   // Jump table at $008000: 4C 20 80   JMP $8020
+   rom_data[0x0000] = 0x4C; rom_data[0x0001] = 0x20; rom_data[0x0002] = 0x80;
+
+   // Public routine at $008020: JSR $8100; RTS
+   rom_data[0x001F] = 0x60;
+   rom_data[0x0020] = 0x20; rom_data[0x0021] = 0x00; rom_data[0x0022] = 0x81;
+   rom_data[0x0023] = 0x60;
+
+   // Helper at $008100: LDA $012C; STA $2140; STZ $012C; RTS
+   const uint8_t helper[] = { 0x60, 0xAD, 0x2C, 0x01, 0x8D, 0x40, 0x21, 0x9C, 0x2C, 0x01, 0x60 };
+   for (size_t i = 0; i < sizeof(helper); i++)
+      rom_data[0x00FF + i] = helper[i];
+
+   SnesRom rom;
+   TEST(rom.load(rom_data), "load synthetic LoROM");
+   ApuAnalysisResult res = analyze_snes_apu(rom);
+   const ApuCandidate *music = nullptr;
+   for (const auto &c : res.candidates)
+      if (!music && c.address.address == 0x012C)
+         music = &c;
+   TEST(music != nullptr, "found $012C");
+   if (music)
+      TEST(music->start.address == 0x008000, "public routine is the jump table entry $008000");
+}
+
 static void test_synthetic_hirom_command_block()
 {
    printf("scenario: Static 65816 APU analysis - HiROM command block & Direct Page\n");
@@ -310,6 +349,7 @@ static void test_real_super_mario_world()
 int main()
 {
    test_synthetic_lorom();
+   test_synthetic_lorom_public_routine();
    test_synthetic_hirom_command_block();
    test_real_chrono_trigger();
    test_real_link_to_the_past();

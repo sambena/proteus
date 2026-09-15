@@ -40,6 +40,7 @@ typedef struct
    px_engine engine;
    float rate;
    unsigned frames_since_poll;
+   double frames_since_tick; /* audio frames not yet counted as a game frame */
    bool polled;
 
    char system_dir[PX_PATH_MAX];
@@ -510,8 +511,22 @@ static void dsp_process(void *data, struct dspfilter_output *output, const struc
       return;
    }
 
-   /* RetroArch runs the DSP once per batch of core audio, so this is per frame. */
-   px_engine_frame(&d->engine);
+   /* RetroArch runs the DSP once per batch of core audio, and cores differ in how many batches
+    * they send a frame, so game frames are counted from the audio's length (60 a second). A
+    * batch longer than a few frames (fast-forward, a stall) counts as a few. */
+   {
+      double per_frame = d->rate / 60.0;
+      int ticks = 0;
+      d->frames_since_tick += input->frames;
+      while (d->frames_since_tick >= per_frame && ticks < 4)
+      {
+         px_engine_frame(&d->engine);
+         d->frames_since_tick -= per_frame;
+         ticks++;
+      }
+      if (d->frames_since_tick >= per_frame)
+         d->frames_since_tick = 0.0;
+   }
    if (px_engine_mixing(&d->engine) && input->samples && input->frames)
       px_engine_mix_float(&d->engine, input->samples, input->frames);
 }

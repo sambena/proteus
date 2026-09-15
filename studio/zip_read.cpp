@@ -8,6 +8,8 @@
 static uint32_t rd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 
+static const uint32_t kZipEntryLimit = 256u << 20;
+
 bool is_zip(const std::vector<uint8_t> &data)
 {
    return data.size() >= 4 && rd32(data.data()) == 0x04034b50;
@@ -54,6 +56,12 @@ bool zip_read(const std::vector<uint8_t> &zip, const std::function<bool(const st
       if ((uint64_t)data + csize > zip.size())
          break;
 
+      // Sizes come from the archive: ROMs and music files are far smaller than this.
+      if (usize > kZipEntryLimit)
+      {
+         error = entry + " is too large";
+         return false;
+      }
       std::vector<uint8_t> out(usize);
       if (method == 0 && csize == usize)
          memcpy(out.data(), &zip[data], usize);

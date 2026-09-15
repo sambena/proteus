@@ -315,9 +315,8 @@ int main(int argc, char **argv)
          if (argc > 6)
             all.insert(all.end(), core.audio().begin(), core.audio().end());
          core.audio().clear();
-         for (auto &l : core.log())
-            printf("  [%5.1fs] %s", f / 60.0, l.c_str());
-         core.log().clear();
+         for (auto &l : core.take_log())
+            printf("  [%5.1fs] %s\n", f / 60.0, l.c_str());
       }
       if (argc > 6)
       {
