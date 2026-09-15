@@ -201,8 +201,9 @@ private:
    // NES, once the music is stopped through RAM: follows the song requests themselves, and the
    // .nsf's other request register as jingles, since the song the game keeps then stays silent.
    void follow_requests(const SongStart &s);
-   // NES, when the music code keeps no song number: finds a tap on the game's sound routine, lists
-   // the reference songs by request, and a code patch that silences the music. See nes_tap.h.
+   // NES, when no RAM write starts songs from outside: watches the RAM the reference .nsf starts its
+   // songs with while the game plays, or taps the game's sound routine (see nes_tap.h); lists the
+   // reference songs by value, and finds a code patch that silences the music.
    bool scan_with_tap();
    // NES: records what the game plays over the next `seconds` from where the core is, as a .wav.
    std::vector<uint8_t> record_music(double seconds);

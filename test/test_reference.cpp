@@ -368,15 +368,15 @@ static void test_nes_tap()
       printf("    %s\n", err.c_str());
       return;
    }
-   TEST(tap.stub == 0xC004, "the stub goes in blank ROM of the fixed bank");
-   const uint8_t stub[] = { 0x08, 0x48, 0x18, 0x69, 0x01, 0x8D, 0xF7, 0x07, 0x68, 0x28,   // store request + 1
-                            0xC9, 0xF0, 0xB0, 0x03, 0x4C, 0x07, 0x81,                     // CMP, the branch moved
-                            0x4C, 0x04, 0x81 };                                           // back into the routine
+   TEST(tap.stub == 0xC002, "the stub goes in blank ROM of the fixed bank");
+   const uint8_t stub[] = { 0x08, 0x8D, 0xF7, 0x07, 0xEE, 0xF7, 0x07, 0x28,   // store request + 1
+                            0xC9, 0xF0, 0xB0, 0x03, 0x4C, 0x07, 0x81,         // CMP, the branch moved
+                            0x4C, 0x04, 0x81 };                               // back into the routine
    bool same = tap.patches.size() == 3 + sizeof(stub);
    for (size_t i = 0; same && i < sizeof(stub); i++)
-      same = tap.patches[3 + i].address == 0xC004 + i && tap.patches[3 + i].compare == 0xFF && tap.patches[3 + i].value == stub[i];
+      same = tap.patches[3 + i].address == 0xC002 + i && tap.patches[3 + i].compare == 0xFF && tap.patches[3 + i].value == stub[i];
    TEST(same, "the stub stores the request and runs the moved instructions");
-   TEST(tap.fceumm_cheat().compare(0, 33, "8100?C9:4C+8101?F0:04+8102?90:C0+") == 0, "the routine jumps to the stub");
+   TEST(tap.fceumm_cheat().compare(0, 33, "8100?C9:4C+8101?F0:02+8102?90:C0+") == 0, "the routine jumps to the stub");
    TEST(nes_rom_holds(rom, 0x8100, std::vector<uint8_t>(routine, routine + sizeof(routine))), "finds the rip's code in the ROM");
    std::vector<uint8_t> other(routine, routine + sizeof(routine));
    other[5] = 0x30;

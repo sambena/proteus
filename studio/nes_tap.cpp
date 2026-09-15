@@ -243,8 +243,8 @@ bool nes_tap_design(const std::vector<uint8_t> &ines, uint16_t routine, const st
       }
    }
 
-   // PHP, PHA, CLC, ADC #1, STA ram, PLA, PLP; the moved instructions; JMP back.
-   std::vector<uint8_t> stub = { 0x08, 0x48, 0x18, 0x69, 0x01, 0x8D, (uint8_t)ram, (uint8_t)(ram >> 8), 0x68, 0x28 };
+   // PHP, STA ram, INC ram, PLP (the request + 1, A and flags kept); the moved instructions; JMP back.
+   std::vector<uint8_t> stub = { 0x08, 0x8D, (uint8_t)ram, (uint8_t)(ram >> 8), 0xEE, (uint8_t)ram, (uint8_t)(ram >> 8), 0x28 };
    stub.insert(stub.end(), moved.begin(), moved.end());
    if (!ends)
    {
@@ -253,7 +253,7 @@ bool nes_tap_design(const std::vector<uint8_t> &ines, uint16_t routine, const st
    }
 
    // Blank ROM (a run of FF or 00) with room to spare on both sides.
-   const size_t margin = 4;
+   const size_t margin = 2;
    for (const Region &r : stub_regions(prg, at, routine))
    {
       for (uint8_t fill : { (uint8_t)0xFF, (uint8_t)0x00 })
