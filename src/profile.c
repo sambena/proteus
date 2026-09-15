@@ -313,6 +313,29 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
       snprintf(o->key, sizeof(o->key), "%s", key);
       snprintf(o->value, sizeof(o->value), "%s", val);
    }
+   else if (!strcmp(section, "silence"))
+   {
+      if (!strcmp(key, "memory"))
+      {
+         if (!parse_memory(val, &p->silence_memory))
+            goto bad_value;
+      }
+      else if (!strcmp(key, "address"))
+      {
+         if (!parse_uint(val, &n) || n > 0xFFFFFFFFu)
+            goto bad_value;
+         p->silence_address = (uint32_t)n;
+         p->silence = true;
+      }
+      else if (!strcmp(key, "value"))
+      {
+         if (!parse_uint(val, &n) || n > 0xFF)
+            goto bad_value;
+         p->silence_value = (uint8_t)n;
+      }
+      else
+         goto bad_key;
+   }
    else if (!strcmp(section, "mix"))
    {
       if (!strcmp(key, "music_volume"))
@@ -390,6 +413,7 @@ bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen)
 
    memset(p, 0, sizeof(*p));
    p->memory_id    = RETRO_MEMORY_SYSTEM_RAM;
+   p->silence_memory = RETRO_MEMORY_SYSTEM_RAM;
    p->size         = 1;
    p->mask         = 0xFFFFFFFFu;
    p->debounce     = 1;

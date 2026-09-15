@@ -62,6 +62,29 @@ static void reset_state(px_engine *e)
    e->stable_frames  = 0;
    e->have_applied   = false;
    e->warned_memory  = false;
+   e->silencing      = 0;
+   e->have_silenced  = false;
+}
+
+/* Frames in which the game reacts to the silence request (its music code runs once a frame). */
+#define PX_SILENCE_FRAMES 30
+
+/* Asks the game to stop its own music: the profile's [silence] request, written to its RAM. */
+static void stop_game_music(px_engine *e)
+{
+   const px_profile *p = &e->profile;
+   size_t size = 0;
+   uint8_t *data;
+
+   if (!p->silence || !e->host.memory)
+      return;
+   /* retro_get_memory_data gives the core's own, writable memory. */
+   data = (uint8_t*)e->host.memory(e->host.userdata, p->silence_memory, &size);
+   if (!data || p->silence_address >= size)
+      return;
+   data[p->silence_address] = p->silence_value;
+   e->silencing     = PX_SILENCE_FRAMES;
+   e->have_silenced = false;
 }
 
 void px_engine_init(px_engine *e, const px_host *host)
@@ -370,18 +393,22 @@ static void apply_song(px_engine *e, uint32_t value, bool announce)
          enotify(e, "Proteus: song 0x%X%s: %s", (unsigned)value, c.mapped ? "" : " (unmapped)", name);
    }
 
+   e->have_silenced = false;
    switch (c.action)
    {
       case PX_ACTION_FILE:
          start_choice(e, &c, fade_frames(e), 0);
+         stop_game_music(e);
          break;
       case PX_ACTION_SILENCE:
          px_mixer_stop(&e->mixer, fade_frames(e));
          set_muted(e, true);
+         stop_game_music(e);
          break;
       case PX_ACTION_ORIGINAL:
          px_mixer_stop(&e->mixer, fade_frames(e));
          set_muted(e, false);
+         e->silencing = 0;
          break;
       case PX_ACTION_KEEP:
          break;
@@ -451,6 +478,22 @@ void px_engine_frame(px_engine *e)
     * Pattern matches return false when idle, so a zero song value is valid. */
    if (e->profile.latch && e->profile.pattern_length == 0 && v == 0)
       return;
+
+   /* Stopping the game's music changes what it reads as its song: that is still the song applied. */
+   if (e->silencing)
+   {
+      e->silencing--;
+      if (e->have_applied && v != e->applied)
+      {
+         e->have_silenced = true;
+         e->silenced      = v;
+      }
+   }
+   if (e->have_silenced && v == e->silenced)
+   {
+      e->have_candidate = false;
+      return;
+   }
 
    if (!e->have_candidate || v != e->candidate)
    {

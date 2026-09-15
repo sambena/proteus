@@ -46,6 +46,9 @@ std::string profile_text(RomSession &target, const Assignments &assignments, con
       t += "latch    = 1\n";
    t += "unmapped = original\n";
 
+   if (target.silence.known)
+      t += "\n[silence]\n; stops the game's own music, keeping its sound effects\naddress  = " +
+           hex(target.silence.address, 4) + "\nvalue    = " + hex(target.silence.value, 2) + "\n";
    if (!options.mute.empty())
    {
       t += "\n[mute]\n";

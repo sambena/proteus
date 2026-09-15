@@ -53,6 +53,12 @@ typedef struct
    bool have_applied;
    uint32_t applied;
    bool warned_memory;
+
+   /* [silence]: frames left in which a song value change comes from the silence request
+    * just written, and that value, which counts as the song applied. */
+   unsigned silencing;
+   bool have_silenced;
+   uint32_t silenced;
 } px_engine;
 
 #define PX_ENGINE_STATE_SIZE 48u

@@ -227,9 +227,12 @@ static void refresh_cores(App &a)
 
 // Default channel mutes: the first six voices, which carry the music in most SNES games; on NES
 // the two squares and the triangle, leaving noise and samples (often sound effects and drums).
+// None when the game's music can be stopped through its RAM, which keeps every sound effect.
 static void default_mutes(App &a)
 {
    a.options.mute.clear();
+   if (a.sessions[TARGET].silence.known)
+      return;
    CoreHost &core = a.sessions[TARGET].core;
    for (int ch = 1; ch <= 6; ch++)
    {
@@ -1507,6 +1510,9 @@ static void tab_channels(App &a)
          "have five channels and play most sound effects on the music's channels, so some effects go quiet too.");
    if (!t.is_open())
       return;
+   if (t.silence.known)
+      ImGui::TextColored(col(P.ok), "Proteus stops this game's music by writing %02X to $%04X, so no channel needs muting "
+            "and sound effects keep playing.", (unsigned)t.silence.value, (unsigned)t.silence.address);
    int shown = 0;
    for (auto &o : t.core.options())
    {
@@ -2525,7 +2531,21 @@ int main(int argc, char **argv)
 
       for (int side = 0; side < 2; side++)
       {
+         bool had_silence = a.sessions[side].silence.known;
          a.sessions[side].apply_scan_results();
+         // A scan that finds how to stop the game's music makes the default channel mutes needless.
+         if (side == TARGET && !had_silence && a.sessions[side].silence.known)
+         {
+            std::map<std::string, std::string> defaults;
+            for (int ch = 1; ch <= 3; ch++)
+               defaults["fceumm_apu_" + std::to_string(ch)] = "disabled";
+            if (a.options.mute == defaults)
+            {
+               a.options.mute.clear();
+               set_status(a, "Found how to stop " + a.sessions[side].display_name() +
+                     "'s music without muting its channels, so its sound effects stay.");
+            }
+         }
          // Report how loading (or downloading) reference songs ended.
          bool loading = a.sessions[side].loading_references();
          if (a.refs_loading[side] && !loading)

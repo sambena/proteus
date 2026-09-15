@@ -64,6 +64,13 @@ typedef struct
    px_option mute[PX_MAX_MUTE];
    unsigned mute_count;
 
+   /* [silence] a request written to the game's RAM to stop its own music while a replacement
+    * (or silence) plays; the sound channels stay on for sound effects */
+   bool silence;
+   unsigned silence_memory;   /* RETRO_MEMORY_* */
+   uint32_t silence_address;
+   uint8_t silence_value;
+
    /* [mix] */
    float music_volume;
    float game_volume;

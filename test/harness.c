@@ -832,6 +832,25 @@ int main(int argc, char **argv)
    expect("pattern: song 2 stopped", 186, 300, 220, false);
    end_session();
 
+   /* 8. Stopping the game's music through its RAM: no channel is muted, so sound effects stay. */
+   printf("\nscenario: stopping the game's music with a RAM request\n");
+   snprintf(content, sizeof(content), "%s/stop.tst", argv[3]);
+   if (!start_session(content, 2))
+      return 1;
+   run_frames(0, 540);
+   expect("stop: song 1 original", 6, 60, 440, true);
+   expect("stop: song 2 wav replacement", 66, 180, 220, true);
+   expect("stop: song 2 game music stopped", 66, 180, 440, false);
+   expect("stop: song 2 sound effects kept", 66, 180, 1000, true);
+   expect("stop: song 3 replaces song 2", 186, 300, 330, true);
+   expect("stop: song 3 game music stopped", 186, 300, 440, false);
+   expect("stop: song 4 silence", 306, 360, 440, false);
+   expect("stop: song 4 sound effects kept", 306, 360, 1000, true);
+   expect("stop: song 5 mp3 replacement", 366, 480, 550, true);
+   expect("stop: unmapped song plays the game's music", 486, 540, 440, true);
+   expect("stop: unmapped song stops the replacement", 486, 540, 550, false);
+   end_session();
+
    printf("\n%s (%u failure%s)\n", failures ? "FAILED" : "PASSED", failures, failures == 1 ? "" : "s");
    return failures ? 1 : 0;
 }

@@ -59,12 +59,23 @@ std::string describe_song_start(const SongStart &s);
 std::string format_song_start(const SongStart &s);
 bool parse_song_start(const std::string &text, SongStart &s);
 
+// A value written to RAM that stops the game's own music until it starts another song
+// (Super Mario Bros.: $FB = 80). Stopping the music this way keeps the sound channels, and so
+// the sound effects, that muting them would lose.
+struct SongSilence
+{
+   bool known = false;
+   uint32_t address = 0;
+   uint8_t value = 0;
+};
+
 struct GameInfo
 {
    uint32_t crc32 = 0;
    std::string name;
    SongAddress song;
    SongStart start;
+   SongSilence silence;
    std::string note;            // how the entry was confirmed
 };
 

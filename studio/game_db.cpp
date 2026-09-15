@@ -239,6 +239,12 @@ static void parse(const std::string &text, std::map<uint32_t, GameInfo> &games)
       }
       else if (key == "start")
           parse_song_start(value, g->start);
+      else if (key == "silence" && w.size() >= 2 && w[0] == "ram")
+      {
+         g->silence.known = true;
+         g->silence.address = (uint32_t)strtoul(w[1].c_str(), nullptr, 0);
+         g->silence.value = (uint8_t)strtoul(opt("value", "0").c_str(), nullptr, 0);
+      }
    }
 }
 
@@ -334,7 +340,8 @@ void GameDb::save_locked()
                    "; song_address = <memory> <address> size=<bytes> latch=<0|1> debounce=<frames>\n"
                    "; song_address = <memory> <address> bytes=<pattern, xx = song number, .. = any> latch=1 debounce=1\n"
                    "; start = ram <address> bytes=<command, xx = song number> settle=<frames>\n"
-                   "; start = routine <jsl|jsr> <address> [block=<address>] [bytes=...] [a=song] settle=<frames>\n";
+                   "; start = routine <jsl|jsr> <address> [block=<address>] [bytes=...] [a=song] settle=<frames>\n"
+                   "; silence = ram <address> value=<byte that stops the game's music>\n";
    for (auto &e : games_)
    {
       const GameInfo &g = e.second;
@@ -355,6 +362,8 @@ void GameDb::save_locked()
       }
       if (g.start.kind != SongStart::NONE)
          t += "start = " + format_song_start(g.start) + "\n";
+      if (g.silence.known)
+         t += "silence = ram " + hex(g.silence.address, 4) + " value=" + hex(g.silence.value, 2) + "\n";
       if (!g.note.empty())
          t += "note = " + g.note + "\n";
    }

@@ -247,6 +247,7 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
 
    address = SongAddress();
    start = SongStart();
+   silence = SongSilence();
    address_source.clear();
    start_source.clear();
 
@@ -263,6 +264,8 @@ bool RomSession::open(const std::string &rom_path, const std::string &core_path,
       start = info.start;
       start_source = "game database";
    }
+   if (in_db)
+      silence = info.silence;
 
    profile_path_.clear();
    char found[2048];
@@ -423,6 +426,7 @@ void RomSession::save_to_game_db(const std::string &note)
       info.name = display_name_;
    info.song = address;
    info.start = start;
+   info.silence = silence;
    info.note = note + " " + today();
    GameDb::get().put(info);
 }
@@ -2303,6 +2307,75 @@ bool RomSession::find_song_start_nes(const SongPrint *baseline)
    return true;
 }
 
+// Stopping the game's music without muting its channels: most NES music code takes a request that
+// silences it until the next song (Super Mario Bros.: $FB = 80). From the scan start, with music
+// playing and no one pressing buttons, each value of the song request is written; one after which
+// the game goes quiet, and stays quiet, is kept. Values that start songs are skipped.
+bool RomSession::find_silence(const SongStart &s)
+{
+   const double kQuiet = 0.05;   // of the music's loudness
+   auto rms_ahead = [&](double seconds) {
+      double sum = 0;
+      size_t n = 0;
+      for (int f = 0; f < (int)(seconds * 60); f++)
+      {
+         core.run_frame(0);
+         for (int16_t v : core.audio())
+            sum += (double)v * v;
+         n += core.audio().size();
+         core.audio().clear();
+      }
+      return n ? std::sqrt(sum / n) : 0.0;
+   };
+   core.load_state(scan_state_);
+   run_frames(30);
+   double music = rms_ahead(2.0);
+   if (music < 300)
+   {
+      log("no music plays at the scan start, so no way to stop it could be checked");
+      return false;
+   }
+   std::vector<uint32_t> order = { 0x80, 0xFF, 0x7F, 0xFE };
+   for (uint32_t v = 1; v < 0x100; v++)
+      if (std::find(order.begin(), order.end(), v) == order.end())
+         order.push_back(v);
+   std::vector<uint32_t> songs_listed;
+   {
+      std::lock_guard<std::mutex> lock(songs_mutex);
+      for (const auto &song : songs)
+         if (song.has_value)
+            songs_listed.push_back(song.value);
+   }
+   auto nsf = nsf_table.find(s.address);
+   set_scan_message("Looking for how to stop the game's music...");
+   for (uint32_t v : order)
+   {
+      if (cancel_)
+         break;
+      if (std::find(songs_listed.begin(), songs_listed.end(), v) != songs_listed.end() ||
+            (nsf != nsf_table.end() && nsf->second.count((uint8_t)v)))
+         continue;
+      if (!start_song(s, v))
+         return false;
+      run_frames(30);
+      if (rms_ahead(1.0) >= music * kQuiet)
+         continue;
+      if (rms_ahead(3.0) >= music * kQuiet)
+         continue;
+      scan_silence_.known = true;
+      scan_silence_.address = s.address;
+      scan_silence_.value = (uint8_t)v;
+      scan_changed_ = true;
+      log("writing " + hex2(v) + " to $" + hex4(s.address) + " stops the game's music; profiles stop it this way "
+          "instead of muting its sound channels");
+      core.load_state(scan_state_);
+      return true;
+   }
+   core.load_state(scan_state_);
+   log("found no value of $" + hex4(s.address) + " that stops the game's music");
+   return false;
+}
+
 // ---------------------------------------------------------------------------
 // Scanning
 // ---------------------------------------------------------------------------
@@ -2320,6 +2393,7 @@ void RomSession::start_scan(int first, int last)
    scan_found_ = 0;
    scan_address_ = address;
    scan_start_ = start;
+   scan_silence_ = silence;
    scan_address_source_ = address_source;
    scan_start_source_ = start_source;
    scan_changed_ = false;
@@ -2374,6 +2448,7 @@ void RomSession::apply_scan_results()
    scan_changed_ = false;
    address = scan_address_;
    start = scan_start_;
+   silence = scan_silence_;
    address_source = scan_address_source_;
    start_source = scan_start_source_;
    save_to_game_db("confirmed by a scan");
@@ -2603,6 +2678,11 @@ void RomSession::scan_thread(int first, int last)
       }
       scan_done_++;
    }
+
+   // With the songs known, a value that stops the music lets profiles keep the sound effects.
+   if (nes_ && !cancel_ && s.kind == SongStart::RAM && s.bytes.empty() &&
+         !(scan_silence_.known && scan_silence_.address == s.address))
+      find_silence(s);
 
    core.load_state(scan_state_);
    core.audio().clear();
@@ -3030,6 +3110,7 @@ void RomSession::start_movie(const std::string &movie_path, int speed, bool show
    scan_found_ = 0;
    scan_address_ = address;
    scan_start_ = start;
+   scan_silence_ = silence;
    scan_address_source_ = address_source;
    scan_start_source_ = start_source;
    scan_changed_ = false;

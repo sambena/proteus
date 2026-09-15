@@ -75,6 +75,9 @@ public:
    std::string address_source;
    SongStart start;
    std::string start_source;
+   // A RAM request that stops the game's own music (NES scans look for one); profiles use it
+   // instead of muting sound channels.
+   SongSilence silence;
    // Records `address` and `start` in the game database (UI thread).
    void save_to_game_db(const std::string &note);
 
@@ -189,6 +192,8 @@ private:
    bool find_song_start(const SongPrint *baseline);
    bool find_song_start_nes(const SongPrint *baseline);
    bool find_song_variable();
+   // NES: from the scan start, a value of the song request `s` writes that stops the music.
+   bool find_silence(const SongStart &s);
    // NES: records what the game plays over the next `seconds` from where the core is, as a .wav.
    std::vector<uint8_t> record_music(double seconds);
    int reference_by_notes(const std::vector<uint8_t> &spc);
@@ -253,6 +258,7 @@ private:
    std::vector<std::pair<SongAddress, std::string>> address_hints_;
    SongAddress scan_address_;             // the scan thread's copies
    SongStart scan_start_;
+   SongSilence scan_silence_;
    std::string scan_address_source_, scan_start_source_;
    std::atomic<bool> scan_changed_{false};
    std::thread worker_;

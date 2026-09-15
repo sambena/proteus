@@ -198,9 +198,14 @@ NES games work the same way in Studio, with these differences:
   bits. Games whose `.nsf` calls the music routine directly (Mega Man 2) are not found this way yet: play
   them with **Play & rip** (`R` rips the music playing), which names the songs heard and, after three or
   more, can learn the song address as it does for SNES games.
-- **Channels.** FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two
-  squares, triangle, noise and samples). Studio mutes the squares and triangle by default. Most NES games
-  play sound effects on the music's channels, so those effects go quiet while a replacement plays.
+- **Stopping the music, keeping the sound effects.** Most NES games play sound effects on the music's
+  channels, so muting channels loses them. After a scan, Studio writes each value of the song request
+  while music plays and keeps one that stops the music (Super Mario Bros.: `$FB = 80`); profiles then
+  carry a `[silence]` section instead of channel mutes, and Proteus writes that request whenever
+  replacement music starts. Games without one (The Legend of Zelda so far) fall back to muting channels:
+  FCEUmm switches each of the NES's five channels on or off (`fceumm_apu_1` .. `_5`: two squares,
+  triangle, noise and samples), and Studio mutes the squares and triangle by default. The DSP plugin
+  saves those mutes as game options, which stay off for the whole game.
 - TAS movies are SNES only for now.
 
 ### TAS movies
@@ -309,6 +314,13 @@ unmapped = original     ; what unlisted values do: original | silence | keep
 snes9x_sndchan_volume_1 = 0
 snes9x_sndchan_volume_2 = 0
 
+[silence]
+; Optional: a request written to RAM that stops the game's own music while replacement music
+; (or silence) is active, instead of muting channels, so sound effects keep playing.
+memory   = system_ram
+address  = 0x00FB       ; Super Mario Bros.
+value    = 0x80
+
 [mix]
 music_volume = 100      ; percent, up to 200
 game_volume  = 100
@@ -362,7 +374,8 @@ For SNES, `system_ram` is the 128 KB work RAM, so address `$7E0ABC` becomes
 
 ### Muting the original music
 
-The mute options are core-specific:
+When the game's music can be stopped through its RAM, a `[silence]` section does that and no
+channel needs muting. Otherwise the mute options are core-specific:
 
 | Core | Options | Mute value |
 | --- | --- | --- |

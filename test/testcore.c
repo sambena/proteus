@@ -18,6 +18,10 @@
 #define SONG_ADDR 0x42
 #define CMD_ADDR  0x43
 #define BLOCK_ADDR 0x50
+/* Like Super Mario Bros.: writing 0x80 to STOP_ADDR stops the music until the song changes, and
+ * PLAYING_ADDR holds the song playing (0 while stopped). */
+#define STOP_ADDR    0x60
+#define PLAYING_ADDR 0x61
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -31,6 +35,7 @@ static struct
    double sfx_phase;
    double sample_debt;
    uint8_t ram[RAM_SIZE];
+   bool stopped;
 } s;
 
 static bool music_on = true;
@@ -130,6 +135,12 @@ RETRO_API void retro_run(void)
    uint8_t prev1 = s.frame >= 1 ? testcore_song_for_frame(s.frame - 1) : 0;
    uint8_t prev2 = s.frame >= 2 ? testcore_song_for_frame(s.frame - 2) : 0;
    s.ram[SONG_ADDR] = curr;
+   if (s.ram[STOP_ADDR] == 0x80)
+      s.stopped = true;
+   if (s.frame >= 1 && curr != prev1)
+      s.stopped = false;
+   s.ram[STOP_ADDR]    = 0;
+   s.ram[PLAYING_ADDR] = s.stopped ? 0 : curr;
    /* Command register pulses the new song ID for 2 frames when it changes, then resets to 0. */
    if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2))
    {
@@ -155,7 +166,7 @@ RETRO_API void retro_run(void)
    for (size_t i = 0; i < frames; i++)
    {
       double v = 4000.0 * sin(s.sfx_phase);
-      if (music_on)
+      if (music_on && !s.stopped)
          v += 8000.0 * sin(s.music_phase);
       buf[i * 2] = buf[i * 2 + 1] = (int16_t)lrint(v);
       s.music_phase = fmod(s.music_phase + 2.0 * M_PI * 440.0 / RATE, 2.0 * M_PI);
