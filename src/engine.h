@@ -64,6 +64,9 @@ typedef struct
    unsigned silencing;
    bool have_silenced;
    uint32_t silenced;
+   /* A command register read zero since the song was applied: a command for that song again is
+    * the game starting it again. */
+   bool idle;
 } px_engine;
 
 #define PX_ENGINE_STATE_SIZE 48u

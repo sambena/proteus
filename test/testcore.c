@@ -25,6 +25,7 @@
 /* A jingle request, like Super Mario Bros.' $FC: 01 for two frames at frame 250. */
 #define JINGLE_ADDR  0x62
 #define TAP_ADDR     0x63
+#define RESTART_FRAME 120
 
 static retro_environment_t        env_cb;
 static retro_video_refresh_t      video_cb;
@@ -143,10 +144,12 @@ RETRO_API void retro_run(void)
    uint8_t curr = testcore_song_for_frame(s.frame);
    uint8_t prev1 = s.frame >= 1 ? testcore_song_for_frame(s.frame - 1) : 0;
    uint8_t prev2 = s.frame >= 2 ? testcore_song_for_frame(s.frame - 2) : 0;
+   /* At frame 120 the game starts song 2 again, as after losing a life: a stopped song plays again. */
+   bool restart = s.frame == RESTART_FRAME;
    s.ram[SONG_ADDR] = curr;
    if (s.ram[STOP_ADDR] == 0x80)
       s.stopped = true;
-   if (s.frame >= 1 && curr != prev1)
+   if ((s.frame >= 1 && curr != prev1) || restart)
       s.stopped = false;
    s.ram[STOP_ADDR]    = 0;
    s.ram[PLAYING_ADDR] = s.stopped ? 0 : curr;
@@ -156,7 +159,7 @@ RETRO_API void retro_run(void)
    else if (tapped && s.frame % 20 == 10)
       s.ram[TAP_ADDR] = 0x41;
    /* Command register pulses the new song ID for 2 frames when it changes, then resets to 0. */
-   if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2))
+   if (s.frame <= 1 || curr != prev1 || (s.frame >= 2 && prev1 != prev2) || restart || s.frame == RESTART_FRAME + 1)
    {
       s.ram[CMD_ADDR] = curr;
       s.ram[BLOCK_ADDR + 0] = 0x10;

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <SDL.h>
 
@@ -47,4 +48,7 @@ private:
 
    SDL_AudioStream *game_stream_ = nullptr;
    int game_rate_ = 0;
+
+   std::vector<int32_t> mix_;   // fill()'s buffers, kept between calls
+   std::vector<int16_t> tmp_;
 };

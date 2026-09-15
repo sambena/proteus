@@ -90,6 +90,7 @@ static void reset_state(px_engine *e)
    e->warned_memory  = false;
    e->silencing      = 0;
    e->have_silenced  = false;
+   e->idle           = false;
 }
 
 /* Frames in which the game reacts to the silence request (its music code runs once a frame). */
@@ -406,6 +407,7 @@ static void apply_song(px_engine *e, uint32_t value, bool announce)
 
    e->have_applied = true;
    e->applied      = value;
+   e->idle         = false;
 
    /* Song changes are always logged; notifications only shows them on screen. */
    if (announce)
@@ -517,7 +519,10 @@ void px_engine_frame(px_engine *e)
    /* A command register reads zero between commands; the last song keeps playing.
     * Pattern matches return false when idle, so a zero song value is valid. */
    if (e->profile.latch && e->profile.pattern_length == 0 && v == 0)
+   {
+      e->idle = e->have_applied;
       return;
+   }
 
    /* Stopping the game's music changes what it reads as its song: that is still the song applied. */
    if (silencing && e->have_applied && v != e->applied)
@@ -540,7 +545,10 @@ void px_engine_frame(px_engine *e)
    if (e->stable_frames < 0xFFFF)
       e->stable_frames++;
 
-   if (e->stable_frames >= e->profile.debounce && (!e->have_applied || v != e->applied))
+   /* The song applied, read again after its music was stopped or its request cleared, means the game
+    * started it again (a life lost): applied again, the game's music is stopped again. */
+   if (e->stable_frames >= e->profile.debounce &&
+         (!e->have_applied || v != e->applied || e->have_silenced || (e->idle && e->profile.silence)))
       apply_song(e, v, true);
 }
 

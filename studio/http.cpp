@@ -80,7 +80,9 @@ static bool fetch(const std::string &url, const std::string &post_data, std::str
          size = sizeof(total);
          if (!HttpQueryInfoA(req, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &total, &size, NULL))
             total = 0;
-         if (total)
+         // The length is the server's word: reserving more than a download can need could throw
+         // with the handles still open.
+         if (total && total <= (64u << 20))
             response.reserve(total);
          char buf[65536];
          DWORD read = 0;

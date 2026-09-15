@@ -332,7 +332,8 @@ static unsigned scan_music(const px_profile *p, music_entry *out, unsigned max)
          continue;
       qsort(l.names, l.count, sizeof(*l.names), compare_names);
 
-      for (unsigned n = 0; n < l.count; n++)
+      /* Counting a file's songs opens it, so a full list stops looking. */
+      for (unsigned n = 0; n < l.count && count < max; n++)
       {
          char full[PX_PATH_MAX];
          const char *rel;

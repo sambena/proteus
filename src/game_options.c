@@ -21,6 +21,12 @@ void px_game_options_path(const char *config_dir, const char *library_name, cons
    char *hash, *dot;
    const char *base = content_path;
 
+   if (!content_path || !*content_path)
+   {
+      if (n)
+         *out = '\0';
+      return;
+   }
    for (const char *p = content_path; *p; p++)
       if (*p == '/' || *p == '\\')
          base = p + 1;

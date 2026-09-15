@@ -320,7 +320,8 @@ bool CoreHost::load(const std::string &core_path, const std::string &rom_path,
       {
          // Cores that read files themselves get a temporary copy.
          const char *base = strrchr(name.c_str(), '/');
-         extracted_path = save_dir_ + "/extracted_" + (base ? base + 1 : name.c_str());
+         // Hosts in other slots may open a zip holding a file of the same name at the same time.
+         extracted_path = save_dir_ + "/extracted_slot" + std::to_string(slot_) + "_" + (base ? base + 1 : name.c_str());
          FILE *f = px_fopen(extracted_path.c_str(), "wb");
          if (f)
          {

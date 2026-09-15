@@ -961,6 +961,7 @@ int main(int argc, char **argv)
    expect("stop: song 1 original", 6, 60, 440, true);
    expect("stop: song 2 wav replacement", 66, 180, 220, true);
    expect("stop: song 2 game music stopped", 66, 180, 440, false);
+   expect("stop: song 2 started again stays stopped", 126, 180, 440, false);
    expect("stop: song 2 sound effects kept", 66, 180, 1000, true);
    expect("stop: song 3 replaces song 2", 186, 300, 330, true);
    expect("stop: song 3 game music stopped", 186, 300, 440, false);
@@ -980,6 +981,7 @@ int main(int argc, char **argv)
    run_frames(0, 400);
    expect("requests: song 2 wav replacement", 66, 180, 220, true);
    expect("requests: song 2 game music stopped", 66, 180, 440, false);
+   expect("requests: song 2 requested again stays stopped", 126, 180, 440, false);
    expect("requests: song 3 after a stretch of zeros", 186, 246, 330, true);
    expect("requests: jingle stops the replacement", 256, 300, 330, false);
    expect("requests: sound effects kept", 256, 300, 1000, true);

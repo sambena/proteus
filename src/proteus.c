@@ -585,9 +585,13 @@ RETRO_API void retro_init(void)
 
 RETRO_API void retro_deinit(void)
 {
+   px_engine_unload(&engine);
    if (inner.ok)
       inner.api.deinit();
-   px_engine_unload(&engine);
+   /* The frontend's cheats belong to this session; the inner core is gone, so nothing is reset there. */
+   for (unsigned i = 0; i < cheats.count; i++)
+      free(cheats.list[i].code);
+   memset(&cheats, 0, sizeof(cheats));
    free(st.scratch);
    memset(&st, 0, sizeof(st));
    px_options_free();
