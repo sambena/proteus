@@ -350,6 +350,14 @@ static void rebuild_cheats(void)
       inner.api.cheat_set(PX_PATCH_INDEX, true, cheats.patch);
 }
 
+/* Forgets the frontend's cheats (the profile's patch stays). */
+static void free_cheats(void)
+{
+   for (unsigned i = 0; i < cheats.count; i++)
+      free(cheats.list[i].code);
+   cheats.count = 0;
+}
+
 static void host_patch(void *userdata, const char *code)
 {
    (void)userdata;
@@ -589,8 +597,7 @@ RETRO_API void retro_deinit(void)
    if (inner.ok)
       inner.api.deinit();
    /* The frontend's cheats belong to this session; the inner core is gone, so nothing is reset there. */
-   for (unsigned i = 0; i < cheats.count; i++)
-      free(cheats.list[i].code);
+   free_cheats();
    memset(&cheats, 0, sizeof(cheats));
    free(st.scratch);
    memset(&st, 0, sizeof(st));
@@ -708,9 +715,7 @@ RETRO_API bool retro_unserialize(const void *data, size_t size)
 
 RETRO_API void retro_cheat_reset(void)
 {
-   for (unsigned i = 0; i < cheats.count; i++)
-      free(cheats.list[i].code);
-   cheats.count = 0;
+   free_cheats();
    rebuild_cheats();
 }
 
@@ -776,6 +781,8 @@ RETRO_API void retro_unload_game(void)
    if (inner.ok)
       inner.api.unload_game();
    px_engine_unload(&engine);
+   /* The frontend's cheats are for the game unloaded; it sets the next game's after loading it. */
+   free_cheats();
 }
 
 RETRO_API unsigned retro_get_region(void)

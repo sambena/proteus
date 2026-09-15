@@ -177,7 +177,7 @@ void AudioOut::fill(int16_t *out, size_t frames)
          mix[i] += tmp[i];
    }
 
-   int vol = std::clamp(volume, 0, 100);
+   int vol = std::clamp(volume.load(), 0, 100);
    for (size_t i = 0; i < frames * 2; i++)
       out[i] = (int16_t)std::clamp(mix[i] * vol / 100, -32768, 32767);
 }

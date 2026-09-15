@@ -652,9 +652,10 @@ static void follow_song(px_engine *e)
       e->stable_frames++;
 
    /* The song applied, read again after its music was stopped or its request cleared, means the game
-    * started it again (a life lost): applied again, the game's music is stopped again. */
+    * started it again (a life lost): applied again, the replacement starts over and the game's music
+    * is stopped again, however the profile stops it. */
    if (e->stable_frames >= e->profile.debounce &&
-         (!e->have_applied || v != e->applied || e->have_silenced || (e->idle && e->profile.silence)))
+         (!e->have_applied || v != e->applied || e->have_silenced || e->idle))
       apply_song(e, v, true);
 }
 

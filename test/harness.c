@@ -73,13 +73,20 @@ static size_t audio_frames, audio_cap;
 static size_t frame_offsets[MAX_FRAME];
 static unsigned failures;
 
+/* Times song 2 was applied (logged), for checking that a song requested again starts again. */
+static unsigned song2_applied;
+
 static void RETRO_CALLCONV log_cb(enum retro_log_level level, const char *fmt, ...)
 {
+   char line[1024];
    va_list ap;
    (void)level;
    va_start(ap, fmt);
-   vprintf(fmt, ap);
+   vsnprintf(line, sizeof(line), fmt, ap);
    va_end(ap);
+   fputs(line, stdout);
+   if (strstr(line, "song 0x2 "))
+      song2_applied++;
 }
 
 static int find_opt(const char *key)
@@ -929,7 +936,13 @@ int main(int argc, char **argv)
    snprintf(content, sizeof(content), "%s/latch.tst", argv[3]);
    if (!start_session(content, 2))
       return 1;
+   song2_applied = 0;
    run_frames(0, 300);
+   {
+      char detail[32];
+      snprintf(detail, sizeof(detail), "%u times", song2_applied);
+      check("latch: song 2 requested again starts again", song2_applied == 2, detail);
+   }
    expect("latch: song 1 original", 6, 60, 440, true);
    expect("latch: song 2 wav replacement", 66, 180, 220, true);
    expect("latch: song 2 original muted", 66, 180, 440, false);

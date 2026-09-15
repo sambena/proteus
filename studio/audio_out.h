@@ -3,6 +3,7 @@
 // plays) mixed with live game audio.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -31,7 +32,7 @@ public:
    size_t game_queued();
    void clear_game();
 
-   int volume = 80;   // percent
+   std::atomic<int> volume{80};   // percent; set by the UI, read by the audio callback
 
 private:
    static void SDLCALL callback(void *self, Uint8 *stream, int len);

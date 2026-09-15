@@ -2953,9 +2953,12 @@ void RomSession::scan_thread(int first, int last)
       core.set_skip_video(false);
       core_lock.unlock();
       save_library();
+      // The source's parenthesis says what the songs are followed through, when it has one.
+      size_t open = scan_address_source_.find('('), close = scan_address_source_.rfind(')');
+      std::string through = open != std::string::npos && close != std::string::npos && close > open
+            ? scan_address_source_.substr(open + 1, close - open - 1) : scan_address_source_;
       set_scan_message((cancel_ ? "Scan stopped: " : "Scan finished: ") + std::to_string((int)scan_found_) +
-            " songs listed by name, followed through " + scan_address_source_.substr(scan_address_source_.find('(') + 1,
-            scan_address_source_.size() - scan_address_source_.find('(') - 2) + ".");
+            " songs listed by name, followed through " + through + ".");
       scanning_ = false;
       return;
    }
