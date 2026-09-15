@@ -32,14 +32,20 @@ Install into RetroArch (close RetroArch first). In PowerShell, from this folder:
     powershell -ExecutionPolicy Bypass -File .\\install-core.ps1 -RetroArch D:\\RetroArch -Dsp
     Then in RetroArch: Settings > Audio > DSP Plugin > Proteus.dsp
 
-  Wrapper core, "Proteus Retune + Snes9x" (needs snes9x_libretro.dll installed):
+  Wrapper core around a core you have installed ("Proteus Retune + Snes9x"):
     powershell -ExecutionPolicy Bypass -File .\\install-core.ps1 -RetroArch D:\\RetroArch -Core snes9x
+    NES:  -Core fceumm
+    N64:  -Core mupen64plus_next   (N64 is tested with the wrapper core)
 
 Replace D:\\RetroArch with your RetroArch folder.
 
 ProteusStudio.exe finds a game's songs and writes its profile. Choose your RetroArch
 folder under Settings the first time. proteus-cli.exe does the same work from the
 command line. README.md has the full guide.
+
+Super Mario 64 and Ocarina of Time: write their profiles, every song listed by name, with
+    .\\proteus-cli.exe n64 D:\\RetroArch\\cores\\mupen64plus_next_libretro.dll "D:\\Roms\\Nintendo 64" D:\\RetroArch\\system\\proteus
+then pick replacements under Quick Menu > Core Options > Proteus.
 
 No games, ROMs or music are included. Use games you own.
 
