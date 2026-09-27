@@ -28,6 +28,9 @@ OUT=$2
 shift 2
 FRAMES=${FRAMES:-1200}
 H=$DIR/harness2600
+# dll, so or dylib: as the cores make test2600 left there are named
+E=dll
+for e in so dylib; do [ -f "$DIR/px/stellapx_libretro.$e" ] && E=$e; done
 FAIL=0
 N=0
 
@@ -38,9 +41,9 @@ OFF="--opt proteus_fx_glow=off --opt proteus_fx_shadow=disabled --opt proteus_fx
  --opt proteus_fx_game=disabled --opt proteus_fx_audio=disabled"
 PLAIN="--opt stella_phosphor=off"
 SILENT="--opt proteus_fx_audio=disabled"
-STELLA=$DIR/stock/stella_libretro.dll
-PX=$DIR/px/stellapx_libretro.dll
-PROTEUS=$DIR/px/proteus_stellapx_libretro.dll
+STELLA=$DIR/stock/stella_libretro.$E
+PX=$DIR/px/stellapx_libretro.$E
+PROTEUS=$DIR/px/proteus_stellapx_libretro.$E
 
 sum() { sha1sum < "$1" | cut -c1-40; }
 

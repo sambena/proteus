@@ -15,15 +15,17 @@ PX=$3
 PROTEUS=$4
 ROM=${5:-$DIR/pxtest.a26}
 FRAMES=${FRAMES:-600}
+# dll, so or dylib: as the cores given are named
+E=${STOCK##*.}
 H=$DIR/harness2600
 FAIL=0
 
 # The wrapper finds its inner core next to itself, by its own name.
 mkdir -p "$DIR/stock" "$DIR/px" "$DIR/out"
-cp "$STOCK" "$DIR/stock/stella_libretro.dll"
-cp "$PX" "$DIR/px/stellapx_libretro.dll"
-cp "$PROTEUS" "$DIR/stock/proteus_stella_libretro.dll"
-cp "$PROTEUS" "$DIR/px/proteus_stellapx_libretro.dll"
+cp "$STOCK" "$DIR/stock/stella_libretro.$E"
+cp "$PX" "$DIR/px/stellapx_libretro.$E"
+cp "$PROTEUS" "$DIR/stock/proteus_stella_libretro.$E"
+cp "$PROTEUS" "$DIR/px/proteus_stellapx_libretro.$E"
 
 COMMON="--quiet --input --sysdir $DIR/out --opt stella_phosphor=off"
 
@@ -71,44 +73,44 @@ NOSOUND="--opt proteus_fx_audio=disabled"
 
 echo "Atari 2600: $FRAMES frames of $(basename "$ROM")"
 
-run stock      "$DIR/stock/stella_libretro.dll"
-run px_off     "$DIR/px/stellapx_libretro.dll"
-run px_on      "$DIR/px/stellapx_libretro.dll" --capture --layers "$DIR/out/layers"
-run wrap_stock "$DIR/stock/proteus_stella_libretro.dll" $NOSOUND
-run native     "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_scale=native
-run plain      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND $OFF --native
-run plain1920  "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND $OFF --native --opt proteus_fx_scale=1920
-run disabled   "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_video=disabled
-run full       "$DIR/px/proteus_stellapx_libretro.dll" --bmp "$DIR/out/full.bmp" --wav "$DIR/out/full.wav"
-run fused      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND $OFF --native --opt proteus_fx_flicker=enabled
-run layers     "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_view=layers --bmp "$DIR/out/view_layers.bmp"
-run boxes      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_view=instances --bmp "$DIR/out/view_instances.bmp"
-run mono       "$DIR/px/proteus_stellapx_libretro.dll" --opt proteus_fx_width=0 --opt proteus_fx_reverb=off
-run wide       "$DIR/px/proteus_stellapx_libretro.dll" --opt proteus_fx_width=100 --opt proteus_fx_reverb=off
-run noglow     "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_glow=off --opt proteus_fx_shadow=disabled
+run stock      "$DIR/stock/stella_libretro.$E"
+run px_off     "$DIR/px/stellapx_libretro.$E"
+run px_on      "$DIR/px/stellapx_libretro.$E" --capture --layers "$DIR/out/layers"
+run wrap_stock "$DIR/stock/proteus_stella_libretro.$E" $NOSOUND
+run native     "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --opt proteus_fx_scale=native
+run plain      "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND $OFF --native
+run plain1920  "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND $OFF --native --opt proteus_fx_scale=1920
+run disabled   "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --opt proteus_fx_video=disabled
+run full       "$DIR/px/proteus_stellapx_libretro.$E" --bmp "$DIR/out/full.bmp" --wav "$DIR/out/full.wav"
+run fused      "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND $OFF --native --opt proteus_fx_flicker=enabled
+run layers     "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --opt proteus_fx_view=layers --bmp "$DIR/out/view_layers.bmp"
+run boxes      "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --opt proteus_fx_view=instances --bmp "$DIR/out/view_instances.bmp"
+run mono       "$DIR/px/proteus_stellapx_libretro.$E" --opt proteus_fx_width=0 --opt proteus_fx_reverb=off
+run wide       "$DIR/px/proteus_stellapx_libretro.$E" --opt proteus_fx_width=100 --opt proteus_fx_reverb=off
+run noglow     "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --opt proteus_fx_glow=off --opt proteus_fx_shadow=disabled
 
 # A profile for the game, in the system directory, says the same as noglow's options.
 mkdir -p "$DIR/out_profile/proteus"
 printf '[fx]\nglow = off\nshadow = disabled\naudio = disabled\n' > "$DIR/out_profile/proteus/$(basename "$ROM" .a26).ini"
 COMMON="--quiet --input --sysdir $DIR/out_profile --opt stella_phosphor=off"
-run profile    "$DIR/px/proteus_stellapx_libretro.dll"
+run profile    "$DIR/px/proteus_stellapx_libretro.$E"
 COMMON="--quiet --input --sysdir $DIR/out --opt stella_phosphor=off"
 
 # The options by key and by button. A key at the first frame is as good as the option.
-run full_silent "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND
-run noshadow   "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_shadow=disabled
-run key        "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --key 0:4 --show-options
-run key_local  "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --key 0:4 --no-set-variable --show-options
-run keys_off   "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --key 0:4 --opt proteus_fx_keys=disabled
+run full_silent "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND
+run noshadow   "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --opt proteus_fx_shadow=disabled
+run key        "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --key 0:4 --show-options
+run key_local  "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --key 0:4 --no-set-variable --show-options
+run keys_off   "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --key 0:4 --opt proteus_fx_keys=disabled
 COMMON="--quiet --sysdir $DIR/out --opt stella_phosphor=off"
-run quiet      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND
-run panel      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:3 --press 200:b:3 \
+run quiet      "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND
+run panel      "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --press 100:x:3 --press 200:b:3 \
    --bmp "$DIR/out/panel.bmp"
-run panel_open "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:3 --press 120:down:3 \
+run panel_open "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --press 100:x:3 --press 120:down:3 \
    --press 130:down:3 --press 140:right:3 --show-options --bmp "$DIR/out/panel_open.bmp"
-run chord      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:30 --press 110:b:3 \
+run chord      "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --press 100:x:30 --press 110:b:3 \
    --show-options
-run button_off "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:3 \
+run button_off "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND --press 100:x:3 \
    --opt proteus_fx_button=off
 COMMON="--quiet --input --sysdir $DIR/out --opt stella_phosphor=off"
 
@@ -117,9 +119,9 @@ PAL_ROM=$(dirname "$ROM")/pxtest_pal.a26
 if [ -f "$PAL_ROM" ]; then
    NTSC_ROM=$ROM
    ROM=$PAL_ROM
-   run pal_stock "$DIR/stock/stella_libretro.dll"
-   run pal_plain "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND $OFF --native
-   run pal_full  "$DIR/px/proteus_stellapx_libretro.dll" --bmp "$DIR/out/pal_full.bmp"
+   run pal_stock "$DIR/stock/stella_libretro.$E"
+   run pal_plain "$DIR/px/proteus_stellapx_libretro.$E" $NOSOUND $OFF --native
+   run pal_full  "$DIR/px/proteus_stellapx_libretro.$E" --bmp "$DIR/out/pal_full.bmp"
    ROM=$NTSC_ROM
 fi
 
