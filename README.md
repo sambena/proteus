@@ -518,10 +518,31 @@ and processes the TIA's two voices apart. None of it needs to know the game.
 | Stereo width | the two voices are panned apart |
 | Low-pass filter, reverb | each voice is filtered, and both get a room around them |
 
-This needs a build of Stella that reports what each pixel is made of: the `proteus-capture`
-branch of a Stella checkout, which builds `stellapx_libretro`. Install it next to the wrapper
-named `proteus_stellapx_libretro`. Around Stella as its authors build it, the picture passes
-through unchanged and the sound is processed as one voice.
+This needs a build of Stella that reports what each pixel is made of: the
+[`proteus-capture` branch of sambena/stella](https://github.com/sambena/stella/tree/proteus-capture),
+a fork of [Stella](https://github.com/stella-emu/stella) that builds `stellapx_libretro`.
+Around Stella as its authors build it, the picture passes through unchanged and the sound is
+processed as one voice.
+
+From an MSYS2 UCRT64 shell:
+
+```sh
+git clone --branch proteus-capture https://github.com/sambena/stella.git
+make -C stella/src/os/libretro
+cp stella/src/os/libretro/stellapx_libretro.dll /c/RetroArch-Win64/cores/
+cp /c/RetroArch-Win64/info/stella_libretro.info /c/RetroArch-Win64/info/stellapx_libretro.info
+```
+
+Then install the wrapper around it, which RetroArch lists as
+"Atari - 2600 (Proteus Retune + Stella)":
+
+```powershell
+.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core stellapx
+```
+
+The fork also makes two of Stella's core options do what they say, which Proteus relies on:
+**Stereo sound** "on" gives the two voices apart, and **Phosphor mode** "off" is off from
+the start of a game.
 
 The options are under **Proteus 2600** in the core options. **View** shows the picture's
 parts: every object in a flat colour of its own, one layer alone, or a box around every object
@@ -540,7 +561,9 @@ width = 60
 A profile with `[fx]` and no `[song]` swaps no music.
 
 `make test2600` checks all of it against Stella with a test program that `test/rom2600.c`
-writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores.
+writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores: Stella
+as its authors build it, and the fork's build. `test/games2600.sh` runs the same checks on
+games of your own.
 
 ## Layout
 
