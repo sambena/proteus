@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fx.h"
 #include "music.h"
 
 #define MAX_VALUES   RETRO_NUM_CORE_OPTION_VALUES_MAX
@@ -236,6 +237,11 @@ bool px_options_inner_declared(void)
  * Proteus's own options
  * ------------------------------------------------------------------------- */
 
+/* The category own_def files its options under. */
+static const char *own_category = "proteus";
+/* The wrapped core is an Atari 2600: the picture and sound options apply. */
+static bool fx_offered;
+
 static opt_def *own_def(const char *key, const char *desc, const char *desc_categorized,
       const char *info, const char *default_value)
 {
@@ -248,9 +254,89 @@ static opt_def *own_def(const char *key, const char *desc, const char *desc_cate
    d->desc             = dup_str(full_desc);
    d->desc_categorized = dup_str(desc_categorized ? desc_categorized : desc);
    d->info             = dup_str(info);
-   d->category         = dup_str("proteus");
+   d->category         = dup_str(own_category);
    d->default_value    = dup_str(default_value);
    return d;
+}
+
+/* An option whose first value leaves the choice to the game's profile, and to
+ * `default_value` where that says nothing. */
+static void own_choice(const char *key, const char *desc, const char *info,
+      const char *default_value, const char *const *values)
+{
+   opt_def *d = own_def(key, desc, NULL, info, PX_OPT_FX_PROFILE);
+   char label[96];
+   const char *name = default_value;
+   for (unsigned i = 0; values[i]; i += 2)
+      if (!strcmp(values[i], default_value))
+         name = values[i + 1];
+   snprintf(label, sizeof(label), "Profile, or %s", name);
+   if (d)
+      add_value(d, PX_OPT_FX_PROFILE, label);
+   for (unsigned i = 0; d && values[i]; i += 2)
+      add_value(d, values[i], values[i + 1]);
+}
+
+static void build_fx(void)
+{
+   static const char *const toggle[] = { "enabled", "Enabled", "disabled", "Disabled", NULL };
+   static const char *const scale[] = { "native", "Native (no effects)", "640", "640 wide",
+      "1280", "1280 wide", "1920", "1920 wide", NULL };
+   static const char *const view[] = { "normal", "Normal", "layers", "Objects in flat colours",
+      "instances", "Objects boxed", "bk", "Background only", "pf", "Playfield only",
+      "p0", "Player 0 only", "p1", "Player 1 only", "m0", "Missile 0 only",
+      "m1", "Missile 1 only", "bl", "Ball only", NULL };
+   static const char *const level[] = { "off", "Off", "low", "Low", "medium", "Medium",
+      "high", "High", NULL };
+   static const char *const width[] = { "0", "0% (mono)", "10", "10%", "20", "20%", "30", "30%",
+      "40", "40%", "50", "50%", "60", "60%", "70", "70%", "80", "80%", "90", "90%",
+      "100", "100% (one voice a side)", NULL };
+   static const char *const lowpass[] = { "off", "Off", "soft", "Soft", "warm", "Warm", NULL };
+   static const char *const reverb[] = { "off", "Off", "small", "Small room", "room", "Room",
+      "hall", "Hall", NULL };
+
+   own_category = "proteus_fx";
+   add_category(&own_set, "proteus_fx", "Proteus 2600",
+         "Draw the picture again from the TIA's objects, and process its two voices apart.");
+
+   own_choice(PX_OPT_FX_VIDEO, "Enhanced picture",
+         "Draw the picture from the objects the TIA made it of. Needs the stellapx core.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_SCALE, "Picture size",
+         "The size of the picture handed to the frontend. Shaders that draw scanlines expect the native size.",
+         "1280", scale);
+   own_choice(PX_OPT_FX_GLOW, "Glow",
+         "Players, missiles and the ball glow in their own colour.", "medium", level);
+   own_choice(PX_OPT_FX_SHADOW, "Shadows",
+         "Objects throw a shadow on the playfield and the background.", "enabled", toggle);
+   own_choice(PX_OPT_FX_SMOOTH, "Smooth objects",
+         "Cut the stair steps of players, missiles and the ball. The playfield stays as it is.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_FLICKER, "Flicker fusion",
+         "Draw objects in every frame that the game shows in turns. Turn this off for games that blink objects on purpose.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_TRAILS, "Shot trails",
+         "Missiles and the ball leave a fading trail.", "enabled", toggle);
+   own_choice(PX_OPT_FX_BACKGROUND, "Background treatment",
+         "Darken the background towards the edges and blend its bands of colour.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_REACTIVE, "Glow follows the sound",
+         "The glow grows with the volume of the two voices.", "enabled", toggle);
+   own_choice(PX_OPT_FX_SCANLINES, "Scanlines",
+         "Darken the last row of every scanline.", "disabled", toggle);
+   own_choice(PX_OPT_FX_VIEW, "View",
+         "Show the picture's parts, to see what a game draws with which object.",
+         "normal", view);
+   own_choice(PX_OPT_FX_AUDIO, "Enhanced sound",
+         "Process the two voices apart. Turns Stella's stereo sound on.", "enabled", toggle);
+   own_choice(PX_OPT_FX_WIDTH, "Stereo width",
+         "How far the two voices are apart.", "30", width);
+   own_choice(PX_OPT_FX_LOWPASS, "Low-pass filter",
+         "Take the edge off the voices.", "soft", lowpass);
+   own_choice(PX_OPT_FX_REVERB, "Reverb",
+         "The room around the voices.", "small", reverb);
+
+   own_category = "proteus";
 }
 
 static void add_percent_values(opt_def *d)
@@ -464,6 +550,17 @@ static void build_own(const px_profile *p)
       }
       free(entries);
    }
+
+   if (fx_offered)
+      build_fx();
+}
+
+void px_options_set_fx(bool offered)
+{
+   if (fx_offered == offered)
+      return;
+   fx_offered = offered;
+   clear_set(&own_set);
 }
 
 /* ---------------------------------------------------------------------------
@@ -632,4 +729,5 @@ void px_options_free(void)
    clear_set(&inner_set);
    clear_set(&own_set);
    inner_declared = false;
+   fx_offered     = false;
 }

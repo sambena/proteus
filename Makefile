@@ -47,7 +47,8 @@ endif
 
 CORE     := $(BUILD)/proteus_libretro.$(EXT)
 DSP      := $(BUILD)/proteus_dsp.$(EXT)
-SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/usf_play.c src/options.c src/util.c src/game_options.c
+SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/usf_play.c src/options.c src/util.c src/game_options.c \
+            src/fx_video.c src/fx_track.c src/fx_audio.c
 DSP_SRC  := src/dsp.c src/engine.c src/profile.c src/music.c src/decoders.c src/usf_play.c src/util.c src/game_options.c
 GME_SRC  := $(wildcard deps/gme/*.cpp)
 GME_OBJ  := $(GME_SRC:%.cpp=$(OBJ)/%.o) $(OBJ)/deps/gme/ext/emu2413.o
@@ -180,7 +181,29 @@ test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$
 	$(TESTDIR)/harness$(EXE) run $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR) $(TESTDIR)/mixed.wav
 	$(TESTDIR)/harness$(EXE) dsp $(DSP) $(TESTDIR)/testcore_libretro.$(EXT) $(TESTDIR)
 
+# Atari 2600: Proteus around Stella, checked against Stella itself. STELLA is Stella's
+# libretro core as its authors build it, STELLAPX the build with the capture interface.
+TEST2600 := $(BUILD)/test2600
+STELLA   ?= ../cores/stock/stella_libretro.$(EXT)
+STELLAPX ?= ../cores/px/stellapx_libretro.$(EXT)
+
+$(TEST2600):
+	mkdir -p $@
+
+$(TEST2600)/rom2600$(EXE): test/rom2600.c | $(TEST2600)
+	$(CC) $(CFLAGS) -o $@ $<
+
+$(TEST2600)/harness2600$(EXE): test/harness2600.c src/fx_track.c src/fx.h src/proteus_capture.h | $(TEST2600)
+	$(CC) $(CFLAGS) -o $@ test/harness2600.c src/fx_track.c $(LDLIBS)
+
+$(TEST2600)/pxtest.a26: $(TEST2600)/rom2600$(EXE)
+	$(TEST2600)/rom2600$(EXE) $@
+	$(TEST2600)/rom2600$(EXE) $(TEST2600)/pxtest_pal.a26 pal
+
+test2600: $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a26
+	sh test/run2600.sh $(abspath $(TEST2600)) $(abspath $(STELLA)) $(abspath $(STELLAPX)) $(abspath $(CORE))
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test clean studio cli
+.PHONY: all test test2600 clean studio cli

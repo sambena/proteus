@@ -21,6 +21,7 @@
 
 #include "libretro.h"
 #include "engine.h"
+#include "fx.h"
 #include "options.h"
 #include "util.h"
 
@@ -62,6 +63,9 @@ struct inner_api
    unsigned (*get_region)(void);
    void *(*get_memory_data)(unsigned);
    size_t (*get_memory_size)(unsigned);
+   /* The capture interface (proteus_capture.h); NULL in cores without it. */
+   void (*capture_enable)(unsigned);
+   const struct pxc_frame *(*capture)(unsigned);
 };
 
 static struct
@@ -95,6 +99,29 @@ static struct
    int16_t *scratch;
    size_t scratch_frames;
 } st;
+
+/* The Atari 2600's picture and sound (fx.h). */
+static struct
+{
+   bool is_2600;            /* the inner core is Stella */
+   px_fx_config cfg;
+   px_fx_video *video;
+   px_fx_audio *audio;
+
+   /* The frame the inner core handed over in this retro_run. */
+   bool got_frame;
+   const void *frame;
+   unsigned frame_w, frame_h;
+   size_t frame_pitch;
+
+   bool video_enabled;      /* false while the frontend runs frames nobody will see */
+   struct retro_system_av_info av;   /* as the inner core last gave it */
+   bool have_av;
+   unsigned out_w, out_h;   /* the size the frontend was told */
+
+   uint64_t us_sum;
+   unsigned us_frames, us_max;
+} fx;
 
 /* <system>/proteus/proteus.log: RetroArch's own log is often off, and this is where
  * profiles live. */
@@ -266,6 +293,20 @@ static bool ensure_inner(void)
       goto fail;
    }
 
+#ifdef _WIN32
+   inner.api.capture_enable = (void (*)(unsigned))(void*)GetProcAddress(inner.lib, "retro_proteus_capture_enable");
+   inner.api.capture = (const struct pxc_frame *(*)(unsigned))(void*)GetProcAddress(inner.lib, "retro_proteus_capture");
+#else
+   inner.api.capture_enable = (void (*)(unsigned))dlsym(inner.lib, "retro_proteus_capture_enable");
+   inner.api.capture = (const struct pxc_frame *(*)(unsigned))dlsym(inner.lib, "retro_proteus_capture");
+#endif
+   if (!inner.api.capture_enable || !inner.api.capture)
+      inner.api.capture_enable = NULL, inner.api.capture = NULL;
+
+   /* stella_libretro, stellapx_libretro, stella2014_libretro */
+   fx.is_2600 = strncasecmp(base + strlen(PX_PREFIX), "stella", 6) == 0;
+   px_options_set_fx(fx.is_2600);
+
    inner.ok = true;
    apply_callbacks();
    return true;
@@ -382,6 +423,177 @@ static const px_host engine_host = {
 };
 
 /* ---------------------------------------------------------------------------
+ * The Atari 2600's picture and sound
+ * ------------------------------------------------------------------------- */
+
+static bool fx_video_on(void)
+{
+   return fx.is_2600 && fx.video && fx.cfg.video && inner.api.capture;
+}
+
+static bool fx_audio_on(void)
+{
+   return fx.is_2600 && fx.audio && fx.cfg.audio;
+}
+
+/* The value an option of the inner core is held at, or NULL: Proteus needs the voices apart
+ * and the picture as the TIA made it. */
+static const char *fx_override(const char *key)
+{
+   if (!fx.is_2600 || !key)
+      return NULL;
+   if (fx_audio_on() && !strcmp(key, "stella_stereo"))
+      return "on";
+   if (fx_video_on())
+   {
+      if (!strcmp(key, "stella_filter"))         return "disabled";
+      if (!strcmp(key, "stella_phosphor"))       return "off";
+      if (!strcmp(key, "stella_crop_hoverscan")) return "disabled";
+      if (!strcmp(key, "stella_crop_voverscan")) return "0";
+   }
+   return NULL;
+}
+
+/* Makes the inner core's geometry that of the picture Proteus draws. */
+static void fx_geometry(struct retro_system_av_info *av)
+{
+   unsigned w, h;
+   fx.av      = *av;
+   fx.have_av = true;
+   if (!fx_video_on())
+      return;
+   px_fx_video_size(&fx.cfg, av->geometry.base_height, &w, &h);
+   /* At the core's own size the core's geometry stands: it names the size to show the
+    * frame at, which is twice as wide as the frame. */
+   if (fx.cfg.sx > 1)
+   {
+      av->geometry.base_width  = w;
+      av->geometry.base_height = h;
+   }
+   if (av->geometry.max_width < PX_FX_MAX_WIDTH)
+      av->geometry.max_width = PX_FX_MAX_WIDTH;
+   if (av->geometry.max_height < PX_FX_MAX_HEIGHT)
+      av->geometry.max_height = PX_FX_MAX_HEIGHT;
+   fx.out_w = w;
+   fx.out_h = h;
+}
+
+static void fx_tell_geometry(unsigned w, unsigned h)
+{
+   struct retro_system_av_info av;
+   if (!fx.have_av || !fe_env)
+      return;
+   av = fx.av;
+   if (fx.cfg.sx > 1)
+   {
+      av.geometry.base_width  = w;
+      av.geometry.base_height = h;
+   }
+   else
+      av.geometry.base_height = h;
+   if (av.geometry.max_width < PX_FX_MAX_WIDTH)
+      av.geometry.max_width = PX_FX_MAX_WIDTH;
+   if (av.geometry.max_height < PX_FX_MAX_HEIGHT)
+      av.geometry.max_height = PX_FX_MAX_HEIGHT;
+   fe_env(RETRO_ENVIRONMENT_SET_GEOMETRY, &av);
+   fx.out_w = w;
+   fx.out_h = h;
+}
+
+static const char *fx_profile_get(const char *key)
+{
+   return px_profile_fx(&engine.profile, key);
+}
+
+static void fx_read_config(void)
+{
+   bool video_was = fx_video_on(), audio_was = fx_audio_on();
+   if (!fx.is_2600)
+      return;
+   px_fx_config_read(&fx.cfg, px_options_get, fx_profile_get);
+   if (inner.api.capture_enable)
+      inner.api.capture_enable(fx.cfg.video
+            ? PXC_ENABLE_VIDEO | PXC_ENABLE_WRITES | PXC_ENABLE_AUDIO : 0);
+   /* The inner core's options that depend on these are to be read again. */
+   if (video_was != fx_video_on() || audio_was != fx_audio_on())
+      st.options_dirty = true;
+}
+
+static void fx_start(void)
+{
+   if (!fx.is_2600)
+      return;
+   if (!fx.video)
+      fx.video = px_fx_video_new();
+   if (!fx.audio)
+      fx.audio = px_fx_audio_new();
+   fx.us_sum = 0;
+   fx.us_frames = fx.us_max = 0;
+   fx_read_config();
+   if (!inner.api.capture)
+      px_log(RETRO_LOG_WARN, "%s has no capture interface: the picture is passed through. "
+            "Install stellapx_libretro and name Proteus " PX_PREFIX "stellapx_libretro for the enhanced picture.",
+            inner.path);
+}
+
+static void fx_stop(void)
+{
+   px_fx_video_free(fx.video);
+   px_fx_audio_free(fx.audio);
+   fx.video   = NULL;
+   fx.audio   = NULL;
+   fx.have_av = false;
+   fx.out_w = fx.out_h = 0;
+}
+
+/* Shows the frame of this retro_run: drawn from its capture, or else as the core made it. */
+static void fx_present(void)
+{
+   const struct pxc_frame *c = NULL;
+   const uint32_t *px = NULL;
+   unsigned w = 0, h = 0;
+
+   if (!fe_video)
+      return;
+   if (!fx.frame)
+   {
+      /* The frame before, again. */
+      fe_video(NULL, fx.out_w ? fx.out_w : fx.frame_w, fx.out_h ? fx.out_h : fx.frame_h,
+            (fx.out_w ? fx.out_w : fx.frame_w) * sizeof(uint32_t));
+      return;
+   }
+
+   if (fx.video_enabled && fx_video_on())
+      c = inner.api.capture(PXC_ABI_VERSION);
+   if (c && c->struct_size >= sizeof(*c) && c->width == fx.frame_w && c->height == fx.frame_h)
+      px = px_fx_video_render(fx.video, c, &fx.cfg, &w, &h);
+
+   if (!px)
+   {
+      fe_video(fx.frame, fx.frame_w, fx.frame_h, fx.frame_pitch);
+      return;
+   }
+
+   if (w != fx.out_w || h != fx.out_h)
+      fx_tell_geometry(w, h);
+   fe_video(px, w, h, (size_t)w * sizeof(uint32_t));
+
+   {
+      unsigned us = px_fx_video_last_us(fx.video);
+      fx.us_sum += us;
+      if (us > fx.us_max)
+         fx.us_max = us;
+      if (++fx.us_frames >= 1800)
+      {
+         px_log(RETRO_LOG_INFO, "picture %ux%u: %u us a frame on average, %u us at most",
+               w, h, (unsigned)(fx.us_sum / fx.us_frames), fx.us_max);
+         fx.us_sum = 0;
+         fx.us_frames = fx.us_max = 0;
+      }
+   }
+}
+
+/* ---------------------------------------------------------------------------
  * Callbacks handed to the inner core
  * ------------------------------------------------------------------------- */
 
@@ -399,12 +611,26 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
          struct retro_variable *var = (struct retro_variable*)data;
          bool ret = fe_env(cmd, data);
          const char *forced = var ? px_engine_mute_override(&engine, var->key) : NULL;
+         if (!forced && var)
+            forced = fx_override(var->key);
          if (forced)
          {
             var->value = forced;
             return true;
          }
          return ret;
+      }
+
+      case RETRO_ENVIRONMENT_SET_GEOMETRY:
+      {
+         struct retro_system_av_info av;
+         if (!data || !fx.is_2600)
+            return fe_env(cmd, data);
+         /* Only the geometry is the core's to give here; the timing is as before. */
+         av = fx.have_av ? fx.av : *(const struct retro_system_av_info*)data;
+         av.geometry = ((const struct retro_system_av_info*)data)->geometry;
+         fx_geometry(&av);
+         return fe_env(cmd, &av);
       }
 
       case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE:
@@ -426,9 +652,19 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
 
       case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO:
       {
-         bool ret = fe_env(cmd, data);
-         if (ret && data)
-            px_engine_set_rate(&engine, ((const struct retro_system_av_info*)data)->timing.sample_rate);
+         struct retro_system_av_info av;
+         bool ret;
+         if (!data)
+            return fe_env(cmd, data);
+         av = *(const struct retro_system_av_info*)data;
+         if (fx.is_2600)
+            fx_geometry(&av);
+         ret = fe_env(cmd, &av);
+         if (ret)
+         {
+            px_engine_set_rate(&engine, av.timing.sample_rate);
+            px_fx_audio_set_rate(fx.audio, av.timing.sample_rate);
+         }
          return ret;
       }
 
@@ -463,6 +699,8 @@ static bool mixing_active(void)
 static void RETRO_CALLCONV audio_sample_wrap(int16_t left, int16_t right)
 {
    int16_t frame[2] = { left, right };
+   if (fx_audio_on() && st.audio_enabled)
+      px_fx_audio_process(fx.audio, &fx.cfg, frame, 1);
    if (mixing_active())
       px_engine_mix_s16(&engine, frame, 1);
    if (fe_audio_sample)
@@ -471,14 +709,34 @@ static void RETRO_CALLCONV audio_sample_wrap(int16_t left, int16_t right)
 
 static size_t RETRO_CALLCONV audio_batch_wrap(const int16_t *data, size_t frames)
 {
+   bool voices = fx_audio_on() && st.audio_enabled;
    int16_t *buf;
    if (!fe_audio_batch)
       return frames;
-   if (!mixing_active() || !(buf = scratch_buffer(frames)))
+   if ((!voices && !mixing_active()) || !(buf = scratch_buffer(frames)))
       return fe_audio_batch(data, frames);
    memcpy(buf, data, frames * 2 * sizeof(int16_t));
-   px_engine_mix_s16(&engine, buf, frames);
+   if (voices)
+      px_fx_audio_process(fx.audio, &fx.cfg, buf, frames);
+   if (mixing_active())
+      px_engine_mix_s16(&engine, buf, frames);
    return fe_audio_batch(buf, frames);
+}
+
+/* The inner core's frame is kept until retro_run knows what to show for it. */
+static void RETRO_CALLCONV video_wrap(const void *data, unsigned width, unsigned height, size_t pitch)
+{
+   if (!fx_video_on())
+   {
+      if (fe_video)
+         fe_video(data, width, height, pitch);
+      return;
+   }
+   fx.got_frame   = true;
+   fx.frame       = data;
+   fx.frame_w     = width;
+   fx.frame_h     = height;
+   fx.frame_pitch = pitch;
 }
 
 static void apply_callbacks(void)
@@ -488,7 +746,7 @@ static void apply_callbacks(void)
    if (fe_env)
       inner.api.set_environment(env_wrap);
    if (fe_video)
-      inner.api.set_video_refresh(fe_video);
+      inner.api.set_video_refresh(video_wrap);
    if (fe_audio_sample)
       inner.api.set_audio_sample(audio_sample_wrap);
    if (fe_audio_batch)
@@ -554,7 +812,7 @@ RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb)
 {
    fe_video = cb;
    if (ensure_inner())
-      inner.api.set_video_refresh(cb);
+      inner.api.set_video_refresh(video_wrap);
 }
 
 RETRO_API void retro_set_audio_sample(retro_audio_sample_t cb)
@@ -596,6 +854,8 @@ RETRO_API void retro_deinit(void)
    px_engine_unload(&engine);
    if (inner.ok)
       inner.api.deinit();
+   fx_stop();
+   memset(&fx, 0, sizeof(fx));
    /* The frontend's cheats belong to this session; the inner core is gone, so nothing is reset there. */
    free_cheats();
    memset(&cheats, 0, sizeof(cheats));
@@ -636,6 +896,9 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
    }
    inner.api.get_system_av_info(info);
    px_engine_set_rate(&engine, info->timing.sample_rate);
+   px_fx_audio_set_rate(fx.audio, info->timing.sample_rate);
+   if (fx.is_2600)
+      fx_geometry(info);
 }
 
 RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -650,33 +913,47 @@ RETRO_API void retro_reset(void)
       return;
    inner.api.reset();
    px_engine_reset(&engine);
+   px_fx_video_reset(fx.video);
+   px_fx_audio_reset(fx.audio);
 }
 
 RETRO_API void retro_run(void)
 {
+   bool engine_on;
+
    if (!inner.ok)
       return;
+   engine_on = px_engine_loaded(&engine);
 
-   if (px_engine_loaded(&engine))
+   if (engine_on || fx.is_2600)
    {
       int av = 0;
       bool updated = false;
+      bool have_av;
 
       /* Taking the update flag hides it from the inner core; env_wrap hands it on. */
       if (fe_env(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
       {
          st.option_update = true;
-         px_engine_options_changed(&engine);
+         if (engine_on)
+            px_engine_options_changed(&engine);
+         fx_read_config();
       }
 
       /* Bit 1 is cleared while run-ahead renders frames nobody will hear;
-       * the music must not advance during those. */
-      st.audio_enabled = !fe_env(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av) || (av & 2);
+       * the music must not advance during those. Bit 0 is the same for the picture. */
+      have_av = fe_env(RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE, &av);
+      st.audio_enabled = !have_av || (av & 2);
+      fx.video_enabled = !have_av || (av & 1);
       /* Detect before running so a mute takes effect in this frame's audio. */
-      px_engine_frame(&engine);
+      if (engine_on)
+         px_engine_frame(&engine);
    }
 
+   fx.got_frame = false;
    inner.api.run();
+   if (fx.got_frame)
+      fx_present();
 }
 
 RETRO_API size_t retro_serialize_size(void)
@@ -747,11 +1024,17 @@ static void after_load(bool ok)
       struct retro_system_av_info av;
       inner.api.get_system_av_info(&av);
       px_engine_set_rate(&engine, av.timing.sample_rate);
+      px_fx_audio_set_rate(fx.audio, av.timing.sample_rate);
+      fx.av      = av;
+      fx.have_av = true;
       /* The profile's cheats were set before the game loaded; cores keep cheats per game. */
       rebuild_cheats();
    }
    else
+   {
       px_engine_unload(&engine);
+      fx_stop();
+   }
 }
 
 RETRO_API bool retro_load_game(const struct retro_game_info *game)
@@ -760,6 +1043,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    if (!ensure_inner())
       return false;
    load_profile_for(game ? game->path : NULL);
+   /* Before the inner core loads the game, which is when it reads its options. */
+   fx_start();
    ok = inner.api.load_game(game);
    after_load(ok);
    return ok;
@@ -781,6 +1066,7 @@ RETRO_API void retro_unload_game(void)
    if (inner.ok)
       inner.api.unload_game();
    px_engine_unload(&engine);
+   fx_stop();
    /* The frontend's cheats are for the game unloaded; it sets the next game's after loading it. */
    free_cheats();
 }

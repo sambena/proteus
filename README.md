@@ -501,10 +501,54 @@ Sound effects in most SNES games use the upper voices (often 7 and 8), so muting
 voices 1–6 usually keeps them. Games that steal music voices for effects will
 lose some effects; mute fewer channels for those games.
 
+## Atari 2600: picture and sound
+
+Around Stella, the wrapper core draws the picture again from the objects the TIA made it of,
+and processes the TIA's two voices apart. None of it needs to know the game.
+
+| Effect | What it does |
+| --- | --- |
+| Glow | players, missiles and the ball glow in their own colour |
+| Shot trails | missiles and the ball leave a fading trail |
+| Shadows | objects throw a shadow on the playfield and the background |
+| Smooth objects | the stair steps of objects are cut; the playfield stays blocky |
+| Flicker fusion | objects the game shows in turns are drawn in every frame |
+| Background treatment | a vignette, and bands of background colour blend into each other |
+| Stereo width | the two voices are panned apart |
+| Low-pass filter, reverb | each voice is filtered, and both get a room around them |
+
+This needs a build of Stella that reports what each pixel is made of: the `proteus-capture`
+branch of a Stella checkout, which builds `stellapx_libretro`. Install it next to the wrapper
+named `proteus_stellapx_libretro`. Around Stella as its authors build it, the picture passes
+through unchanged and the sound is processed as one voice.
+
+The options are under **Proteus 2600** in the core options. **View** shows the picture's
+parts: every object in a flat colour of its own, one layer alone, or a box around every object
+found, which is how to see what a game draws with which object. **Picture size** "Native" is
+Stella's own frame, for shaders that draw scanlines themselves.
+
+A game's profile can set any of the options, for where they are left at "Profile":
+
+```ini
+[fx]
+glow = high
+flicker = disabled
+width = 60
+```
+
+A profile with `[fx]` and no `[song]` swaps no music.
+
+`make test2600` checks all of it against Stella with a test program that `test/rom2600.c`
+writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores.
+
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
+| `src/proteus_capture.h` | the capture interface between a core and Proteus: objects at every pixel, their colours, register writes, the voices |
+| `src/fx_video.c` | Atari 2600: draws the picture from its captured parts |
+| `src/fx_track.c` | Atari 2600: the objects in a frame, and the same object over frames |
+| `src/fx_audio.c` | Atari 2600: the two voices, filtered, panned and in a room |
 | `src/engine.c` | song detection, choosing what plays, mixing, save state data (shared) |
 | `src/proteus.c` | the wrapper core: libretro API passthrough, option overrides, save states |
 | `src/dsp.c` | the DSP plugin: finds the running core and game inside RetroArch |
@@ -532,6 +576,7 @@ lose some effects; mute fewer channels for those games.
 | `studio/audio_out.cpp` | plays songs and game audio |
 | `deps/imgui/` | Dear ImGui bundled library |
 | `test/` | a fake game core and a headless frontend that checks the mixed audio and the options |
+| `test/rom2600.c`, `test/harness2600.c`, `test/run2600.sh` | an Atari 2600 test program, a headless frontend that hashes frames and checks the capture, and the checks of `make test2600` |
 | `tools/install-core.ps1` | installs the plugin and wrapper cores into a RetroArch folder |
 
 ## License

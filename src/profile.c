@@ -556,6 +556,25 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
       else
          goto bad_key;
    }
+   else if (!strcmp(section, "fx"))
+   {
+      static const char *const keys[] = { "video", "scale", "view", "glow", "shadow",
+         "background", "smooth", "flicker", "trails", "reactive", "scanlines", "audio", "width",
+         "lowpass", "reverb" };
+      bool known = false;
+      for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+         known = known || !strcmp(key, keys[i]);
+      if (!known)
+         goto bad_key;
+      if (p->fx_count >= PX_MAX_FX)
+      {
+         snprintf(err, errlen, "too many entries in [fx] (max %d)", PX_MAX_FX);
+         return false;
+      }
+      snprintf(p->fx[p->fx_count].key, sizeof(p->fx[0].key), "%s", key);
+      snprintf(p->fx[p->fx_count].value, sizeof(p->fx[0].value), "%s", val);
+      p->fx_count++;
+   }
    else
    {
       snprintf(err, errlen, "unknown section [%s]", section);
@@ -659,6 +678,12 @@ bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen)
 
    if (!have_address)
    {
+      /* A profile for the picture and the sound alone. */
+      if (p->fx_count)
+      {
+         p->fx_only = true;
+         return true;
+      }
       snprintf(err, errlen, "[song] address is required");
       return false;
    }
@@ -669,6 +694,15 @@ bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen)
 fail:
    fclose(f);
    return false;
+}
+
+const char *px_profile_fx(const px_profile *p, const char *key)
+{
+   /* The last entry of a key counts. */
+   for (unsigned i = p ? p->fx_count : 0; i-- > 0;)
+      if (!strcmp(p->fx[i].key, key))
+         return p->fx[i].value;
+   return NULL;
 }
 
 int px_profile_find(const px_profile *p, uint32_t value)

@@ -25,6 +25,9 @@ void px_options_set_frontend(retro_environment_t env);
  * returns true. */
 bool px_options_intercept(unsigned cmd, void *data, bool *result);
 bool px_options_inner_declared(void);
+/* Offers the Atari 2600 picture and sound options (fx.h) or not. Takes effect on the next
+ * publish. */
+void px_options_set_fx(bool offered);
 /* Rebuilds Proteus's options for a game; `profile` (may be NULL) adds one song
  * picker per mapped song. Takes effect on the next publish. */
 void px_options_set_profile(const px_profile *profile);
