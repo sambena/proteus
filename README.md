@@ -514,6 +514,7 @@ and processes the TIA's two voices apart. None of it needs to know the game.
 | Smooth objects | the stair steps of objects are cut; the playfield stays blocky |
 | Flicker fusion | objects the game shows in turns are drawn in every frame |
 | Background treatment | a vignette, and bands of background colour blend into each other |
+| Fill the bars at the left | the black bars of lines on which a game moved its objects (HMOVE) get the scenery next to them |
 | Stereo width | the two voices are panned apart |
 | Low-pass filter, reverb | each voice is filtered, and both get a room around them |
 

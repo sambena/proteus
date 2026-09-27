@@ -66,7 +66,7 @@ line() {   # name, word
 
 OFF="--opt proteus_fx_glow=off --opt proteus_fx_shadow=disabled --opt proteus_fx_smooth=disabled \
  --opt proteus_fx_flicker=disabled --opt proteus_fx_trails=disabled --opt proteus_fx_background=disabled \
- --opt proteus_fx_reactive=disabled --opt proteus_fx_scanlines=disabled"
+ --opt proteus_fx_reactive=disabled --opt proteus_fx_scanlines=disabled --opt proteus_fx_bars=disabled"
 NOSOUND="--opt proteus_fx_audio=disabled"
 
 echo "Atari 2600: $FRAMES frames of $(basename "$ROM")"

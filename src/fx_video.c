@@ -29,6 +29,8 @@
 enum { CLS_BK = 0, CLS_PF, CLS_SPRITE, CLS_BLANK };
 
 #define GLOW_W (PXC_W * 2)
+/* Parts a picture is drawn in, each by a thread. */
+#define BANDS_MAX (PX_POOL_MAX + 1)
 #define KEY(cls, rgb) (((uint32_t)(cls) << 24) | ((rgb) & 0xFFFFFFu))
 #define KEY_CLS(k)    ((k) >> 24)
 
@@ -49,7 +51,7 @@ struct px_fx_video
    uint16_t *glow;
    uint16_t *glow_tmp;
    uint16_t *trail;
-   uint16_t *glow_row;   /* one row, blended between two of glow's */
+   uint16_t *glow_row;   /* a row for every band, blended between two of glow's */
    uint8_t  *row_sprite; /* a row of the capture has an object */
    uint8_t  *row_glow;   /* a row of the glow has light */
 
@@ -60,7 +62,9 @@ struct px_fx_video
    uint16_t *col_near;
    uint16_t *col_g0, *col_g1;   /* the glow's two columns next to it */
    uint8_t  *col_gf;     /* how far from the first to the second, of 256 */
-   uint32_t *keys;       /* a row of the picture before the effects */
+   uint32_t *keys;       /* a row of the picture before the effects, for every band */
+
+   px_pool *pool;
 
    unsigned height;      /* of the frame before, to tell when the buffers are stale */
    unsigned level;       /* how loud the voices are, smoothed, 0..256 */
@@ -119,6 +123,7 @@ void px_fx_config_read(px_fx_config *c, const char *(*get)(const char *key),
    c->trails     = is_on(V(PX_OPT_FX_TRAILS), true);
    c->reactive   = is_on(V(PX_OPT_FX_REACTIVE), true);
    c->scanlines  = is_on(V(PX_OPT_FX_SCANLINES), false);
+   c->bars       = is_on(V(PX_OPT_FX_BARS), true);
    c->lowpass    = pick(V(PX_OPT_FX_LOWPASS), lowpass, 3, 1);
    c->reverb     = pick(V(PX_OPT_FX_REVERB), reverb, 4, 1);
    c->view       = pick(V(PX_OPT_FX_VIEW), views, 10, PX_VIEW_NORMAL);
@@ -161,7 +166,8 @@ px_fx_video *px_fx_video_new(void)
    v->glow     = (uint16_t*)calloc(g, sizeof(uint16_t));
    v->glow_tmp = (uint16_t*)calloc(g, sizeof(uint16_t));
    v->trail    = (uint16_t*)calloc(g, sizeof(uint16_t));
-   v->glow_row = (uint16_t*)calloc((size_t)GLOW_W * 3, sizeof(uint16_t));
+   v->glow_row = (uint16_t*)calloc((size_t)GLOW_W * 3 * BANDS_MAX, sizeof(uint16_t));
+   v->pool     = px_pool_new();
    v->row_sprite = (uint8_t*)calloc(PXC_MAX_H, 1);
    v->row_glow   = (uint8_t*)calloc(PXC_MAX_H, 1);
    if (!v->top || !v->bk || !v->sprite || !v->energy || !v->glow || !v->glow_tmp || !v->trail
@@ -177,6 +183,7 @@ void px_fx_video_free(px_fx_video *v)
 {
    if (!v)
       return;
+   px_pool_free(v->pool);
    px_objects_free(&v->objects);
    free(v->out);
    free(v->top);
@@ -257,6 +264,30 @@ static unsigned top_of(uint8_t tags, unsigned priority, unsigned *layer)
       }
    *layer = PXC_L_BK;
    return CLS_BK;
+}
+
+/* The bars at the left of lines on which a game moved its objects (HMOVE): the TIA blanks
+ * eight pixels there. Black on black they do not show, on a background that is lit they
+ * would, so they are given what is next to them of the scenery. */
+static void fill_bars(px_fx_video *v, const struct pxc_frame *f)
+{
+   for (unsigned y = 0; y < f->height; y++)
+   {
+      uint32_t *top = v->top + (size_t)y * PXC_W;
+      uint32_t *bk  = v->bk + (size_t)y * PXC_W;
+      unsigned n = 0;
+      uint32_t key;
+      while (n < PXC_W && KEY_CLS(top[n]) == CLS_BLANK)
+         n++;
+      if (!n || n > 16)
+         continue;
+      key = KEY_CLS(top[n]) == CLS_SPRITE ? KEY(CLS_BK, bk[n]) : top[n];
+      for (unsigned x = 0; x < n; x++)
+      {
+         top[x] = key;
+         bk[x]  = bk[n];
+      }
+   }
 }
 
 static void classify(px_fx_video *v, const struct pxc_frame *f)
@@ -612,7 +643,7 @@ static bool make_columns(px_fx_video *v, unsigned w, unsigned sx, unsigned shado
    v->col_g0    = (uint16_t*)malloc(w * sizeof(uint16_t));
    v->col_g1    = (uint16_t*)malloc(w * sizeof(uint16_t));
    v->col_gf    = (uint8_t*)malloc(w);
-   v->keys      = (uint32_t*)malloc(w * sizeof(uint32_t));
+   v->keys      = (uint32_t*)malloc((size_t)w * BANDS_MAX * sizeof(uint32_t));
    if (!v->col_vx || !v->col_shade || !v->col_near || !v->col_g0 || !v->col_g1 || !v->col_gf
          || !v->keys)
    {
@@ -645,17 +676,34 @@ static bool make_columns(px_fx_video *v, unsigned w, unsigned sx, unsigned shado
    return true;
 }
 
-static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
-      unsigned w, unsigned h)
+/* What the bands of a picture have in common. */
+typedef struct
 {
-   static const unsigned glow_gain[4] = { 0, 150, 215, 280 };
-   static const uint32_t none[PXC_W];
-   const unsigned sx = c->sx, sy = c->sy, sh = f->height;
-   const bool smooth = c->smooth && sx >= 4;
-   /* The shadow falls to the lower right, further from objects than their stair steps. */
-   const unsigned shadow_x = sx * 3 / 4, shadow_y = sy * 3 / 2;
-   unsigned gain = glow_gain[c->glow & 3], gain_on_sprites;
+   px_fx_video *v;
+   const struct pxc_frame *f;
+   const px_fx_config *c;
+   unsigned w, h;
+   bool smooth;
+   unsigned shadow_x, shadow_y;
+   unsigned gain, gain_on_sprites;
+   /* Which corner of a captured pixel an output pixel is in: 1..4, 0 for the middle. */
    uint8_t corner[PX_FX_MAX_SY][PX_FX_MAX_SX];
+} picture;
+
+/* Band `index` of `count`: the rows of the capture it stands for, drawn. Bands share nothing
+ * that is written to but the picture, of which each has its own rows. */
+static void draw_band(void *ctx, unsigned index, unsigned count)
+{
+   static const uint32_t none[PXC_W];
+   const picture *p = (const picture*)ctx;
+   px_fx_video *v = p->v;
+   const px_fx_config *c = p->c;
+   const unsigned sx = c->sx, sy = c->sy, sh = p->f->height, w = p->w, h = p->h;
+   const unsigned shadow_y = p->shadow_y, gain = p->gain, gain_on_sprites = p->gain_on_sprites;
+   const bool smooth = p->smooth;
+   const unsigned y_from = sh * index / count, y_to = sh * (index + 1) / count;
+   uint32_t *keys = v->keys + (size_t)index * w;
+   uint16_t *glow_row = v->glow_row + (size_t)index * GLOW_W * 3;
    uint8_t glow_any[GLOW_W];
    uint32_t quad[5][PXC_W];
    uint8_t band[PXC_W], cornered[PXC_W];
@@ -663,40 +711,7 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
    bool lut_valid = false;
    unsigned lut_misses = 0;
 
-   if (!make_columns(v, w, sx, shadow_x))
-      return;
-
-   if (c->reactive)
-      gain += (gain * v->level) >> 9;
-   gain_on_sprites = gain * 90u / 256u;
-
-   /* Which corner of a captured pixel an output pixel is in: 1..4, 0 for the middle. */
-   for (unsigned t = 0; t < sy; t++)
-      for (unsigned u = 0; u < sx; u++)
-      {
-         unsigned fu = (2 * u + 1) * 256 / (2 * sx), fv = (2 * t + 1) * 256 / (2 * sy);
-         unsigned gu = 256 - fu, gv = 256 - fv;
-         corner[t][u] = !smooth ? 0 : fu + fv < 128 ? 1 : gu + fv < 128 ? 2
-               : fu + gv < 128 ? 3 : gu + gv < 128 ? 4 : 0;
-      }
-
-   /* Rows of the capture with an object, and rows of the glow with any light. */
-   for (unsigned y = 0; y < sh; y++)
-   {
-      const uint32_t *s = v->sprite + (size_t)y * PXC_W;
-      const uint16_t *g = v->glow + (size_t)y * GLOW_W * 3;
-      uint32_t any = 0;
-      unsigned lit = 0;
-      for (unsigned x = 0; x < PXC_W; x++)
-         any |= s[x];
-      v->row_sprite[y] = any != 0;
-      if (gain)
-         for (unsigned i = 0; i < GLOW_W * 3; i++)
-            lit |= g[i];
-      v->row_glow[y] = lit != 0;
-   }
-
-   for (unsigned y = 0; y < sh; y++)
+   for (unsigned y = y_from; y < y_to; y++)
    {
       const uint32_t *top = v->top + (size_t)y * PXC_W;
       const uint32_t *up  = y ? top - PXC_W : top;
@@ -708,14 +723,14 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
       /* What each corner of each pixel of this row shows. */
       for (unsigned x = 0; x < PXC_W; x++)
       {
-         const uint32_t p = top[x];
-         quad[0][x] = quad[1][x] = quad[2][x] = quad[3][x] = quad[4][x] = p;
-         if (smooth && KEY_CLS(p) != CLS_BLANK)
+         const uint32_t px = top[x];
+         quad[0][x] = quad[1][x] = quad[2][x] = quad[3][x] = quad[4][x] = px;
+         if (smooth && KEY_CLS(px) != CLS_BLANK)
          {
             const uint32_t a = up[x], d = dn[x];
-            const uint32_t l = x ? top[x - 1] : p, r = x + 1 < PXC_W ? top[x + 1] : p;
+            const uint32_t l = x ? top[x - 1] : px, r = x + 1 < PXC_W ? top[x + 1] : px;
             /* Only where an object is on one side of the step. */
-            if (KEY_CLS(p) == CLS_SPRITE || KEY_CLS(a) == CLS_SPRITE || KEY_CLS(d) == CLS_SPRITE
+            if (KEY_CLS(px) == CLS_SPRITE || KEY_CLS(a) == CLS_SPRITE || KEY_CLS(d) == CLS_SPRITE
                   || KEY_CLS(l) == CLS_SPRITE || KEY_CLS(r) == CLS_SPRITE)
             {
                if (l == a && l != d && a != r && KEY_CLS(a) != CLS_BLANK) quad[1][x] = a;
@@ -724,9 +739,9 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
                if (r == d && r != a && d != l && KEY_CLS(d) != CLS_BLANK) quad[4][x] = d;
             }
          }
-         cornered[x] = quad[1][x] != p || quad[2][x] != p || quad[3][x] != p || quad[4][x] != p;
+         cornered[x] = quad[1][x] != px || quad[2][x] != px || quad[3][x] != px || quad[4][x] != px;
          /* Bands of the background's colour blend into the one below. */
-         band[x] = c->background && KEY_CLS(p) == CLS_BK && KEY_CLS(dn[x]) == CLS_BK
+         band[x] = c->background && KEY_CLS(px) == CLS_BK && KEY_CLS(dn[x]) == CLS_BK
                && bk[x] != bkd[x];
          bands = bands || band[x];
       }
@@ -735,7 +750,6 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
       {
          const unsigned Y = y * sy + t;
          uint32_t *out = v->out + (size_t)Y * w;
-         uint32_t *keys = v->keys;
          const unsigned shadow_row = Y >= shadow_y ? (Y - shadow_y) / sy : sh;
          const unsigned near_row   = Y >= shadow_y / 2 ? (Y - shadow_y / 2) / sy : sh;
          const bool far_on  = c->shadow && shadow_row < sh && v->row_sprite[shadow_row];
@@ -765,26 +779,25 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
             {
                const uint16_t *a = v->glow + (size_t)g0 * GLOW_W * 3;
                const uint16_t *b = v->glow + (size_t)g1 * GLOW_W * 3;
-               uint16_t *row = v->glow_row;
                for (unsigned i = 0; i < GLOW_W * 3; i++)
-                  row[i] = (uint16_t)((a[i] * (256 - fy) + b[i] * fy) >> 8);
+                  glow_row[i] = (uint16_t)((a[i] * (256 - fy) + b[i] * fy) >> 8);
                for (unsigned i = 0; i < GLOW_W; i++)
-                  glow_any[i] = (row[i * 3] | row[i * 3 + 1] | row[i * 3 + 2]) != 0;
+                  glow_any[i] = (glow_row[i * 3] | glow_row[i * 3 + 1] | glow_row[i * 3 + 2]) != 0;
                glows = true;
             }
          }
 
          /* The row before the effects. */
          {
-            const uint8_t *cr = corner[t];
+            const uint8_t *cr = p->corner[t];
             for (unsigned x = 0; x < PXC_W; x++)
             {
                uint32_t *k = keys + x * sx;
                if (!cornered[x])
                {
-                  const uint32_t p = top[x];
+                  const uint32_t px = top[x];
                   for (unsigned u = 0; u < sx; u++)
-                     k[u] = p;
+                     k[u] = px;
                }
                else
                   for (unsigned u = 0; u < sx; u++)
@@ -867,7 +880,7 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
                {
                   const unsigned cls = KEY_CLS(keys[X]);
                   const unsigned fx = cf[X], k = cls == CLS_SPRITE ? gain_on_sprites : gain;
-                  const uint16_t *a = v->glow_row + g0 * 3, *b = v->glow_row + g1 * 3;
+                  const uint16_t *a = glow_row + g0 * 3, *b = glow_row + g1 * 3;
                   const uint32_t rgb = out[X];
                   unsigned r, g, bl;
                   if (cls == CLS_BLANK)
@@ -887,6 +900,65 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
                   out[X] = scale_rgb(out[X], 176);
       }
    }
+}
+
+static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+      unsigned w, unsigned h)
+{
+   static const unsigned glow_gain[4] = { 0, 150, 215, 280 };
+   const unsigned sx = c->sx, sy = c->sy, sh = f->height;
+   picture p;
+   unsigned parts;
+
+   p.v      = v;
+   p.f      = f;
+   p.c      = c;
+   p.w      = w;
+   p.h      = h;
+   p.smooth = c->smooth && sx >= 4;
+   /* The shadow falls to the lower right, further from objects than their stair steps. */
+   p.shadow_x = sx * 3 / 4;
+   p.shadow_y = sy * 3 / 2;
+   p.gain     = glow_gain[c->glow & 3];
+   if (c->reactive)
+      p.gain += (p.gain * v->level) >> 9;
+   p.gain_on_sprites = p.gain * 90u / 256u;
+
+   if (!make_columns(v, w, sx, p.shadow_x))
+      return;
+
+   for (unsigned t = 0; t < sy; t++)
+      for (unsigned u = 0; u < sx; u++)
+      {
+         unsigned fu = (2 * u + 1) * 256 / (2 * sx), fv = (2 * t + 1) * 256 / (2 * sy);
+         unsigned gu = 256 - fu, gv = 256 - fv;
+         p.corner[t][u] = !p.smooth ? 0 : fu + fv < 128 ? 1 : gu + fv < 128 ? 2
+               : fu + gv < 128 ? 3 : gu + gv < 128 ? 4 : 0;
+      }
+
+   /* Rows of the capture with an object, and rows of the glow with any light. */
+   for (unsigned y = 0; y < sh; y++)
+   {
+      const uint32_t *s = v->sprite + (size_t)y * PXC_W;
+      const uint16_t *g = v->glow + (size_t)y * GLOW_W * 3;
+      uint32_t any = 0;
+      unsigned lit = 0;
+      for (unsigned x = 0; x < PXC_W; x++)
+         any |= s[x];
+      v->row_sprite[y] = any != 0;
+      if (p.gain)
+         for (unsigned i = 0; i < GLOW_W * 3; i++)
+            lit |= g[i];
+      v->row_glow[y] = lit != 0;
+   }
+
+   parts = px_pool_parts(v->pool);
+   if (parts > BANDS_MAX)
+      parts = BANDS_MAX;
+   /* Small pictures are drawn sooner than threads are woken. */
+   if ((size_t)w * h < 200000 || parts > sh)
+      parts = 1;
+   px_pool_run(v->pool, draw_band, &p, parts);
 }
 
 const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
@@ -930,6 +1002,8 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
    {
       const bool fuse = c->flicker && !plain;
       classify(v, f);
+      if (c->bars && !plain)
+         fill_bars(v, f);
       if (fuse || c->view == PX_VIEW_INSTANCES)
       {
          px_objects_update(&v->objects, f, fuse);

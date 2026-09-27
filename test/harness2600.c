@@ -12,6 +12,9 @@
  *     --layers <prefix>   with --capture: write the last frame's layers as <prefix>_*.bmp
  *     --wav <file>        write the audio
  *     --state             hash the save state after the last frame
+ *     --state-out <file>  write the save state after the last frame
+ *     --state-in <file>   start from a save state, which makes runs of a game the same
+ *     --slow <ms>         wait that long before every frame
  *     --native            hash frames that are larger than the core's at the core's size,
  *                         taking the pixel in the middle of every block
  *     --sysdir <dir>      the system directory (profiles, proteus.log)
@@ -57,6 +60,7 @@ static struct
    void (*run)(void);
    size_t (*serialize_size)(void);
    bool (*serialize)(void*, size_t);
+   bool (*unserialize)(const void*, size_t);
    bool (*load_game)(const struct retro_game_info*);
    void (*unload_game)(void);
    /* optional */
@@ -422,6 +426,7 @@ static bool open_core(const char *path)
    GET(run, "retro_run");
    GET(serialize_size, "retro_serialize_size");
    GET(serialize, "retro_serialize");
+   GET(unserialize, "retro_unserialize");
    GET(load_game, "retro_load_game");
    GET(unload_game, "retro_unload_game");
 #undef GET
@@ -654,8 +659,9 @@ int main(int argc, char **argv)
    struct retro_system_info info;
    struct retro_system_av_info av;
    const char *hashes_path = NULL, *bmp_path = NULL, *layers_path = NULL, *wav_path = NULL;
+   const char *state_in = NULL, *state_out = NULL;
    bool want_capture = false, want_state = false, native = false;
-   double time_sum = 0.0, time_max = 0.0;
+   double time_sum = 0.0, time_max = 0.0, slow_ms = 0.0;
    unsigned frames;
    uint64_t video_hash = FNV_START;
    FILE *hashes = NULL;
@@ -687,11 +693,14 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--capture")) want_capture = true;
       else if (!strcmp(argv[i], "--state"))   want_state = true;
       else if (!strcmp(argv[i], "--native"))  native = true;
+      else if (!strcmp(argv[i], "--slow") && i + 1 < argc) slow_ms = atof(argv[++i]);
       else if (!strcmp(argv[i], "--quiet"))   quiet = true;
       else if (!strcmp(argv[i], "--hashes") && i + 1 < argc) hashes_path = argv[++i];
       else if (!strcmp(argv[i], "--bmp") && i + 1 < argc)    bmp_path = argv[++i];
       else if (!strcmp(argv[i], "--layers") && i + 1 < argc) layers_path = argv[++i];
       else if (!strcmp(argv[i], "--wav") && i + 1 < argc)    wav_path = argv[++i];
+      else if (!strcmp(argv[i], "--state-in") && i + 1 < argc)  state_in = argv[++i];
+      else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) state_out = argv[++i];
       else if (!strcmp(argv[i], "--sysdir") && i + 1 < argc) system_dir = argv[++i];
       else
       {
@@ -742,6 +751,28 @@ int main(int argc, char **argv)
          av.geometry.base_width, av.geometry.base_height, av.geometry.max_width,
          av.geometry.max_height, av.geometry.aspect_ratio, av.timing.fps, av.timing.sample_rate);
 
+   /* Stella starts a game with memory and registers of chance. A state makes runs the same:
+    * it is loaded once the core has run, as a frontend does. */
+   if (state_in)
+   {
+      FILE *sf = fopen(state_in, "rb");
+      long n = 0;
+      void *state = NULL;
+      core.run();
+      core.run();
+      if (!sf || fseek(sf, 0, SEEK_END) || (n = ftell(sf)) <= 0 || fseek(sf, 0, SEEK_SET)
+            || !(state = malloc((size_t)n)) || fread(state, 1, (size_t)n, sf) != (size_t)n
+            || !core.unserialize(state, (size_t)n))
+      {
+         printf("cannot load the state %s\n", state_in);
+         return 1;
+      }
+      fclose(sf);
+      free(state);
+      video_frames = video_dupes = 0;
+      audio_frames = 0;
+   }
+
    if (hashes_path)
       hashes = fopen(hashes_path, "w");
 
@@ -749,6 +780,13 @@ int main(int argc, char **argv)
    {
       double ms;
       video_new = false;
+      if (slow_ms > 0.0)
+      {
+         /* Busy for a while: shows whether a core's frames depend on the time they take. */
+         double until = now_ms() + slow_ms;
+         while (now_ms() < until)
+            ;
+      }
       ms = now_ms();
       core.run();
       ms = now_ms() - ms;
@@ -813,14 +851,31 @@ int main(int argc, char **argv)
    printf("time   %.3f ms a frame on average, %.3f ms at most\n",
          frames ? time_sum / frames : 0.0, time_max);
 
-   if (want_state)
+   if (want_state || state_out)
    {
       size_t n = core.serialize_size();
       void *state = malloc(n ? n : 1);
       if (n && state && core.serialize(state, n))
+      {
+         FILE *sf = state_out ? fopen(state_out, "wb") : NULL;
          printf("state  %016llx  %u bytes\n", (unsigned long long)fnv(FNV_START, state, n), (unsigned)n);
+         if (sf)
+         {
+            fwrite(state, 1, n, sf);
+            fclose(sf);
+         }
+         else if (state_out)
+         {
+            printf("cannot write %s\n", state_out);
+            failures++;
+         }
+      }
       else
+      {
          printf("state  unavailable\n");
+         if (state_out)
+            failures++;
+      }
       free(state);
    }
 

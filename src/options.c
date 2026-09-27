@@ -322,6 +322,9 @@ static void build_fx(void)
          "enabled", toggle);
    own_choice(PX_OPT_FX_REACTIVE, "Glow follows the sound",
          "The glow grows with the volume of the two voices.", "enabled", toggle);
+   own_choice(PX_OPT_FX_BARS, "Fill the bars at the left",
+         "Lines on which a game moves its objects start with a black bar (HMOVE). Fill it with the scenery next to it.",
+         "enabled", toggle);
    own_choice(PX_OPT_FX_SCANLINES, "Scanlines",
          "Darken the last row of every scanline.", "disabled", toggle);
    own_choice(PX_OPT_FX_VIEW, "View",

@@ -30,6 +30,7 @@ extern "C" {
 #define PX_OPT_FX_TRAILS     "proteus_fx_trails"
 #define PX_OPT_FX_REACTIVE   "proteus_fx_reactive"
 #define PX_OPT_FX_SCANLINES  "proteus_fx_scanlines"
+#define PX_OPT_FX_BARS       "proteus_fx_bars"
 #define PX_OPT_FX_AUDIO      "proteus_fx_audio"
 #define PX_OPT_FX_WIDTH      "proteus_fx_width"
 #define PX_OPT_FX_LOWPASS    "proteus_fx_lowpass"
@@ -66,6 +67,7 @@ typedef struct
    bool trails;
    bool reactive;
    bool scanlines;
+   bool bars;             /* fill the bars HMOVE leaves at the left */
 
    unsigned width;        /* 0..100: how far apart the two voices are panned */
    unsigned lowpass;      /* 0 off, 1 soft, 2 warm */
@@ -135,6 +137,24 @@ void px_objects_reset(px_objects *o);
 /* Finds the frame's instances and matches them to the tracks. With `ghosts`, tracks that
  * flicker and are not in this frame are added as instances marked `ghost`. */
 void px_objects_update(px_objects *o, const struct pxc_frame *f, bool ghosts);
+
+/* ---------------------------------------------------------------------------
+ * Threads that share a frame's work
+ * ------------------------------------------------------------------------- */
+
+#define PX_POOL_MAX 7   /* threads besides the one that asks */
+
+typedef struct px_pool px_pool;
+/* Part `index` of `count` of a job. Parts run at once and in no order. */
+typedef void (*px_pool_job)(void *ctx, unsigned index, unsigned count);
+
+/* Half as many threads as the machine has cores, the asking one counted. */
+px_pool *px_pool_new(void);
+void px_pool_free(px_pool *p);
+/* How many parts to make of a job for every thread to have one. */
+unsigned px_pool_parts(const px_pool *p);
+/* Runs all parts of a job and returns when they are done. */
+void px_pool_run(px_pool *p, px_pool_job job, void *ctx, unsigned count);
 
 /* ---------------------------------------------------------------------------
  * Video
