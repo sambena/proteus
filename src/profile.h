@@ -18,6 +18,7 @@ extern "C" {
 #define PX_MAX_PATTERN 16
 #define PX_MAX_PATCH  8
 #define PX_MAX_HOLD   16
+#define PX_MAX_FX     32
 
 /* The song value while the [song] active flag is clear: the game plays no music. */
 #define PX_SONG_STOPPED 0xFFFFFFFFu
@@ -142,9 +143,18 @@ typedef struct
 
    /* [debug] */
    bool log_songs;
+
+   /* [fx] the Atari 2600's picture and sound for this game: the core options of fx.h without
+    * their "proteus_fx_" ("glow = high"). They apply where the option is left at "profile". */
+   px_option fx[PX_MAX_FX];
+   unsigned fx_count;
+   /* The profile has [fx] and no [song]: it swaps no music, and `loaded` stays false. */
+   bool fx_only;
 } px_profile;
 
 bool px_profile_load(px_profile *p, const char *path, char *err, size_t errlen);
+/* The value of `key` in [fx], or NULL. */
+const char *px_profile_fx(const px_profile *p, const char *key);
 /* Returns the index of the track mapped to `value`, or -1. */
 int px_profile_find(const px_profile *p, uint32_t value);
 /* The code in `patches` for a core ("fceumm" matches fceumm_libretro), or NULL. */

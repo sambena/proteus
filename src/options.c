@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fx.h"
 #include "music.h"
 
 #define MAX_VALUES   RETRO_NUM_CORE_OPTION_VALUES_MAX
@@ -236,6 +237,11 @@ bool px_options_inner_declared(void)
  * Proteus's own options
  * ------------------------------------------------------------------------- */
 
+/* The category own_def files its options under. */
+static const char *own_category = "proteus";
+/* The wrapped core is an Atari 2600: the picture and sound options apply. */
+static bool fx_offered;
+
 static opt_def *own_def(const char *key, const char *desc, const char *desc_categorized,
       const char *info, const char *default_value)
 {
@@ -248,9 +254,199 @@ static opt_def *own_def(const char *key, const char *desc, const char *desc_cate
    d->desc             = dup_str(full_desc);
    d->desc_categorized = dup_str(desc_categorized ? desc_categorized : desc);
    d->info             = dup_str(info);
-   d->category         = dup_str("proteus");
+   d->category         = dup_str(own_category);
    d->default_value    = dup_str(default_value);
    return d;
+}
+
+/* The game Proteus knows in particular, or NULL. */
+static const px_game *fx_game;
+/* How many of Proteus's options were declared when those for the panel were. */
+static unsigned fx_panel_count;
+
+/* An option whose first value leaves the choice to the game's profile, then to what Proteus
+ * knows of the game, and to `default_value` where neither says anything. */
+static void own_choice(const char *key, const char *desc, const char *info,
+      const char *default_value, const char *const *values)
+{
+   opt_def *d = own_def(key, desc, NULL, info, PX_OPT_FX_PROFILE);
+   const char *games = px_game_fx(fx_game, key + sizeof(PX_OPT_FX_PREFIX) - 1);
+   char label[96];
+   const char *name;
+   if (games)
+      default_value = games;
+   name = default_value;
+   for (unsigned i = 0; values[i]; i += 2)
+      if (!strcmp(values[i], default_value))
+         name = values[i + 1];
+   snprintf(label, sizeof(label), "Default (%s)", name);
+   if (d)
+      add_value(d, PX_OPT_FX_PROFILE, label);
+   for (unsigned i = 0; d && values[i]; i += 2)
+      add_value(d, values[i], values[i + 1]);
+}
+
+/* An option with values of its own only. */
+static void own_plain(const char *key, const char *desc, const char *info,
+      const char *default_value, const char *const *values)
+{
+   opt_def *d = own_def(key, desc, NULL, info, default_value);
+   for (unsigned i = 0; d && values[i]; i += 2)
+      add_value(d, values[i], values[i + 1]);
+}
+
+static void build_fx(void)
+{
+   static const char *const toggle[] = { "enabled", "Enabled", "disabled", "Disabled", NULL };
+   static const char *const scale[] = { "native", "Native (no effects)", "640", "640 wide",
+      "1280", "1280 wide", "1920", "1920 wide", NULL };
+   static const char *const view[] = { "normal", "Normal", "layers", "Objects in flat colours",
+      "instances", "Objects boxed", "bk", "Background only", "pf", "Playfield only",
+      "p0", "Player 0 only", "p1", "Player 1 only", "m0", "Missile 0 only",
+      "m1", "Missile 1 only", "bl", "Ball only", NULL };
+   static const char *const level[] = { "off", "Off", "low", "Low", "medium", "Medium",
+      "high", "High", NULL };
+   static const char *const width[] = { "0", "0% (mono)", "10", "10%", "20", "20%", "30", "30%",
+      "40", "40%", "50", "50%", "60", "60%", "70", "70%", "80", "80%", "90", "90%",
+      "100", "100% (one voice a side)", NULL };
+   static const char *const lowpass[] = { "off", "Off", "soft", "Soft", "warm", "Warm", NULL };
+   static const char *const reverb[] = { "off", "Off", "small", "Small room", "room", "Room",
+      "hall", "Hall", NULL };
+   static const char *const button[] = { "x", "X", "off", "None", NULL };
+
+   own_category = "proteus_fx";
+   add_category(&own_set, "proteus_fx", "Proteus 2600",
+         "Draw the picture again from the TIA's objects, and process its two voices apart.");
+
+   own_choice(PX_OPT_FX_VIDEO, "Enhanced picture",
+         "Draw the picture from the objects the TIA made it of. Needs the stellapx core.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_SCALE, "Picture size",
+         "The size of the picture handed to the frontend. Shaders that draw scanlines expect the native size.",
+         "1280", scale);
+   if (fx_game)
+   {
+      char info[256];
+      snprintf(info, sizeof(info),
+            "What Proteus knows of %s in particular. Off, the game is drawn as any other.",
+            fx_game->name);
+      own_choice(PX_OPT_FX_GAME, fx_game->name, info, "enabled", toggle);
+      for (const px_game_option *o = fx_game->options; o && o->key; o++)
+         own_plain(o->key, o->desc, o->info, o->default_value, o->values);
+   }
+   own_choice(PX_OPT_FX_GLOW, "Glow",
+         "Players, missiles and the ball glow in their own colour.", "medium", level);
+   own_choice(PX_OPT_FX_SHADOW, "Shadows",
+         "Objects throw a shadow on the playfield and the background.", "enabled", toggle);
+   own_choice(PX_OPT_FX_SMOOTH, "Smooth objects",
+         "Cut the stair steps of players, missiles and the ball. The playfield stays as it is.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_FLICKER, "Flicker fusion",
+         "Draw objects in every frame that the game shows in turns. Turn this off for games that blink objects on purpose.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_TRAILS, "Shot trails",
+         "Missiles and the ball leave a fading trail.", "enabled", toggle);
+   own_choice(PX_OPT_FX_BACKGROUND, "Background treatment",
+         "Darken the background towards the edges and blend its bands of colour.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_REACTIVE, "Glow follows the sound",
+         "The glow grows with the volume of the two voices.", "enabled", toggle);
+   own_choice(PX_OPT_FX_BARS, "Fill the bars at the left",
+         "Lines on which a game moves its objects start with a black bar (HMOVE). Fill it with the scenery next to it.",
+         "enabled", toggle);
+   own_choice(PX_OPT_FX_SCANLINES, "Scanlines",
+         "Darken the last row of every scanline.", "disabled", toggle);
+   own_choice(PX_OPT_FX_VIEW, "View",
+         "Show the picture's parts, to see what a game draws with which object.",
+         "normal", view);
+   own_choice(PX_OPT_FX_AUDIO, "Enhanced sound",
+         "Process the two voices apart. Turns Stella's stereo sound on.", "enabled", toggle);
+   own_choice(PX_OPT_FX_WIDTH, "Stereo width",
+         "How far the two voices are apart.", "30", width);
+   own_choice(PX_OPT_FX_LOWPASS, "Low-pass filter",
+         "Take the edge off the voices.", "soft", lowpass);
+   own_choice(PX_OPT_FX_REVERB, "Reverb",
+         "The room around the voices.", "small", reverb);
+   own_choice(PX_OPT_FX_RUMBLE, "Rumble",
+         "The controller shakes for what happens in the games Proteus knows.", "medium", level);
+   fx_panel_count = own_set.def_count;
+
+   own_plain(PX_OPT_FX_BUTTON, "Button for the options",
+         "Tap it for the list of these options on the picture. Hold it and press left or right for the option before or after, up or down to change it, fire for the enhanced picture on and off. X is free unless Stella's reload is on.",
+         "x", button);
+   own_plain(PX_OPT_FX_KEYS, "Keys for the options",
+         "Backslash for the list; [ and ] for the option before and after, - and = to change it; 1 to 0 for the enhanced picture, the game's profile, glow, shadows, smooth objects, flicker fusion, trails, background, scanlines and the view. Turn this off for games played with the keyboard controllers.",
+         "enabled", toggle);
+
+   own_category = "proteus";
+}
+
+/* ---------------------------------------------------------------------------
+ * The options of the picture and the sound, for the panel
+ * ------------------------------------------------------------------------- */
+
+static const opt_def *fx_def(unsigned i)
+{
+   unsigned n = 0;
+   for (unsigned k = 0; k < fx_panel_count && k < own_set.def_count; k++)
+      if (own_set.defs[k].category && !strcmp(own_set.defs[k].category, "proteus_fx"))
+         if (n++ == i)
+            return &own_set.defs[k];
+   return NULL;
+}
+
+unsigned px_options_fx_count(void)
+{
+   unsigned n = 0;
+   while (fx_def(n))
+      n++;
+   return n;
+}
+
+const char *px_options_fx_key(unsigned i)
+{
+   const opt_def *d = fx_def(i);
+   return d ? d->key : NULL;
+}
+
+const char *px_options_fx_name(unsigned i)
+{
+   const opt_def *d = fx_def(i);
+   return d ? d->desc_categorized : NULL;
+}
+
+unsigned px_options_fx_values(unsigned i)
+{
+   const opt_def *d = fx_def(i);
+   return d ? d->value_count : 0;
+}
+
+const char *px_options_fx_value(unsigned i, unsigned v)
+{
+   const opt_def *d = fx_def(i);
+   return d && v < d->value_count ? d->values[v].value : NULL;
+}
+
+const char *px_options_fx_label(unsigned i, unsigned v)
+{
+   const opt_def *d = fx_def(i);
+   if (!d || v >= d->value_count)
+      return NULL;
+   return d->values[v].label ? d->values[v].label : d->values[v].value;
+}
+
+const char *px_options_fx_default(unsigned i)
+{
+   const opt_def *d = fx_def(i);
+   return d ? d->default_value : NULL;
+}
+
+void px_options_set_game(const px_game *game)
+{
+   if (fx_game == game)
+      return;
+   fx_game = game;
+   clear_set(&own_set);
 }
 
 static void add_percent_values(opt_def *d)
@@ -464,6 +660,17 @@ static void build_own(const px_profile *p)
       }
       free(entries);
    }
+
+   if (fx_offered)
+      build_fx();
+}
+
+void px_options_set_fx(bool offered)
+{
+   if (fx_offered == offered)
+      return;
+   fx_offered = offered;
+   clear_set(&own_set);
 }
 
 /* ---------------------------------------------------------------------------
@@ -632,4 +839,7 @@ void px_options_free(void)
    clear_set(&inner_set);
    clear_set(&own_set);
    inner_declared = false;
+   fx_offered     = false;
+   fx_game        = NULL;
+   fx_panel_count = 0;
 }

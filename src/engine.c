@@ -319,6 +319,12 @@ bool px_engine_load(px_engine *e, const char *profile_path)
       enotify(e, "Proteus: profile error, see log");
       return false;
    }
+   if (e->profile.fx_only)
+   {
+      elog(e, RETRO_LOG_INFO, "loaded profile %s (picture and sound, %u settings)", profile_path,
+            e->profile.fx_count);
+      return true;
+   }
    elog(e, RETRO_LOG_INFO, "loaded profile %s (%u tracks)", profile_path, e->profile.track_count);
    px_engine_read_config(e);
    apply_patches(e);
@@ -328,7 +334,9 @@ bool px_engine_load(px_engine *e, const char *profile_path)
 void px_engine_unload(px_engine *e)
 {
    reset_state(e);
-   e->profile.loaded = false;
+   e->profile.loaded   = false;
+   e->profile.fx_count = 0;
+   e->profile.fx_only  = false;
    apply_patches(e);
 }
 

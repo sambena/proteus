@@ -501,10 +501,124 @@ Sound effects in most SNES games use the upper voices (often 7 and 8), so muting
 voices 1–6 usually keeps them. Games that steal music voices for effects will
 lose some effects; mute fewer channels for those games.
 
+## Atari 2600: picture and sound
+
+Around Stella, the wrapper core draws the picture again from the objects the TIA made it of,
+and processes the TIA's two voices apart. None of it needs to know the game.
+
+| Effect | What it does |
+| --- | --- |
+| Glow | players, missiles and the ball glow in their own colour |
+| Shot trails | missiles and the ball leave a fading trail |
+| Shadows | objects throw a shadow on the playfield and the background |
+| Smooth objects | the stair steps of objects are cut; the playfield stays blocky |
+| Flicker fusion | objects the game shows in turns are drawn in every frame |
+| Background treatment | a vignette, and bands of background colour blend into each other |
+| Fill the bars at the left | the black bars of lines on which a game moved its objects (HMOVE) get the scenery next to them |
+| Stereo width | the two voices are panned apart |
+| Low-pass filter, reverb | each voice is filtered, and both get a room around them |
+
+This needs a build of Stella that reports what each pixel is made of: the
+[`proteus-capture` branch of sambena/stella](https://github.com/sambena/stella/tree/proteus-capture),
+a fork of [Stella](https://github.com/stella-emu/stella) that builds `stellapx_libretro`.
+Around Stella as its authors build it, the picture passes through unchanged and the sound is
+processed as one voice.
+
+From an MSYS2 UCRT64 shell:
+
+```sh
+git clone --branch proteus-capture https://github.com/sambena/stella.git
+make -C stella/src/os/libretro
+cp stella/src/os/libretro/stellapx_libretro.dll /c/RetroArch-Win64/cores/
+cp /c/RetroArch-Win64/info/stella_libretro.info /c/RetroArch-Win64/info/stellapx_libretro.info
+```
+
+Then install the wrapper around it, which RetroArch lists as
+"Atari - 2600 (Proteus Retune + Stella)":
+
+```powershell
+.\tools\install-core.ps1 -RetroArch C:\RetroArch-Win64 -Core stellapx
+```
+
+The fork also makes two of Stella's core options do what they say, which Proteus relies on:
+**Stereo sound** "on" gives the two voices apart, and **Phosphor mode** "off" is off from
+the start of a game.
+
+The options are under **Proteus 2600** in the core options. **View** shows the picture's
+parts: every object in a flat colour of its own, one layer alone, or a box around every object
+found, which is how to see what a game draws with which object. **Picture size** "Native" is
+Stella's own frame, for shaders that draw scanlines themselves.
+
+A game's profile can set any of the options, for where they are left at "Default":
+
+```ini
+[fx]
+glow = high
+flicker = disabled
+width = 60
+```
+
+A profile with `[fx]` and no `[song]` swaps no music.
+
+### Changing the options while playing
+
+| | Button (RetroPad X) | Keys |
+| --- | --- | --- |
+| The list of the options on the picture; the game stands still | tap | `\` |
+| In the list: choose, change, back to the game | up and down, left and right, fire | |
+| The option before, the one after | hold, and left or right | `[` `]` |
+| Change it | hold, and up or down | `-` `=` |
+| The enhanced picture on and off, to compare | hold, and fire | `1` |
+| What Proteus knows of the game on and off | hold, and the second button | `2` |
+| Glow, shadows, smooth objects, flicker fusion, trails, background, scanlines, view | | `3` to `0` |
+
+A line on the picture says what changed. The options change at the frontend too, where
+they are kept, if it takes changes from a core (RetroArch does); else until the game ends.
+While the button is down the game sees none of the buttons. **Button for the options** and
+**Keys for the options** turn either off: Stella takes X to load the next game with its
+"reload" option on, and the digits belong to the keyboard controllers in the games played
+with those.
+
+### Games Proteus knows
+
+Proteus finds a game by the MD5 of its ROM, as Stella does, and draws the games it knows
+with what it knows of them. Their options come after **Picture size**, and the first of
+them, named after the game, turns all of it off.
+
+| Game | ROM | What Proteus does |
+| --- | --- | --- |
+| Space Invaders | `72ffbef6504b75e69ee1045af9075f66` (USA) | a colour for every row of invaders, or the white, red and green of the arcade cabinet's gels; a night sky where the game is black; the score drawn solid, which the game draws on every other line; sparks where an invader or the cannon is hit; the cannon's shots and the invaders' told apart. Sounds of Proteus's own for the invaders' step, the shot and the hits, each where it happens between left and right; the march in four notes, as the arcade had it; a hum that rises as the invaders get fewer and nearer. The controller shakes for all of them |
+
+The TIA has two voices, and a game lets one sound cut another short. Proteus has a
+synthesizer of 32 voices (`src/fx_synth.c`), and a game's sound may take several of them: a
+thump below a click, a sweep over a burst of noise. A game module tells what the TIA's voices
+play from what the game writes to the audio registers, plays its own sound for it, and
+turns the game's voice down while it plays what the module knows. What it does not know is
+heard as the game plays it. **Rumble** sets how much the controller shakes, which it does
+whether the sounds are Proteus's or the game's.
+
+A game is a file in `src/games/` with a `px_game`: the MD5s, defaults for the options
+above, options of its own, a function that is given every frame between the finding of
+its objects and its drawing, with the console's memory, and one that hears every frame
+before its sound is mixed.
+
+`make test2600` checks all of it against Stella with a test program that `test/rom2600.c`
+writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores: Stella
+as its authors build it, and the fork's build. `test/games2600.sh` runs the same checks on
+games of your own.
+
 ## Layout
 
 | Path | Purpose |
 | --- | --- |
+| `src/proteus_capture.h` | the capture interface between a core and Proteus: objects at every pixel, their colours, register writes, the voices |
+| `src/fx_video.c` | Atari 2600: draws the picture from its captured parts |
+| `src/fx_track.c` | Atari 2600: the objects in a frame, and the same object over frames |
+| `src/fx_audio.c` | Atari 2600: the two voices, filtered, panned and in a room |
+| `src/fx_synth.c` | Atari 2600: sounds of Proteus's own, of 32 voices |
+| `src/fx_pool.c` | Atari 2600: the threads a picture is drawn by |
+| `src/fx_panel.c` | Atari 2600: the options drawn on the picture |
+| `src/fx_game.c`, `src/games/` | Atari 2600: the games Proteus knows in particular, found by MD5 |
 | `src/engine.c` | song detection, choosing what plays, mixing, save state data (shared) |
 | `src/proteus.c` | the wrapper core: libretro API passthrough, option overrides, save states |
 | `src/dsp.c` | the DSP plugin: finds the running core and game inside RetroArch |
@@ -532,6 +646,7 @@ lose some effects; mute fewer channels for those games.
 | `studio/audio_out.cpp` | plays songs and game audio |
 | `deps/imgui/` | Dear ImGui bundled library |
 | `test/` | a fake game core and a headless frontend that checks the mixed audio and the options |
+| `test/rom2600.c`, `test/harness2600.c`, `test/run2600.sh` | an Atari 2600 test program, a headless frontend that hashes frames and checks the capture, and the checks of `make test2600` |
 | `tools/install-core.ps1` | installs the plugin and wrapper cores into a RetroArch folder |
 
 ## License
