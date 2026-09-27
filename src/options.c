@@ -367,6 +367,8 @@ static void build_fx(void)
          "Take the edge off the voices.", "soft", lowpass);
    own_choice(PX_OPT_FX_REVERB, "Reverb",
          "The room around the voices.", "small", reverb);
+   own_choice(PX_OPT_FX_RUMBLE, "Rumble",
+         "The controller shakes for what happens in the games Proteus knows.", "medium", level);
    fx_panel_count = own_set.def_count;
 
    own_plain(PX_OPT_FX_BUTTON, "Button for the options",

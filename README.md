@@ -587,11 +587,20 @@ them, named after the game, turns all of it off.
 
 | Game | ROM | What Proteus does |
 | --- | --- | --- |
-| Space Invaders | `72ffbef6504b75e69ee1045af9075f66` (USA) | a colour for every row of invaders, or the white, red and green of the arcade cabinet's gels; a night sky where the game is black; the score drawn solid, which the game draws on every other line; sparks where an invader or the cannon is hit; the cannon's shots and the invaders' told apart |
+| Space Invaders | `72ffbef6504b75e69ee1045af9075f66` (USA) | a colour for every row of invaders, or the white, red and green of the arcade cabinet's gels; a night sky where the game is black; the score drawn solid, which the game draws on every other line; sparks where an invader or the cannon is hit; the cannon's shots and the invaders' told apart. Sounds of Proteus's own for the invaders' step, the shot and the hits, each where it happens between left and right; the march in four notes, as the arcade had it; a hum that rises as the invaders get fewer and nearer. The controller shakes for all of them |
+
+The TIA has two voices, and a game lets one sound cut another short. Proteus has a
+synthesizer of 32 voices (`src/fx_synth.c`), and a game's sound may take several of them: a
+thump below a click, a sweep over a burst of noise. A game module tells what the TIA's voices
+play from what the game writes to the audio registers, plays its own sound for it, and
+turns the game's voice down while it plays what the module knows. What it does not know is
+heard as the game plays it. **Rumble** sets how much the controller shakes, which it does
+whether the sounds are Proteus's or the game's.
 
 A game is a file in `src/games/` with a `px_game`: the MD5s, defaults for the options
-above, options of its own, and a function that is given every frame between the finding of
-its objects and its drawing, with the console's memory.
+above, options of its own, a function that is given every frame between the finding of
+its objects and its drawing, with the console's memory, and one that hears every frame
+before its sound is mixed.
 
 `make test2600` checks all of it against Stella with a test program that `test/rom2600.c`
 writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores: Stella
@@ -606,6 +615,7 @@ games of your own.
 | `src/fx_video.c` | Atari 2600: draws the picture from its captured parts |
 | `src/fx_track.c` | Atari 2600: the objects in a frame, and the same object over frames |
 | `src/fx_audio.c` | Atari 2600: the two voices, filtered, panned and in a room |
+| `src/fx_synth.c` | Atari 2600: sounds of Proteus's own, of 32 voices |
 | `src/fx_pool.c` | Atari 2600: the threads a picture is drawn by |
 | `src/fx_panel.c` | Atari 2600: the options drawn on the picture |
 | `src/fx_game.c`, `src/games/` | Atari 2600: the games Proteus knows in particular, found by MD5 |

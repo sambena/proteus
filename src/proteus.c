@@ -126,6 +126,17 @@ static struct
    const px_game *game;
    void *game_state;
    char md5[33];
+
+   /* Sounds of Proteus's own, and how much is heard of the TIA's two voices. */
+   px_synth *synth;
+   float voice[2];
+   bool sound_done;         /* the game module has heard this frame */
+
+   /* The controller's shaking: what was asked for, fading over its frames. */
+   struct retro_rumble_interface rumble;
+   bool have_rumble;
+   unsigned rumble_strong, rumble_weak, rumble_left, rumble_span;
+   bool rumbling;
 } fx;
 
 /* The button and the keys for the options, and the options on the picture. */
@@ -582,9 +593,13 @@ static void fx_read_config(void)
    ctl.button_on = !v || strcmp(v, "off");
    v = fx_option_get(PX_OPT_FX_KEYS);
    ctl.keys_on = !v || strcmp(v, "disabled");
+   /* Without the picture, a game module still hears what is written to the registers. */
    if (inner.api.capture_enable)
       inner.api.capture_enable(fx.cfg.video
-            ? PXC_ENABLE_VIDEO | PXC_ENABLE_WRITES | PXC_ENABLE_AUDIO : 0);
+            ? PXC_ENABLE_VIDEO | PXC_ENABLE_WRITES | PXC_ENABLE_AUDIO
+            : fx.game && fx.game->sound && fx.cfg.game ? PXC_ENABLE_WRITES | PXC_ENABLE_AUDIO : 0);
+   if (!fx.cfg.game || !fx.cfg.audio)
+      px_synth_reset(fx.synth);
    /* The inner core's options that depend on these are to be read again. */
    if (video_was != fx_video_on() || audio_was != fx_audio_on())
       st.options_dirty = true;
@@ -621,6 +636,13 @@ static void fx_start(void)
       fx.video = px_fx_video_new();
    if (!fx.audio)
       fx.audio = px_fx_audio_new();
+   if (!fx.synth)
+      fx.synth = px_synth_new();
+   fx.voice[0] = fx.voice[1] = 1.0f;
+   fx.have_rumble = fe_env && fe_env(RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE, &fx.rumble)
+         && fx.rumble.set_rumble_state;
+   fx.rumble_left = 0;
+   fx.rumbling    = false;
    if (fx.game && fx.game->create && !fx.game_state)
       fx.game_state = fx.game->create();
    fx.us_sum = 0;
@@ -645,10 +667,81 @@ static void fx_stop(void)
    fx.game       = NULL;
    px_fx_video_free(fx.video);
    px_fx_audio_free(fx.audio);
+   px_synth_free(fx.synth);
    fx.video   = NULL;
    fx.audio   = NULL;
+   fx.synth   = NULL;
    fx.have_av = false;
    fx.out_w = fx.out_h = 0;
+}
+
+static void fx_set_rate(double rate)
+{
+   px_fx_audio_set_rate(fx.audio, rate);
+   px_synth_set_rate(fx.synth, rate);
+}
+
+/* Lets the game module hear the frame, once, before its sound is mixed. */
+static void fx_sound_frame(void)
+{
+   px_sound s;
+   if (fx.sound_done)
+      return;
+   fx.sound_done = true;
+   fx.voice[0] = fx.voice[1] = 1.0f;
+   if (!fx.game || !fx.game->sound || !fx.game_state || !fx.cfg.game)
+      return;
+
+   memset(&s, 0, sizeof(s));
+   s.frame    = inner.api.capture ? inner.api.capture(PXC_ABI_VERSION) : NULL;
+   s.ram      = (const uint8_t*)inner.api.get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+   s.ram_size = inner.api.get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+   s.objects  = px_fx_video_objects(fx.video);
+   s.synth    = fx.synth;
+   s.voice[0] = s.voice[1] = 1.0f;
+   fx.game->sound(fx.game_state, &s);
+
+   if (fx_audio_on())
+   {
+      fx.voice[0] = s.voice[0];
+      fx.voice[1] = s.voice[1];
+   }
+   if (s.rumble_frames)
+   {
+      /* What goes on goes on, unless this is stronger. */
+      unsigned span = fx.rumble_span ? fx.rumble_span : 1;
+      unsigned strong = fx.rumble_strong * fx.rumble_left / span;
+      unsigned weak = fx.rumble_weak * fx.rumble_left / span;
+      if (s.rumble_strong >= strong || s.rumble_weak >= weak)
+      {
+         fx.rumble_strong = s.rumble_strong > strong ? s.rumble_strong : strong;
+         fx.rumble_weak   = s.rumble_weak > weak ? s.rumble_weak : weak;
+         fx.rumble_left   = s.rumble_frames > fx.rumble_left ? s.rumble_frames : fx.rumble_left;
+         fx.rumble_span   = fx.rumble_left;
+      }
+   }
+}
+
+/* Once a frame: the controller shakes as was asked, less from frame to frame. */
+static void fx_rumble_frame(void)
+{
+   static const unsigned share[4] = { 0, 100, 180, 256 };
+   unsigned strong = 0, weak = 0;
+   if (!fx.have_rumble)
+      return;
+   if (fx.rumble_left && fx.cfg.rumble && fx.rumble_span)
+   {
+      strong = fx.rumble_strong * fx.rumble_left / fx.rumble_span * share[fx.cfg.rumble & 3] / 256;
+      weak   = fx.rumble_weak * fx.rumble_left / fx.rumble_span * share[fx.cfg.rumble & 3] / 256;
+      fx.rumble_left--;
+   }
+   else
+      fx.rumble_left = 0;
+   if (!strong && !weak && !fx.rumbling)
+      return;
+   fx.rumble.set_rumble_state(0, RETRO_RUMBLE_STRONG, (uint16_t)strong);
+   fx.rumble.set_rumble_state(0, RETRO_RUMBLE_WEAK, (uint16_t)weak);
+   fx.rumbling = strong || weak;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1140,7 +1233,7 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
          if (ret)
          {
             px_engine_set_rate(&engine, av.timing.sample_rate);
-            px_fx_audio_set_rate(fx.audio, av.timing.sample_rate);
+            fx_set_rate(av.timing.sample_rate);
          }
          return ret;
       }
@@ -1187,8 +1280,10 @@ static bool mixing_active(void)
 static void RETRO_CALLCONV audio_sample_wrap(int16_t left, int16_t right)
 {
    int16_t frame[2] = { left, right };
+   if (fx.is_2600 && st.audio_enabled)
+      fx_sound_frame();
    if (fx_audio_on() && st.audio_enabled)
-      px_fx_audio_process(fx.audio, &fx.cfg, frame, 1);
+      px_fx_audio_process(fx.audio, &fx.cfg, frame, 1, fx.voice, fx.synth);
    if (mixing_active())
       px_engine_mix_s16(&engine, frame, 1);
    if (fe_audio_sample)
@@ -1201,11 +1296,15 @@ static size_t RETRO_CALLCONV audio_batch_wrap(const int16_t *data, size_t frames
    int16_t *buf;
    if (!fe_audio_batch)
       return frames;
+   /* The game module hears the frame whether its sound is changed or not: the controller
+    * shakes for what happens all the same. */
+   if (fx.is_2600 && st.audio_enabled)
+      fx_sound_frame();
    if ((!voices && !mixing_active()) || !(buf = scratch_buffer(frames)))
       return fe_audio_batch(data, frames);
    memcpy(buf, data, frames * 2 * sizeof(int16_t));
    if (voices)
-      px_fx_audio_process(fx.audio, &fx.cfg, buf, frames);
+      px_fx_audio_process(fx.audio, &fx.cfg, buf, frames, fx.voice, fx.synth);
    if (mixing_active())
       px_engine_mix_s16(&engine, buf, frames);
    return fe_audio_batch(buf, frames);
@@ -1384,7 +1483,7 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
    }
    inner.api.get_system_av_info(info);
    px_engine_set_rate(&engine, info->timing.sample_rate);
-   px_fx_audio_set_rate(fx.audio, info->timing.sample_rate);
+   fx_set_rate(info->timing.sample_rate);
    if (fx.is_2600)
       fx_geometry(info);
 }
@@ -1403,6 +1502,7 @@ RETRO_API void retro_reset(void)
    px_engine_reset(&engine);
    px_fx_video_reset(fx.video);
    px_fx_audio_reset(fx.audio);
+   px_synth_reset(fx.synth);
    if (fx.game && fx.game->reset && fx.game_state)
       fx.game->reset(fx.game_state);
 }
@@ -1447,14 +1547,20 @@ RETRO_API void retro_run(void)
       if (ctl.panel || fx_video_on())
       {
          fx_stand_still();
+         /* Nothing shakes while nothing happens. */
+         fx.rumble_left = 0;
+         fx_rumble_frame();
          return;
       }
    }
 
-   fx.got_frame = false;
+   fx.got_frame  = false;
+   fx.sound_done = false;
    inner.api.run();
    if (fx.got_frame)
       fx_present();
+   if (fx.is_2600)
+      fx_rumble_frame();
 }
 
 RETRO_API size_t retro_serialize_size(void)
@@ -1525,7 +1631,7 @@ static void after_load(bool ok)
       struct retro_system_av_info av;
       inner.api.get_system_av_info(&av);
       px_engine_set_rate(&engine, av.timing.sample_rate);
-      px_fx_audio_set_rate(fx.audio, av.timing.sample_rate);
+      fx_set_rate(av.timing.sample_rate);
       fx.av      = av;
       fx.have_av = true;
       /* The profile's cheats were set before the game loaded; cores keep cheats per game. */

@@ -149,6 +149,7 @@ void px_fx_config_read(px_fx_config *c, const char *(*get)(const char *key),
    c->scanlines  = is_on(V(PX_OPT_FX_SCANLINES), false);
    c->bars       = is_on(V(PX_OPT_FX_BARS), true);
    c->game       = is_on(V(PX_OPT_FX_GAME), true);
+   c->rumble     = pick(V(PX_OPT_FX_RUMBLE), levels, 4, 2);
    c->lowpass    = pick(V(PX_OPT_FX_LOWPASS), lowpass, 3, 1);
    c->reverb     = pick(V(PX_OPT_FX_REVERB), reverb, 4, 1);
    c->view       = pick(V(PX_OPT_FX_VIEW), views, 10, PX_VIEW_NORMAL);
@@ -355,6 +356,11 @@ static void move_sparks(px_fx_video *v, unsigned height)
 unsigned px_fx_video_last_us(const px_fx_video *v)
 {
    return v ? v->last_us : 0;
+}
+
+const px_objects *px_fx_video_objects(const px_fx_video *v)
+{
+   return v ? &v->objects : NULL;
 }
 
 static uint64_t now_us(void)

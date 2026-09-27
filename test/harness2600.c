@@ -20,6 +20,8 @@
  *     --state-out <file>  write the save state after the last frame
  *     --state-in <file>   start from a save state, which makes runs of a game the same
  *     --objects <file>    with --capture: write every frame's objects
+ *     --sound <file>      with --capture: write the audio registers whenever they change
+ *     --tone <hz>         print how much of a pitch is in the sound
  *     --ram <file>        write the 128 bytes of RAM after every frame
  *     --slow <ms>         wait that long before every frame
  *     --native            hash frames that are larger than the core's at the core's size,
@@ -45,6 +47,8 @@
 #define SYM(h, n)  (void*)GetProcAddress((HMODULE)h, n)
 #else
 #include <dlfcn.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <time.h>
 #define LOAD(p)    dlopen(p, RTLD_NOW)
 #define SYM(h, n)  dlsym(h, n)
@@ -79,6 +83,32 @@ static struct
 
 static retro_keyboard_event_t keyboard_cb;
 static bool take_set_variable = true;
+
+/* What the core asks of the controller of port 0. */
+static struct
+{
+   unsigned now[2];        /* strong, weak */
+   unsigned starts[2];     /* times it went from nothing to something, or up by a half */
+   unsigned most[2];
+   unsigned frames[2];     /* frames it was on */
+   unsigned calls;
+} rumble;
+
+static bool RETRO_CALLCONV rumble_cb(unsigned port, enum retro_rumble_effect effect, uint16_t strength)
+{
+   unsigned k = effect == RETRO_RUMBLE_STRONG ? 0 : 1;
+   if (port != 0)
+      return false;
+   rumble.calls++;
+   if (strength > rumble.now[k] + rumble.now[k] / 2 && strength > 1000)
+      rumble.starts[k]++;
+   if (strength > rumble.most[k])
+      rumble.most[k] = strength;
+   if (strength)
+      rumble.frames[k]++;
+   rumble.now[k] = strength;
+   return true;
+}
 
 static struct { char key[64]; char value[128]; bool forced; } opts[MAX_OPTS];
 static unsigned opt_count;
@@ -233,6 +263,12 @@ static int RETRO_CALLCONV vfs_stat(const char *path, int32_t *size)
       return 0;
    if (attr & FILE_ATTRIBUTE_DIRECTORY)
       return RETRO_VFS_STAT_IS_VALID | RETRO_VFS_STAT_IS_DIRECTORY;
+#else
+   struct stat st;
+   if (stat(path, &st))
+      return 0;
+   if (S_ISDIR(st.st_mode))
+      return RETRO_VFS_STAT_IS_VALID | RETRO_VFS_STAT_IS_DIRECTORY;
 #endif
    {
       FILE *f = fopen(path, "rb");
@@ -253,8 +289,9 @@ static int RETRO_CALLCONV vfs_mkdir(const char *dir)
       return 0;
    return GetLastError() == ERROR_ALREADY_EXISTS ? -2 : -1;
 #else
-   (void)dir;
-   return -1;
+   if (!mkdir(dir, 0755))
+      return 0;
+   return errno == EEXIST ? -2 : -1;
 #endif
 }
 
@@ -344,6 +381,9 @@ static bool RETRO_CALLCONV env_cb(unsigned cmd, void *data)
       }
       case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK:
          keyboard_cb = ((const struct retro_keyboard_callback*)data)->callback;
+         return true;
+      case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE:
+         ((struct retro_rumble_interface*)data)->set_rumble_state = rumble_cb;
          return true;
       case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
          return *(const enum retro_pixel_format*)data == RETRO_PIXEL_FORMAT_XRGB8888;
@@ -638,6 +678,31 @@ static struct
 } obj = { ~0u, 0, 0, 0, 0, 0 };
 
 static FILE *objects_file;   /* --objects: every frame's instances */
+static FILE *sound_file;     /* --sound: the audio registers whenever they change */
+
+/* The six audio registers as the game left them, and a line for every write to one. */
+static void note_sound(const struct pxc_frame *f)
+{
+   static uint8_t reg[6];   /* AUDC0 AUDC1 AUDF0 AUDF1 AUDV0 AUDV1 */
+   static const char *names[6] = { "C0", "C1", "F0", "F1", "V0", "V1" };
+   bool changed = false;
+   for (uint32_t i = 0; i < f->write_count; i++)
+   {
+      const struct pxc_regwrite *w = &f->writes[i];
+      if (w->reg < 0x15 || w->reg > 0x1A)
+         continue;
+      if (reg[w->reg - 0x15] != (w->value & (w->reg < 0x17 ? 0x0F : w->reg < 0x19 ? 0x1F : 0x0F)))
+      {
+         reg[w->reg - 0x15] = w->value & (w->reg < 0x17 ? 0x0F : w->reg < 0x19 ? 0x1F : 0x0F);
+         fprintf(sound_file, "%5u line %3u  %s = %2u\n", frame_no, w->scanline,
+               names[w->reg - 0x15], reg[w->reg - 0x15]);
+         changed = true;
+      }
+   }
+   if (changed)
+      fprintf(sound_file, "%5u        voice 0: C %2u F %2u V %2u   voice 1: C %2u F %2u V %2u\n",
+            frame_no, reg[0], reg[2], reg[4], reg[1], reg[3], reg[5]);
+}
 
 static void check_objects(const struct pxc_frame *f)
 {
@@ -680,6 +745,8 @@ static void check_capture(const struct pxc_frame *f)
       return;
    }
    check_objects(f);
+   if (sound_file)
+      note_sound(f);
    cap.frames++;
    if (f->frame_serial == cap.last_serial)
       cap.serial_repeats++;
@@ -777,6 +844,8 @@ int main(int argc, char **argv)
    FILE *ram_file = NULL;
    bool want_capture = false, want_state = false, native = false, show_options = false;
    double time_sum = 0.0, time_max = 0.0, slow_ms = 0.0;
+   double tones[8];
+   unsigned tone_count = 0;
    unsigned frames;
    uint64_t video_hash = FNV_START;
    FILE *hashes = NULL;
@@ -833,6 +902,9 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--no-set-variable")) take_set_variable = false;
       else if (!strcmp(argv[i], "--show-options"))   show_options = true;
       else if (!strcmp(argv[i], "--objects") && i + 1 < argc)   objects_file = fopen(argv[++i], "w");
+      else if (!strcmp(argv[i], "--sound") && i + 1 < argc)     sound_file = fopen(argv[++i], "w");
+      else if (!strcmp(argv[i], "--tone") && i + 1 < argc && tone_count < 8)
+         tones[tone_count++] = atof(argv[++i]);
       else if (!strcmp(argv[i], "--ram") && i + 1 < argc)       ram_file = fopen(argv[++i], "w");
       else if (!strcmp(argv[i], "--state-in") && i + 1 < argc)  state_in = argv[++i];
       else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) state_out = argv[++i];
@@ -995,6 +1067,23 @@ int main(int argc, char **argv)
    }
    printf("time   %.3f ms a frame on average, %.3f ms at most\n",
          frames ? time_sum / frames : 0.0, time_max);
+   printf("rumble strong %u times, at most %u, for %u frames; weak %u times, at most %u, for %u frames\n",
+         rumble.starts[0], rumble.most[0], rumble.frames[0], rumble.starts[1], rumble.most[1],
+         rumble.frames[1]);
+   for (unsigned t = 0; t < tone_count; t++)
+   {
+      /* How much of a pitch is in the sound (Goertzel), over all of it and both sides. */
+      double w = 2.0 * 3.14159265358979 * tones[t] / av.timing.sample_rate;
+      double c = 2.0 * cos(w), s0, s1 = 0.0, s2 = 0.0;
+      for (size_t i = 0; i < audio_frames; i++)
+      {
+         s0 = (audio[i * 2] + audio[i * 2 + 1]) * 0.5 + c * s1 - s2;
+         s2 = s1;
+         s1 = s0;
+      }
+      printf("tone   %.1f Hz: %.0f\n", tones[t],
+            audio_frames ? sqrt(s1 * s1 + s2 * s2 - c * s1 * s2) / (double)audio_frames * 2.0 : 0.0);
+   }
    if (show_options)
       for (unsigned i = 0; i < opt_count; i++)
          if (!strncmp(opts[i].key, "proteus_", 8))

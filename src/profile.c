@@ -559,7 +559,7 @@ static bool handle_entry(px_profile *p, const char *dir, const char *section,
    else if (!strcmp(section, "fx"))
    {
       static const char *const keys[] = { "video", "scale", "view", "glow", "shadow",
-         "background", "smooth", "flicker", "trails", "reactive", "scanlines", "bars", "audio", "width",
+         "background", "smooth", "flicker", "trails", "reactive", "scanlines", "bars", "game", "rumble", "audio", "width",
          "lowpass", "reverb" };
       bool known = false;
       for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)

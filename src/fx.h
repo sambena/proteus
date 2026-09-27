@@ -34,6 +34,7 @@ extern "C" {
 #define PX_OPT_FX_GAME       "proteus_fx_game"
 #define PX_OPT_FX_BUTTON     "proteus_fx_button"
 #define PX_OPT_FX_KEYS       "proteus_fx_keys"
+#define PX_OPT_FX_RUMBLE     "proteus_fx_rumble"
 #define PX_OPT_FX_AUDIO      "proteus_fx_audio"
 #define PX_OPT_FX_WIDTH      "proteus_fx_width"
 #define PX_OPT_FX_LOWPASS    "proteus_fx_lowpass"
@@ -76,6 +77,7 @@ typedef struct
    unsigned width;        /* 0..100: how far apart the two voices are panned */
    unsigned lowpass;      /* 0 off, 1 soft, 2 warm */
    unsigned reverb;       /* 0 off .. 3 hall */
+   unsigned rumble;       /* 0 off .. 3 high */
 } px_fx_config;
 
 /* Reads the options through `get` (a core option's value or NULL) and `profile` (the value
@@ -207,6 +209,64 @@ void px_scene_burst(px_scene *s, int x, int y, uint32_t rgb, unsigned count, uns
 /* Lights the whole picture up for a moment; strength of 256. */
 void px_scene_flash(px_scene *s, uint32_t rgb, unsigned strength);
 
+/* ---------------------------------------------------------------------------
+ * Sounds of Proteus's own: as many voices as it takes, where the TIA has two
+ * ------------------------------------------------------------------------- */
+
+enum { PX_WAVE_SINE = 0, PX_WAVE_TRIANGLE, PX_WAVE_SQUARE, PX_WAVE_SAW, PX_WAVE_NOISE };
+
+/* A sound: a wave whose pitch glides, through a filter that closes, under an envelope. */
+typedef struct
+{
+   uint8_t wave;
+   float freq, freq_end;     /* Hz: from one to the other in `glide` seconds, then held */
+   float glide;
+   float attack;             /* seconds to full volume */
+   float hold;               /* seconds at full volume */
+   float decay;              /* seconds to a thousandth of it; 0: until it is stopped */
+   float gain;
+   float cutoff, cutoff_end; /* Hz of a low-pass, gliding as the pitch does; 0: none */
+   float vibrato_hz, vibrato; /* and how far, as a part of the pitch */
+} px_tone;
+
+#define PX_SYNTH_VOICES 32
+
+typedef struct px_synth px_synth;
+
+px_synth *px_synth_new(void);
+void px_synth_free(px_synth *s);
+void px_synth_reset(px_synth *s);
+void px_synth_set_rate(px_synth *s, double rate);
+/* Starts a sound at `pan` (-1 left .. 1 right). Returns what to name it by, never 0. */
+unsigned px_synth_play(px_synth *s, const px_tone *p, float pan, float gain);
+/* A sound that goes on (decay 0): moves it, makes it louder or softer, gives it another
+ * pitch (0: as it is). False when it is no more. */
+bool px_synth_move(px_synth *s, unsigned id, float pan, float gain, float freq);
+/* Lets a sound fade in `seconds`. */
+void px_synth_stop(px_synth *s, unsigned id, float seconds);
+/* Adds what sounds to `count` stereo frames. */
+void px_synth_render(px_synth *s, float *frames, size_t count);
+/* How many voices sound. */
+unsigned px_synth_sounding(const px_synth *s);
+
+/* A frame's sound as a game module hears it, before it is mixed. */
+typedef struct
+{
+   const struct pxc_frame *frame;   /* for its writes to the audio registers; may be NULL */
+   const uint8_t *ram;
+   size_t ram_size;
+   const px_objects *objects;       /* as of the picture before, with their roles; or NULL */
+   px_synth *synth;
+   /* How much is heard of each of the TIA's voices: 1 at first; 0 where the module plays
+    * a sound of its own for what the voice plays. */
+   float voice[2];
+   /* What the controller is to do: strength of 65535, and for how many frames. */
+   unsigned rumble_strong, rumble_weak, rumble_frames;
+} px_sound;
+
+/* Shakes the controller, if stronger than what it does already. */
+void px_sound_rumble(px_sound *s, unsigned strong, unsigned weak, unsigned frames);
+
 /* An option of a game module's own: values and their labels in turns, NULL at the end. */
 typedef struct
 {
@@ -232,6 +292,8 @@ typedef struct
    /* The options changed: `get` gives the value of one of the module's own. */
    void (*configure)(void *state, const char *(*get)(const char *key));
    void (*frame)(void *state, px_scene *s);
+   /* Once a frame, before its sound is mixed; may be NULL. */
+   void (*sound)(void *state, px_sound *s);
 } px_game;
 
 /* The module for a ROM, or NULL. */
@@ -325,8 +387,13 @@ void px_fx_audio_reset(px_fx_audio *a);
 void px_fx_audio_set_rate(px_fx_audio *a, double rate);
 
 /* `frames` stereo frames in place. On entry the left channel is voice 0 and the right one
- * voice 1, as Stella gives them with stereo sound on. */
-void px_fx_audio_process(px_fx_audio *a, const px_fx_config *c, int16_t *frames, size_t count);
+ * voice 1, as Stella gives them with stereo sound on. `voice` is how much is heard of each
+ * (NULL: all of both), `synth` what sounds with them (may be NULL). */
+void px_fx_audio_process(px_fx_audio *a, const px_fx_config *c, int16_t *frames, size_t count,
+      const float *voice, px_synth *synth);
+
+/* The objects of the picture drawn last, with the roles a game module gave them. */
+const px_objects *px_fx_video_objects(const px_fx_video *v);
 
 #ifdef __cplusplus
 }

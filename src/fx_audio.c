@@ -33,6 +33,11 @@ struct px_fx_audio
 
    float dc_x[2], dc_y[2];
    float lp[2];
+   float heard[2];       /* how much of each voice, which follows what is asked */
+   bool heard_set;
+
+   float *own;           /* the synth's sound for the frames at hand */
+   size_t own_frames;
 
    delay_line comb[2][COMBS];
    delay_line allpass[2][ALLPASSES];
@@ -70,7 +75,19 @@ px_fx_audio *px_fx_audio_new(void)
 
 void px_fx_audio_free(px_fx_audio *a)
 {
+   if (a)
+      free(a->own);
    free(a);
+}
+
+/* All as at first but the buffer, which is kept. */
+static void clear(px_fx_audio *a)
+{
+   float *own = a->own;
+   size_t own_frames = a->own_frames;
+   memset(a, 0, sizeof(*a));
+   a->own        = own;
+   a->own_frames = own_frames;
 }
 
 void px_fx_audio_reset(px_fx_audio *a)
@@ -79,7 +96,7 @@ void px_fx_audio_reset(px_fx_audio *a)
    if (!a)
       return;
    rate = a->rate;
-   memset(a, 0, sizeof(*a));
+   clear(a);
    px_fx_audio_set_rate(a, rate);
 }
 
@@ -89,7 +106,7 @@ void px_fx_audio_set_rate(px_fx_audio *a, double rate)
       return;
    if (rate == a->rate)
       return;
-   memset(a, 0, sizeof(*a));
+   clear(a);
    a->rate = rate;
    a->dc_r = (float)(1.0 - 2.0 * M_PI * 20.0 / rate);
    set_lengths(a);
@@ -125,7 +142,8 @@ static inline float limit(float x)
    return x < 0.0f ? -m : m;
 }
 
-void px_fx_audio_process(px_fx_audio *a, const px_fx_config *c, int16_t *frames, size_t count)
+void px_fx_audio_process(px_fx_audio *a, const px_fx_config *c, int16_t *frames, size_t count,
+      const float *voice, px_synth *synth)
 {
    static const float feedback[4] = { 0.0f, 0.70f, 0.80f, 0.88f };
    static const float wet[4]      = { 0.0f, 0.10f, 0.17f, 0.26f };
@@ -141,9 +159,35 @@ void px_fx_audio_process(px_fx_audio *a, const px_fx_config *c, int16_t *frames,
       return;
    lp_a = c->lowpass ? (float)(1.0 - exp(-2.0 * M_PI * cutoff / a->rate)) : 1.0f;
 
+   if (!a->heard_set)
+   {
+      a->heard[0] = a->heard[1] = 1.0f;
+      a->heard_set = true;
+   }
+
+   if (synth)
+   {
+      if (count > a->own_frames)
+      {
+         float *own = (float*)realloc(a->own, count * 2 * sizeof(float));
+         if (own)
+         {
+            a->own        = own;
+            a->own_frames = count;
+         }
+      }
+      if (count <= a->own_frames)
+      {
+         memset(a->own, 0, count * 2 * sizeof(float));
+         px_synth_render(synth, a->own, count);
+      }
+      else
+         synth = NULL;
+   }
+
    for (size_t i = 0; i < count; i++)
    {
-      float v[2], left, right;
+      float v[2], left, right, own_l = 0.0f, own_r = 0.0f;
 
       for (unsigned k = 0; k < 2; k++)
       {
@@ -152,15 +196,25 @@ void px_fx_audio_process(px_fx_audio *a, const px_fx_config *c, int16_t *frames,
          a->dc_x[k] = x;
          a->dc_y[k] = y;
          a->lp[k]  += lp_a * (y - a->lp[k]);
-         v[k] = a->lp[k] * voice_gain;
+         /* A voice comes and goes in a few milliseconds, not at once, which would click. */
+         a->heard[k] += ((voice ? voice[k] : 1.0f) - a->heard[k]) * 0.01f;
+         v[k] = a->lp[k] * voice_gain * a->heard[k];
       }
 
       left  = v[0] * l0 + v[1] * l1;
       right = v[0] * r0 + v[1] * r1;
+      if (synth)
+      {
+         /* About as loud as the voices they stand for. */
+         own_l = a->own[i * 2] * 0.55f;
+         own_r = a->own[i * 2 + 1] * 0.55f;
+         left  += own_l;
+         right += own_r;
+      }
 
       if (c->reverb)
       {
-         const float in = (v[0] + v[1]) * 0.25f;
+         const float in = (v[0] + v[1] + own_l + own_r) * 0.25f;
          const float fb = feedback[c->reverb & 3], mix = wet[c->reverb & 3];
          float room[2] = { 0.0f, 0.0f };
          for (unsigned ch = 0; ch < 2; ch++)

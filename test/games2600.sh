@@ -116,7 +116,7 @@ for ROM in "$@"; do
       echo "   Proteus draws it as any game"
    fi
    grep -E '^capture pixels|^objects' "$OUT/$N.capture.log" | sed 's/^/   /'
-   grep -E '^video|^time|^sound' "$OUT/$N.full.log" | sed 's/^/   /'
+   grep -E '^video|^time|^sound|^rumble' "$OUT/$N.full.log" | sed 's/^/   /'
 done
 
 if [ "$FAIL" = 0 ]; then
