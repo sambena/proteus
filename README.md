@@ -549,7 +549,7 @@ parts: every object in a flat colour of its own, one layer alone, or a box aroun
 found, which is how to see what a game draws with which object. **Picture size** "Native" is
 Stella's own frame, for shaders that draw scanlines themselves.
 
-A game's profile can set any of the options, for where they are left at "Profile":
+A game's profile can set any of the options, for where they are left at "Default":
 
 ```ini
 [fx]
@@ -559,6 +559,39 @@ width = 60
 ```
 
 A profile with `[fx]` and no `[song]` swaps no music.
+
+### Changing the options while playing
+
+| | Button (RetroPad X) | Keys |
+| --- | --- | --- |
+| The list of the options on the picture; the game stands still | tap | `\` |
+| In the list: choose, change, back to the game | up and down, left and right, fire | |
+| The option before, the one after | hold, and left or right | `[` `]` |
+| Change it | hold, and up or down | `-` `=` |
+| The enhanced picture on and off, to compare | hold, and fire | `1` |
+| What Proteus knows of the game on and off | hold, and the second button | `2` |
+| Glow, shadows, smooth objects, flicker fusion, trails, background, scanlines, view | | `3` to `0` |
+
+A line on the picture says what changed. The options change at the frontend too, where
+they are kept, if it takes changes from a core (RetroArch does); else until the game ends.
+While the button is down the game sees none of the buttons. **Button for the options** and
+**Keys for the options** turn either off: Stella takes X to load the next game with its
+"reload" option on, and the digits belong to the keyboard controllers in the games played
+with those.
+
+### Games Proteus knows
+
+Proteus finds a game by the MD5 of its ROM, as Stella does, and draws the games it knows
+with what it knows of them. Their options come after **Picture size**, and the first of
+them, named after the game, turns all of it off.
+
+| Game | ROM | What Proteus does |
+| --- | --- | --- |
+| Space Invaders | `72ffbef6504b75e69ee1045af9075f66` (USA) | a colour for every row of invaders, or the white, red and green of the arcade cabinet's gels; a night sky where the game is black; the score drawn solid, which the game draws on every other line; sparks where an invader or the cannon is hit; the cannon's shots and the invaders' told apart |
+
+A game is a file in `src/games/` with a `px_game`: the MD5s, defaults for the options
+above, options of its own, and a function that is given every frame between the finding of
+its objects and its drawing, with the console's memory.
 
 `make test2600` checks all of it against Stella with a test program that `test/rom2600.c`
 writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores: Stella
@@ -573,6 +606,9 @@ games of your own.
 | `src/fx_video.c` | Atari 2600: draws the picture from its captured parts |
 | `src/fx_track.c` | Atari 2600: the objects in a frame, and the same object over frames |
 | `src/fx_audio.c` | Atari 2600: the two voices, filtered, panned and in a room |
+| `src/fx_pool.c` | Atari 2600: the threads a picture is drawn by |
+| `src/fx_panel.c` | Atari 2600: the options drawn on the picture |
+| `src/fx_game.c`, `src/games/` | Atari 2600: the games Proteus knows in particular, found by MD5 |
 | `src/engine.c` | song detection, choosing what plays, mixing, save state data (shared) |
 | `src/proteus.c` | the wrapper core: libretro API passthrough, option overrides, save states |
 | `src/dsp.c` | the DSP plugin: finds the running core and game inside RetroArch |

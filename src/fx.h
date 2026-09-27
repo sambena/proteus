@@ -31,6 +31,9 @@ extern "C" {
 #define PX_OPT_FX_REACTIVE   "proteus_fx_reactive"
 #define PX_OPT_FX_SCANLINES  "proteus_fx_scanlines"
 #define PX_OPT_FX_BARS       "proteus_fx_bars"
+#define PX_OPT_FX_GAME       "proteus_fx_game"
+#define PX_OPT_FX_BUTTON     "proteus_fx_button"
+#define PX_OPT_FX_KEYS       "proteus_fx_keys"
 #define PX_OPT_FX_AUDIO      "proteus_fx_audio"
 #define PX_OPT_FX_WIDTH      "proteus_fx_width"
 #define PX_OPT_FX_LOWPASS    "proteus_fx_lowpass"
@@ -68,6 +71,7 @@ typedef struct
    bool reactive;
    bool scanlines;
    bool bars;             /* fill the bars HMOVE leaves at the left */
+   bool game;             /* what Proteus knows of this game in particular */
 
    unsigned width;        /* 0..100: how far apart the two voices are panned */
    unsigned lowpass;      /* 0 off, 1 soft, 2 warm */
@@ -94,6 +98,8 @@ typedef struct
    uint8_t  copy;         /* players: the copy 1..3; else 0 */
    uint8_t  color;        /* of the first row */
    uint8_t  ghost;        /* not in this frame: drawn from its track */
+   uint8_t  role;         /* PX_ROLE_*: what it is in the game, if a game module said */
+   uint8_t  group;        /* which of its kind: the row of an invader */
    int16_t  x, y;         /* left edge (players: of the 8 pattern bits), top row */
    uint16_t w, h;
    uint32_t rows;         /* index of the first of h rows in the pool */
@@ -138,6 +144,127 @@ void px_objects_reset(px_objects *o);
  * flicker and are not in this frame are added as instances marked `ghost`. */
 void px_objects_update(px_objects *o, const struct pxc_frame *f, bool ghosts);
 
+/* The track of an instance, or NULL. */
+const px_obj_track *px_objects_track(const px_objects *o, uint32_t id);
+
+/* ---------------------------------------------------------------------------
+ * Games: what Proteus knows of one game in particular
+ * ------------------------------------------------------------------------- */
+
+enum
+{
+   PX_ROLE_NONE = 0,
+   PX_ROLE_ENEMY,
+   PX_ROLE_PLAYER,
+   PX_ROLE_SHIELD,
+   PX_ROLE_SHOT,      /* the player's */
+   PX_ROLE_BOMB,      /* an enemy's */
+   PX_ROLE_BONUS,     /* the saucer */
+   PX_ROLE_HUD
+};
+
+typedef struct px_fx_video px_fx_video;
+
+/* A frame as a game module sees it, between the finding of its objects and its drawing.
+ * The planes have an entry a captured pixel, PXC_W a row. */
+typedef struct
+{
+   const struct pxc_frame *frame;
+   const px_fx_config *cfg;
+   px_objects *objects;
+   const uint8_t *ram;        /* the console's 128 bytes, or NULL */
+   size_t ram_size;
+   /* False when a frame is drawn again that was drawn before (the game stands still):
+    * nothing is to happen then, only to look as it did. */
+   bool advance;
+   unsigned w, h;             /* of the picture */
+   unsigned sx, sy;           /* its pixels for one captured */
+
+   uint32_t *top;             /* what is on top: PX_KEY(class, colour) */
+   uint32_t *bk;              /* the background's colour */
+   uint32_t *sprite;          /* an object's colour with 0xFF000000 set, or 0 */
+   uint8_t  *energy;          /* the object there glows brighter and leaves a trail */
+
+   /* A picture of w by h to show where the background is, if the module sets backdrop_on.
+    * backdrop_stale is set when it has to be painted anew (the size changed). */
+   uint32_t *backdrop;
+   bool backdrop_on;
+   bool backdrop_stale;
+
+   px_fx_video *video;
+} px_scene;
+
+enum { PX_CLS_BK = 0, PX_CLS_PF, PX_CLS_SPRITE, PX_CLS_BLANK };
+#define PX_KEY(cls, rgb) (((uint32_t)(cls) << 24) | ((rgb) & 0xFFFFFFu))
+#define PX_KEY_CLS(k)    ((k) >> 24)
+
+/* Gives an object another colour. */
+void px_scene_tint(px_scene *s, const px_instance *in, uint32_t rgb);
+/* Marks an object's pixels as glowing brighter and leaving a trail, or not. */
+void px_scene_energy(px_scene *s, const px_instance *in, bool on);
+/* Sparks from a captured pixel outwards. */
+void px_scene_burst(px_scene *s, int x, int y, uint32_t rgb, unsigned count, unsigned speed);
+/* Lights the whole picture up for a moment; strength of 256. */
+void px_scene_flash(px_scene *s, uint32_t rgb, unsigned strength);
+
+/* An option of a game module's own: values and their labels in turns, NULL at the end. */
+typedef struct
+{
+   const char *key;           /* "proteus_si_colors" */
+   const char *desc;
+   const char *info;
+   const char *default_value;
+   const char *const *values;
+} px_game_option;
+
+typedef struct
+{
+   const char *name;
+   const char *const *md5;          /* of the ROMs it is for, lower case; NULL at the end */
+   /* Defaults for the options of fx.h: names without the prefix and values in turns, NULL
+    * at the end. A profile's [fx] goes before them. */
+   const char *const *fx;
+   const px_game_option *options;   /* key NULL at the end; may be NULL */
+
+   void *(*create)(void);
+   void (*destroy)(void *state);
+   void (*reset)(void *state);
+   /* The options changed: `get` gives the value of one of the module's own. */
+   void (*configure)(void *state, const char *(*get)(const char *key));
+   void (*frame)(void *state, px_scene *s);
+} px_game;
+
+/* The module for a ROM, or NULL. */
+const px_game *px_game_find(const char *md5);
+/* A module's default for an option of fx.h ("glow"), or NULL. */
+const char *px_game_fx(const px_game *g, const char *key);
+/* The MD5 of `size` bytes as 32 lower case digits and a zero. */
+void px_md5(const void *data, size_t size, char out[33]);
+
+extern const px_game px_game_space_invaders;
+
+/* ---------------------------------------------------------------------------
+ * The panel: the options on the picture
+ * ------------------------------------------------------------------------- */
+
+#define PX_PANEL_LINES 24
+
+typedef struct
+{
+   bool open;
+   const char *title;
+   const char *hint;                     /* the keys, at the bottom */
+   const char *names[PX_PANEL_LINES];
+   const char *values[PX_PANEL_LINES];
+   unsigned count;
+   unsigned selected;
+   /* One line shown for a while with the panel closed. */
+   const char *toast;
+} px_panel;
+
+/* Draws the panel, or its toast, on a picture of w by h. */
+void px_panel_draw(uint32_t *out, unsigned w, unsigned h, const px_panel *p);
+
 /* ---------------------------------------------------------------------------
  * Threads that share a frame's work
  * ------------------------------------------------------------------------- */
@@ -160,11 +287,20 @@ void px_pool_run(px_pool *p, px_pool_job job, void *ctx, unsigned count);
  * Video
  * ------------------------------------------------------------------------- */
 
-typedef struct px_fx_video px_fx_video;
-
 px_fx_video *px_fx_video_new(void);
 void px_fx_video_free(px_fx_video *v);
 void px_fx_video_reset(px_fx_video *v);
+
+/* What a frame is drawn with besides its capture. */
+typedef struct
+{
+   const px_game *game;       /* NULL: none */
+   void *game_state;
+   const uint8_t *ram;
+   size_t ram_size;
+   bool advance;              /* false: the frame before, drawn again */
+   const px_panel *panel;     /* NULL: none */
+} px_fx_extra;
 
 /* The size of the frame px_fx_video_render makes of a picture `height` rows high. */
 void px_fx_video_size(const px_fx_config *c, unsigned height, unsigned *w, unsigned *h);
@@ -172,7 +308,7 @@ void px_fx_video_size(const px_fx_config *c, unsigned height, unsigned *w, unsig
 /* Draws the captured frame. Returns XRGB8888 pixels of *w by *h, *w * 4 bytes a row, valid
  * until the next call; NULL if the frame cannot be drawn (the caller shows the core's). */
 const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
-      const px_fx_config *c, unsigned *w, unsigned *h);
+      const px_fx_config *c, const px_fx_extra *extra, unsigned *w, unsigned *h);
 
 /* How long the last frame took to draw, in microseconds. */
 unsigned px_fx_video_last_us(const px_fx_video *v);

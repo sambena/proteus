@@ -6,6 +6,11 @@
  *   harness2600 <core> <rom> <frames> [options]
  *     --opt key=value     force a core option
  *     --input             press joypad buttons following a fixed script
+ *     --press <frame>:<button>[:<frames>]
+ *                         hold x, up, down, left, right, b, a or start from a frame on
+ *     --key <frame>:<key> press backslash, [, ], -, = or a digit at a frame
+ *     --no-set-variable   refuse options the core wants to change
+ *     --show-options      print Proteus's options as they are after the last frame
  *     --capture           call the capture exports directly and check every frame
  *     --hashes <file>     write one line per frame: the hash of its pixels
  *     --bmp <file>        write the last frame
@@ -14,6 +19,8 @@
  *     --state             hash the save state after the last frame
  *     --state-out <file>  write the save state after the last frame
  *     --state-in <file>   start from a save state, which makes runs of a game the same
+ *     --objects <file>    with --capture: write every frame's objects
+ *     --ram <file>        write the 128 bytes of RAM after every frame
  *     --slow <ms>         wait that long before every frame
  *     --native            hash frames that are larger than the core's at the core's size,
  *                         taking the pixel in the middle of every block
@@ -61,12 +68,17 @@ static struct
    size_t (*serialize_size)(void);
    bool (*serialize)(void*, size_t);
    bool (*unserialize)(const void*, size_t);
+   void *(*get_memory_data)(unsigned);
+   size_t (*get_memory_size)(unsigned);
    bool (*load_game)(const struct retro_game_info*);
    void (*unload_game)(void);
    /* optional */
    void (*capture_enable)(unsigned);
    const struct pxc_frame *(*capture)(unsigned);
 } core;
+
+static retro_keyboard_event_t keyboard_cb;
+static bool take_set_variable = true;
 
 static struct { char key[64]; char value[128]; bool forced; } opts[MAX_OPTS];
 static unsigned opt_count;
@@ -314,6 +326,25 @@ static bool RETRO_CALLCONV env_cb(unsigned cmd, void *data)
          *(bool*)data = options_updated;
          options_updated = false;
          return true;
+      case RETRO_ENVIRONMENT_SET_VARIABLE:
+      {
+         const struct retro_variable *v = data;
+         int i;
+         if (!take_set_variable)
+            return false;
+         if (!v)
+            return true;
+         if ((i = find_opt(v->key)) < 0)
+            return false;
+         snprintf(opts[i].value, sizeof(opts[i].value), "%s", v->value);
+         options_updated = true;
+         if (!quiet)
+            printf("[option] %s = %s\n", v->key, v->value);
+         return true;
+      }
+      case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK:
+         keyboard_cb = ((const struct retro_keyboard_callback*)data)->callback;
+         return true;
       case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
          return *(const enum retro_pixel_format*)data == RETRO_PIXEL_FORMAT_XRGB8888;
       case RETRO_ENVIRONMENT_SET_GEOMETRY:
@@ -385,11 +416,78 @@ static void RETRO_CALLCONV sample_cb(int16_t l, int16_t r)
 
 static void RETRO_CALLCONV poll_cb(void) {}
 
+/* --press <frame>:<button>[:<frames>] and --key <frame>:<key> */
+#define MAX_PRESSES 64
+static struct { unsigned frame, frames, id; } presses[MAX_PRESSES];
+static unsigned press_count;
+static struct { unsigned frame, key; } key_presses[MAX_PRESSES];
+static unsigned key_count;
+static bool add_press(const char *spec)
+{
+   static const struct { const char *name; unsigned id; } names[] = {
+      { "x", RETRO_DEVICE_ID_JOYPAD_X }, { "up", RETRO_DEVICE_ID_JOYPAD_UP },
+      { "down", RETRO_DEVICE_ID_JOYPAD_DOWN }, { "left", RETRO_DEVICE_ID_JOYPAD_LEFT },
+      { "right", RETRO_DEVICE_ID_JOYPAD_RIGHT }, { "b", RETRO_DEVICE_ID_JOYPAD_B },
+      { "a", RETRO_DEVICE_ID_JOYPAD_A }, { "start", RETRO_DEVICE_ID_JOYPAD_START }
+   };
+   char name[16] = "";
+   unsigned frame = 0, frames = 3;
+   if (sscanf(spec, "%u:%15[a-z]:%u", &frame, name, &frames) < 2 || press_count >= MAX_PRESSES)
+      return false;
+   for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+      if (!strcmp(names[i].name, name))
+      {
+         presses[press_count].frame  = frame;
+         presses[press_count].frames = frames;
+         presses[press_count].id     = names[i].id;
+         press_count++;
+         return true;
+      }
+   return false;
+}
+
+static bool add_key(const char *spec)
+{
+   unsigned frame = 0;
+   const char *colon = strchr(spec, ':');
+   unsigned key = 0;
+   if (!colon || sscanf(spec, "%u", &frame) != 1 || key_count >= MAX_PRESSES)
+      return false;
+   colon++;
+   if (!strcmp(colon, "backslash"))  key = RETROK_BACKSLASH;
+   else if (!strcmp(colon, "["))     key = RETROK_LEFTBRACKET;
+   else if (!strcmp(colon, "]"))     key = RETROK_RIGHTBRACKET;
+   else if (!strcmp(colon, "-"))     key = RETROK_MINUS;
+   else if (!strcmp(colon, "="))     key = RETROK_EQUALS;
+   else if (colon[0] >= '0' && colon[0] <= '9' && !colon[1]) key = RETROK_0 + (unsigned)(colon[0] - '0');
+   else
+      return false;
+   key_presses[key_count].frame = frame;
+   key_presses[key_count].key   = key;
+   key_count++;
+   return true;
+}
+
+static void press_keys(void)
+{
+   for (unsigned i = 0; keyboard_cb && i < key_count; i++)
+      if (key_presses[i].frame == frame_no)
+      {
+         keyboard_cb(true, key_presses[i].key, 0, 0);
+         keyboard_cb(false, key_presses[i].key, 0, 0);
+      }
+}
+
 /* Left, right and fire, each held for a while, from a fixed sequence. */
 static int16_t RETRO_CALLCONV input_cb(unsigned port, unsigned device, unsigned index, unsigned id)
 {
    uint32_t r;
    (void)index;
+   if (port == 0 && device == RETRO_DEVICE_JOYPAD)
+      for (unsigned i = 0; i < press_count; i++)
+         if (presses[i].id == id && frame_no >= presses[i].frame
+               && frame_no < presses[i].frame + presses[i].frames)
+            return 1;
    if (!scripted_input || port != 0 || device != RETRO_DEVICE_JOYPAD)
       return 0;
    r = (frame_no / 12) * 2654435761u;
@@ -427,6 +525,8 @@ static bool open_core(const char *path)
    GET(serialize_size, "retro_serialize_size");
    GET(serialize, "retro_serialize");
    GET(unserialize, "retro_unserialize");
+   GET(get_memory_data, "retro_get_memory_data");
+   GET(get_memory_size, "retro_get_memory_size");
    GET(load_game, "retro_load_game");
    GET(unload_game, "retro_unload_game");
 #undef GET
@@ -537,14 +637,28 @@ static struct
    uint32_t first_id, last_id;
 } obj = { ~0u, 0, 0, 0, 0, 0 };
 
+static FILE *objects_file;   /* --objects: every frame's instances */
+
 static void check_objects(const struct pxc_frame *f)
 {
+   static const char *names[PXC_LAYERS] = { "bk", "pf", "bl", "p0", "m0", "p1", "m1" };
    unsigned real = 0, ghosts = 0;
    if (!objects.next_id)
       px_objects_init(&objects);
    if (!obj.first_id)
       obj.first_id = objects.next_id;
    px_objects_update(&objects, f, true);
+   if (objects_file)
+   {
+      fprintf(objects_file, "frame %u: %u\n", frame_no, objects.count);
+      for (unsigned i = 0; i < objects.count; i++)
+      {
+         const px_instance *in = &objects.inst[i];
+         fprintf(objects_file, "  %s copy %u at %3d,%3d size %2ux%2u colour %02X shape %08X track %u%s\n",
+               names[in->cls], in->copy, in->x, in->y, in->w, in->h, in->color, in->hash,
+               in->track, in->ghost ? " (from its track)" : "");
+      }
+   }
    for (unsigned i = 0; i < objects.count; i++)
       if (objects.inst[i].ghost)
          ghosts++;
@@ -660,7 +774,8 @@ int main(int argc, char **argv)
    struct retro_system_av_info av;
    const char *hashes_path = NULL, *bmp_path = NULL, *layers_path = NULL, *wav_path = NULL;
    const char *state_in = NULL, *state_out = NULL;
-   bool want_capture = false, want_state = false, native = false;
+   FILE *ram_file = NULL;
+   bool want_capture = false, want_state = false, native = false, show_options = false;
    double time_sum = 0.0, time_max = 0.0, slow_ms = 0.0;
    unsigned frames;
    uint64_t video_hash = FNV_START;
@@ -699,6 +814,26 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--bmp") && i + 1 < argc)    bmp_path = argv[++i];
       else if (!strcmp(argv[i], "--layers") && i + 1 < argc) layers_path = argv[++i];
       else if (!strcmp(argv[i], "--wav") && i + 1 < argc)    wav_path = argv[++i];
+      else if (!strcmp(argv[i], "--press") && i + 1 < argc)
+      {
+         if (!add_press(argv[++i]))
+         {
+            printf("bad --press %s\n", argv[i]);
+            return 2;
+         }
+      }
+      else if (!strcmp(argv[i], "--key") && i + 1 < argc)
+      {
+         if (!add_key(argv[++i]))
+         {
+            printf("bad --key %s\n", argv[i]);
+            return 2;
+         }
+      }
+      else if (!strcmp(argv[i], "--no-set-variable")) take_set_variable = false;
+      else if (!strcmp(argv[i], "--show-options"))   show_options = true;
+      else if (!strcmp(argv[i], "--objects") && i + 1 < argc)   objects_file = fopen(argv[++i], "w");
+      else if (!strcmp(argv[i], "--ram") && i + 1 < argc)       ram_file = fopen(argv[++i], "w");
       else if (!strcmp(argv[i], "--state-in") && i + 1 < argc)  state_in = argv[++i];
       else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) state_out = argv[++i];
       else if (!strcmp(argv[i], "--sysdir") && i + 1 < argc) system_dir = argv[++i];
@@ -780,6 +915,7 @@ int main(int argc, char **argv)
    {
       double ms;
       video_new = false;
+      press_keys();
       if (slow_ms > 0.0)
       {
          /* Busy for a while: shows whether a core's frames depend on the time they take. */
@@ -793,6 +929,15 @@ int main(int argc, char **argv)
       time_sum += ms;
       if (ms > time_max && frame_no > 10)
          time_max = ms;
+      if (ram_file && core.get_memory_data)
+      {
+         const uint8_t *ram = core.get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+         size_t n = core.get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+         fprintf(ram_file, "%5u", frame_no);
+         for (size_t k = 0; ram && k < n; k++)
+            fprintf(ram_file, " %02X", ram[k]);
+         fprintf(ram_file, "\n");
+      }
       if (video_new && native && video_w > PXC_W && video_w % PXC_W == 0)
       {
          /* The middle of every block of pixels that stands for one of the core's. */
@@ -850,6 +995,10 @@ int main(int argc, char **argv)
    }
    printf("time   %.3f ms a frame on average, %.3f ms at most\n",
          frames ? time_sum / frames : 0.0, time_max);
+   if (show_options)
+      for (unsigned i = 0; i < opt_count; i++)
+         if (!strncmp(opts[i].key, "proteus_", 8))
+            printf("option %s = %s\n", opts[i].key, opts[i].value);
 
    if (want_state || state_out)
    {

@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "libretro.h"
+#include "fx.h"
 #include "profile.h"
 
 /* Proteus settings shown in RetroArch's Quick Menu > Core Options, merged with the
@@ -28,6 +29,17 @@ bool px_options_inner_declared(void);
 /* Offers the Atari 2600 picture and sound options (fx.h) or not. Takes effect on the next
  * publish. */
 void px_options_set_fx(bool offered);
+/* The game Proteus knows in particular (fx.h), whose options are offered too, or NULL. Takes
+ * effect on the next publish. */
+void px_options_set_game(const px_game *game);
+/* The options of the picture and the sound, in the order of the panel. */
+unsigned px_options_fx_count(void);
+const char *px_options_fx_key(unsigned i);
+const char *px_options_fx_name(unsigned i);
+const char *px_options_fx_default(unsigned i);
+unsigned px_options_fx_values(unsigned i);
+const char *px_options_fx_value(unsigned i, unsigned v);
+const char *px_options_fx_label(unsigned i, unsigned v);
 /* Rebuilds Proteus's options for a game; `profile` (may be NULL) adds one song
  * picker per mapped song. Takes effect on the next publish. */
 void px_options_set_profile(const px_profile *profile);

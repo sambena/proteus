@@ -121,7 +121,49 @@ static struct
 
    uint64_t us_sum;
    unsigned us_frames, us_max;
+
+   /* What Proteus knows of the game in particular, if it does. */
+   const px_game *game;
+   void *game_state;
+   char md5[33];
 } fx;
+
+/* The button and the keys for the options, and the options on the picture. */
+#define CTL_LOCAL 48
+static struct
+{
+   bool button_on, keys_on;
+   bool held;               /* the button is down */
+   bool chorded;            /* and something was pressed with it */
+   unsigned pad, pad_before;
+   unsigned repeat;         /* frames a direction has been down */
+   uint32_t keys;           /* KEY_* pressed since the frame before */
+   retro_keyboard_event_t inner_keyboard;
+
+   bool panel;              /* the list is on the picture, and the game stands still */
+   unsigned selected;
+   char toast[96];
+   unsigned toast_frames;
+   px_panel view;
+   char title[64];
+   char values[PX_PANEL_LINES][48];
+
+   /* Options changed here that the frontend would not take. */
+   struct { char key[64]; char value[128]; } local[CTL_LOCAL];
+   unsigned local_count;
+} ctl;
+
+enum
+{
+   KEY_PANEL = 1u << 0, KEY_BEFORE = 1u << 1, KEY_AFTER = 1u << 2, KEY_LESS = 1u << 3,
+   KEY_MORE = 1u << 4, KEY_DIGIT = 1u << 5   /* and the nine after it: 1 to 9, then 0 */
+};
+
+enum
+{
+   PAD_BUTTON = 1u << 0, PAD_UP = 1u << 1, PAD_DOWN = 1u << 2, PAD_LEFT = 1u << 3,
+   PAD_RIGHT = 1u << 4, PAD_FIRE = 1u << 5, PAD_TRIGGER = 1u << 6
+};
 
 /* <system>/proteus/proteus.log: RetroArch's own log is often off, and this is where
  * profiles live. */
@@ -426,6 +468,8 @@ static const px_host engine_host = {
  * The Atari 2600's picture and sound
  * ------------------------------------------------------------------------- */
 
+static int16_t *scratch_buffer(size_t frames);
+
 static bool fx_video_on(void)
 {
    return fx.is_2600 && fx.video && fx.cfg.video && inner.api.capture;
@@ -500,23 +544,73 @@ static void fx_tell_geometry(unsigned w, unsigned h)
    fx.out_h = h;
 }
 
+/* An option's value: as changed here, or else the frontend's. */
+static const char *fx_option_get(const char *key)
+{
+   for (unsigned i = 0; i < ctl.local_count; i++)
+      if (!strcmp(ctl.local[i].key, key))
+         return ctl.local[i].value;
+   return px_options_get(key);
+}
+
+/* An [fx] entry of the game's profile, or else what Proteus knows of the game. */
 static const char *fx_profile_get(const char *key)
 {
-   return px_profile_fx(&engine.profile, key);
+   const char *v = px_profile_fx(&engine.profile, key);
+   if (!v && fx.game)
+   {
+      /* Not with the game's own turned off, which is to show the game as any other. */
+      const char *on = fx_option_get(PX_OPT_FX_GAME);
+      if (!on || !strcmp(on, PX_OPT_FX_PROFILE))
+         on = px_profile_fx(&engine.profile, "game");
+      if (!on || strcmp(on, "disabled"))
+         v = px_game_fx(fx.game, key);
+   }
+   return v;
 }
 
 static void fx_read_config(void)
 {
    bool video_was = fx_video_on(), audio_was = fx_audio_on();
+   const char *v;
    if (!fx.is_2600)
       return;
-   px_fx_config_read(&fx.cfg, px_options_get, fx_profile_get);
+   px_fx_config_read(&fx.cfg, fx_option_get, fx_profile_get);
+   if (fx.game && fx.game->configure && fx.game_state)
+      fx.game->configure(fx.game_state, fx_option_get);
+   v = fx_option_get(PX_OPT_FX_BUTTON);
+   ctl.button_on = !v || strcmp(v, "off");
+   v = fx_option_get(PX_OPT_FX_KEYS);
+   ctl.keys_on = !v || strcmp(v, "disabled");
    if (inner.api.capture_enable)
       inner.api.capture_enable(fx.cfg.video
             ? PXC_ENABLE_VIDEO | PXC_ENABLE_WRITES | PXC_ENABLE_AUDIO : 0);
    /* The inner core's options that depend on these are to be read again. */
    if (video_was != fx_video_on() || audio_was != fx_audio_on())
       st.options_dirty = true;
+}
+
+/* Finds what Proteus knows of the game, before its options are declared. */
+static void fx_identify(const struct retro_game_info *game)
+{
+   fx.game   = NULL;
+   fx.md5[0] = '\0';
+   if (!fx.is_2600 || !game)
+      return;
+   if (game->data && game->size)
+      px_md5(game->data, game->size, fx.md5);
+   else if (game->path)
+   {
+      FILE *f = px_fopen(game->path, "rb");
+      static uint8_t rom[512 * 1024];
+      size_t n = f ? fread(rom, 1, sizeof(rom), f) : 0;
+      if (f)
+         fclose(f);
+      if (n)
+         px_md5(rom, n, fx.md5);
+   }
+   fx.game = px_game_find(fx.md5);
+   px_options_set_game(fx.game);
 }
 
 static void fx_start(void)
@@ -527,9 +621,16 @@ static void fx_start(void)
       fx.video = px_fx_video_new();
    if (!fx.audio)
       fx.audio = px_fx_audio_new();
+   if (fx.game && fx.game->create && !fx.game_state)
+      fx.game_state = fx.game->create();
    fx.us_sum = 0;
    fx.us_frames = fx.us_max = 0;
+   memset(&ctl, 0, sizeof(ctl));
    fx_read_config();
+   if (fx.game)
+      px_log(RETRO_LOG_INFO, "%s (%s): Proteus knows this game", fx.game->name, fx.md5);
+   else if (fx.md5[0])
+      px_log(RETRO_LOG_INFO, "ROM %s: drawn as any game", fx.md5);
    if (!inner.api.capture)
       px_log(RETRO_LOG_WARN, "%s has no capture interface: the picture is passed through. "
             "Install stellapx_libretro and name Proteus " PX_PREFIX "stellapx_libretro for the enhanced picture.",
@@ -538,12 +639,362 @@ static void fx_start(void)
 
 static void fx_stop(void)
 {
+   if (fx.game && fx.game->destroy && fx.game_state)
+      fx.game->destroy(fx.game_state);
+   fx.game_state = NULL;
+   fx.game       = NULL;
    px_fx_video_free(fx.video);
    px_fx_audio_free(fx.audio);
    fx.video   = NULL;
    fx.audio   = NULL;
    fx.have_av = false;
    fx.out_w = fx.out_h = 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * The options by button and by key
+ * ------------------------------------------------------------------------- */
+
+static void ctl_say(const char *fmt, ...)
+{
+   va_list ap;
+   va_start(ap, fmt);
+   vsnprintf(ctl.toast, sizeof(ctl.toast), fmt, ap);
+   va_end(ap);
+   ctl.toast_frames = 120;
+   /* Where Proteus does not draw the picture, the frontend says it. */
+   if (!fx_video_on())
+      px_notify("%s", ctl.toast);
+}
+
+static int ctl_find(const char *key)
+{
+   unsigned n = px_options_fx_count();
+   for (unsigned i = 0; i < n; i++)
+      if (!strcmp(px_options_fx_key(i), key))
+         return (int)i;
+   return -1;
+}
+
+/* Which of an option's values it has. */
+static unsigned ctl_value(unsigned i)
+{
+   const char *v = fx_option_get(px_options_fx_key(i));
+   unsigned n = px_options_fx_values(i);
+   if (!v)
+      v = px_options_fx_default(i);
+   for (unsigned k = 0; v && k < n; k++)
+      if (!strcmp(px_options_fx_value(i, k), v))
+         return k;
+   return 0;
+}
+
+static void ctl_set(unsigned i, unsigned value)
+{
+   struct retro_variable var;
+   var.key   = px_options_fx_key(i);
+   var.value = px_options_fx_value(i, value);
+   if (!var.key || !var.value)
+      return;
+
+   if (!fe_env(RETRO_ENVIRONMENT_SET_VARIABLE, &var))
+   {
+      unsigned k;
+      for (k = 0; k < ctl.local_count && strcmp(ctl.local[k].key, var.key); k++)
+         ;
+      if (k == ctl.local_count && ctl.local_count < CTL_LOCAL)
+         ctl.local_count++;
+      if (k < ctl.local_count)
+      {
+         snprintf(ctl.local[k].key, sizeof(ctl.local[k].key), "%s", var.key);
+         snprintf(ctl.local[k].value, sizeof(ctl.local[k].value), "%s", var.value);
+      }
+   }
+   fx_read_config();
+   ctl_say("%s: %s", px_options_fx_name(i), px_options_fx_label(i, value));
+}
+
+/* To the value after (or before), around the end. */
+static void ctl_step(unsigned i, int by)
+{
+   unsigned n = px_options_fx_values(i);
+   if (n)
+      ctl_set(i, (ctl_value(i) + n + (by < 0 ? n - 1 : 1)) % n);
+}
+
+/* On if off and off if on, whatever says which it is now. */
+static void ctl_toggle(const char *key, bool now)
+{
+   int i = ctl_find(key);
+   unsigned n;
+   if (i < 0)
+      return;
+   n = px_options_fx_values((unsigned)i);
+   for (unsigned k = 0; k < n; k++)
+      if (!strcmp(px_options_fx_value((unsigned)i, k), now ? "disabled" : "enabled"))
+      {
+         ctl_set((unsigned)i, k);
+         return;
+      }
+}
+
+/* To the value after the one in effect (`now`), the first one aside, which leaves the choice
+ * to the profile. */
+static void ctl_cycle(const char *key, const char *now)
+{
+   int i = ctl_find(key);
+   unsigned n, at = 0;
+   if (i < 0)
+      return;
+   n = px_options_fx_values((unsigned)i);
+   if (n < 2)
+      return;
+   for (unsigned k = 1; k < n; k++)
+      if (!strcmp(px_options_fx_value((unsigned)i, k), now))
+         at = k;
+   at = at + 1 < n ? at + 1 : 1;
+   ctl_set((unsigned)i, at);
+}
+
+static void ctl_select(int by)
+{
+   unsigned n = px_options_fx_count();
+   if (!n)
+      return;
+   ctl.selected = (ctl.selected + n + (by < 0 ? n - 1 : 1)) % n;
+   if (!ctl.panel)
+      ctl_say("%s: %s", px_options_fx_name(ctl.selected),
+            px_options_fx_label(ctl.selected, ctl_value(ctl.selected)));
+}
+
+static void ctl_digit(unsigned digit)
+{
+   static const char *const glow[] = { "off", "low", "medium", "high" };
+   static const char *const view[] = { "normal", "layers", "instances",
+      "bk", "pf", "bl", "p0", "m0", "p1", "m1" };
+   switch (digit)
+   {
+      case 0: ctl_toggle(PX_OPT_FX_VIDEO, fx.cfg.video); break;
+      case 1:
+         if (fx.game)
+            ctl_toggle(PX_OPT_FX_GAME, fx.cfg.game);
+         else
+            ctl_say("Proteus knows nothing of this game in particular");
+         break;
+      case 2: ctl_cycle(PX_OPT_FX_GLOW, glow[fx.cfg.glow & 3]); break;
+      case 3: ctl_toggle(PX_OPT_FX_SHADOW, fx.cfg.shadow); break;
+      case 4: ctl_toggle(PX_OPT_FX_SMOOTH, fx.cfg.smooth); break;
+      case 5: ctl_toggle(PX_OPT_FX_FLICKER, fx.cfg.flicker); break;
+      case 6: ctl_toggle(PX_OPT_FX_TRAILS, fx.cfg.trails); break;
+      case 7: ctl_toggle(PX_OPT_FX_BACKGROUND, fx.cfg.background); break;
+      case 8: ctl_toggle(PX_OPT_FX_SCANLINES, fx.cfg.scanlines); break;
+      case 9: ctl_cycle(PX_OPT_FX_VIEW, view[fx.cfg.view < 10 ? fx.cfg.view : 0]); break;
+   }
+}
+
+static void RETRO_CALLCONV keyboard_wrap(bool down, unsigned keycode, uint32_t character,
+      uint16_t mods)
+{
+   uint32_t key = 0;
+   if (fx.is_2600 && ctl.keys_on)
+      switch (keycode)
+      {
+         case RETROK_BACKSLASH:    key = KEY_PANEL; break;
+         case RETROK_LEFTBRACKET:  key = KEY_BEFORE; break;
+         case RETROK_RIGHTBRACKET: key = KEY_AFTER; break;
+         case RETROK_MINUS:        key = KEY_LESS; break;
+         case RETROK_EQUALS:       key = KEY_MORE; break;
+         case RETROK_0:            key = KEY_DIGIT << 9; break;
+         default:
+            if (keycode >= RETROK_1 && keycode <= RETROK_9)
+               key = KEY_DIGIT << (keycode - RETROK_1);
+            break;
+      }
+   if (key)
+   {
+      if (down)
+         ctl.keys |= key;
+      return;
+   }
+   if (ctl.inner_keyboard)
+      ctl.inner_keyboard(down, keycode, character, mods);
+}
+
+/* Once a frame, when the frontend has the state of its buttons. */
+static void ctl_update(void)
+{
+   static const struct { unsigned id, bit; } buttons[] = {
+      { RETRO_DEVICE_ID_JOYPAD_X, PAD_BUTTON }, { RETRO_DEVICE_ID_JOYPAD_UP, PAD_UP },
+      { RETRO_DEVICE_ID_JOYPAD_DOWN, PAD_DOWN }, { RETRO_DEVICE_ID_JOYPAD_LEFT, PAD_LEFT },
+      { RETRO_DEVICE_ID_JOYPAD_RIGHT, PAD_RIGHT }, { RETRO_DEVICE_ID_JOYPAD_B, PAD_FIRE },
+      { RETRO_DEVICE_ID_JOYPAD_A, PAD_TRIGGER }
+   };
+   unsigned pad = 0, pressed, turn;
+   uint32_t keys = ctl.keys;
+
+   ctl.keys = 0;
+   if (!fx.is_2600)
+      return;
+   if (ctl.toast_frames)
+      ctl.toast_frames--;
+
+   if (ctl.button_on && fe_input_state)
+      for (unsigned i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++)
+         if (fe_input_state(0, RETRO_DEVICE_JOYPAD, 0, buttons[i].id))
+            pad |= buttons[i].bit;
+   pressed        = pad & ~ctl.pad;
+   ctl.pad_before = ctl.pad;
+   ctl.pad        = pad;
+
+   /* A direction held goes on after a while. */
+   turn = pressed & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
+   if (pad & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT))
+   {
+      if (++ctl.repeat > 24 && ctl.repeat % 6 == 0)
+         turn = pad & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT);
+   }
+   else
+      ctl.repeat = 0;
+
+   if (pressed & PAD_BUTTON)
+   {
+      ctl.held    = true;
+      ctl.chorded = false;
+   }
+
+   if (ctl.panel)
+   {
+      if (turn & PAD_UP)    ctl_select(-1);
+      if (turn & PAD_DOWN)  ctl_select(1);
+      if (turn & PAD_LEFT)  ctl_step(ctl.selected, -1);
+      if (turn & PAD_RIGHT) ctl_step(ctl.selected, 1);
+      if (pressed & (PAD_FIRE | PAD_TRIGGER))
+      {
+         ctl.panel   = false;
+         ctl.chorded = true;
+      }
+   }
+   else if (ctl.held)
+   {
+      if (turn & PAD_LEFT)  { ctl_select(-1); ctl.chorded = true; }
+      if (turn & PAD_RIGHT) { ctl_select(1); ctl.chorded = true; }
+      if (turn & PAD_UP)    { ctl_step(ctl.selected, 1); ctl.chorded = true; }
+      if (turn & PAD_DOWN)  { ctl_step(ctl.selected, -1); ctl.chorded = true; }
+      if (pressed & PAD_FIRE)
+      {
+         ctl_toggle(PX_OPT_FX_VIDEO, fx.cfg.video);
+         ctl.chorded = true;
+      }
+      if (pressed & PAD_TRIGGER)
+      {
+         ctl_digit(1);
+         ctl.chorded = true;
+      }
+   }
+
+   /* The button let go with nothing pressed meanwhile: the list, or no more of it. */
+   if (ctl.held && !(pad & PAD_BUTTON))
+   {
+      ctl.held = false;
+      if (!ctl.chorded)
+         ctl.panel = !ctl.panel;
+   }
+
+   if (keys & KEY_PANEL)  ctl.panel = !ctl.panel;
+   if (keys & KEY_BEFORE) ctl_select(-1);
+   if (keys & KEY_AFTER)  ctl_select(1);
+   if (keys & KEY_LESS)   ctl_step(ctl.selected, -1);
+   if (keys & KEY_MORE)   ctl_step(ctl.selected, 1);
+   for (unsigned d = 0; d < 10; d++)
+      if (keys & (KEY_DIGIT << d))
+         ctl_digit(d);
+
+   /* The list needs the picture to be on. */
+   if (ctl.panel && !fx_video_on())
+   {
+      ctl.panel = false;
+      ctl_say("The list of options needs the enhanced picture");
+   }
+}
+
+/* What is on the picture of the options, or NULL. */
+static const px_panel *ctl_view(void)
+{
+   unsigned n = px_options_fx_count();
+   if (!ctl.panel && !ctl.toast_frames)
+      return NULL;
+
+   memset(&ctl.view, 0, sizeof(ctl.view));
+   ctl.view.open  = ctl.panel;
+   ctl.view.toast = ctl.toast_frames ? ctl.toast : NULL;
+   if (!ctl.panel)
+      return &ctl.view;
+
+   if (n > PX_PANEL_LINES)
+      n = PX_PANEL_LINES;
+   snprintf(ctl.title, sizeof(ctl.title), "Proteus 2600%s%s", fx.game ? " - " : "",
+         fx.game ? fx.game->name : "");
+   ctl.view.title    = ctl.title;
+   ctl.view.hint     = "Up/Down choose  Left/Right change  Fire back";
+   ctl.view.count    = n;
+   ctl.view.selected = ctl.selected < n ? ctl.selected : 0;
+   for (unsigned i = 0; i < n; i++)
+   {
+      const char *label = px_options_fx_label(i, ctl_value(i));
+      snprintf(ctl.values[i], sizeof(ctl.values[i]), "%s", label ? label : "");
+      ctl.view.names[i]  = px_options_fx_name(i);
+      ctl.view.values[i] = ctl.values[i];
+   }
+   return &ctl.view;
+}
+
+static void RETRO_CALLCONV input_poll_wrap(void)
+{
+   if (fe_input_poll)
+      fe_input_poll();
+   ctl_update();
+}
+
+/* The inner core does not see the button, nor anything pressed with it or with the list on
+ * the picture. */
+static int16_t RETRO_CALLCONV input_state_wrap(unsigned port, unsigned device, unsigned index,
+      unsigned id)
+{
+   int16_t v = fe_input_state ? fe_input_state(port, device, index, id) : 0;
+   if (!fx.is_2600 || !ctl.button_on || port != 0
+         || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD)
+      return v;
+   if (ctl.held || ctl.panel)
+      return 0;
+   if (id == RETRO_DEVICE_ID_JOYPAD_MASK)
+      return (int16_t)(v & ~(1 << RETRO_DEVICE_ID_JOYPAD_X));
+   return id == RETRO_DEVICE_ID_JOYPAD_X ? 0 : v;
+}
+
+static void fx_extra(px_fx_extra *extra, bool advance)
+{
+   memset(extra, 0, sizeof(*extra));
+   extra->game       = fx.game;
+   extra->game_state = fx.game_state;
+   extra->ram        = (const uint8_t*)inner.api.get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
+   extra->ram_size   = inner.api.get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
+   extra->advance    = advance;
+   extra->panel      = ctl_view();
+}
+
+static void fx_timing(unsigned w, unsigned h)
+{
+   unsigned us = px_fx_video_last_us(fx.video);
+   fx.us_sum += us;
+   if (us > fx.us_max)
+      fx.us_max = us;
+   if (++fx.us_frames >= 1800)
+   {
+      px_log(RETRO_LOG_INFO, "picture %ux%u: %u us a frame on average, %u us at most",
+            w, h, (unsigned)(fx.us_sum / fx.us_frames), fx.us_max);
+      fx.us_sum = 0;
+      fx.us_frames = fx.us_max = 0;
+   }
 }
 
 /* Shows the frame of this retro_run: drawn from its capture, or else as the core made it. */
@@ -566,7 +1017,11 @@ static void fx_present(void)
    if (fx.video_enabled && fx_video_on())
       c = inner.api.capture(PXC_ABI_VERSION);
    if (c && c->struct_size >= sizeof(*c) && c->width == fx.frame_w && c->height == fx.frame_h)
-      px = px_fx_video_render(fx.video, c, &fx.cfg, &w, &h);
+   {
+      px_fx_extra extra;
+      fx_extra(&extra, true);
+      px = px_fx_video_render(fx.video, c, &fx.cfg, &extra, &w, &h);
+   }
 
    if (!px)
    {
@@ -577,18 +1032,40 @@ static void fx_present(void)
    if (w != fx.out_w || h != fx.out_h)
       fx_tell_geometry(w, h);
    fe_video(px, w, h, (size_t)w * sizeof(uint32_t));
+   fx_timing(w, h);
+}
 
+/* With the list of options on the picture the game stands still: its last frame is drawn
+ * again as the options are now, and nothing is to be heard. */
+static void fx_stand_still(void)
+{
+   const struct pxc_frame *c = inner.api.capture ? inner.api.capture(PXC_ABI_VERSION) : NULL;
+   const uint32_t *px = NULL;
+   unsigned w = 0, h = 0;
+
+   if (c && c->struct_size >= sizeof(*c) && fe_video)
    {
-      unsigned us = px_fx_video_last_us(fx.video);
-      fx.us_sum += us;
-      if (us > fx.us_max)
-         fx.us_max = us;
-      if (++fx.us_frames >= 1800)
+      px_fx_extra extra;
+      fx_extra(&extra, false);
+      px = px_fx_video_render(fx.video, c, &fx.cfg, &extra, &w, &h);
+   }
+   if (px)
+   {
+      if (w != fx.out_w || h != fx.out_h)
+         fx_tell_geometry(w, h);
+      fe_video(px, w, h, (size_t)w * sizeof(uint32_t));
+   }
+   else if (fe_video)
+      fe_video(NULL, fx.out_w, fx.out_h, (size_t)fx.out_w * sizeof(uint32_t));
+
+   if (fe_audio_batch && fx.have_av && fx.av.timing.fps > 1.0 && st.audio_enabled)
+   {
+      size_t frames = (size_t)(fx.av.timing.sample_rate / fx.av.timing.fps + 0.5);
+      int16_t *buf = scratch_buffer(frames);
+      if (buf)
       {
-         px_log(RETRO_LOG_INFO, "picture %ux%u: %u us a frame on average, %u us at most",
-               w, h, (unsigned)(fx.us_sum / fx.us_frames), fx.us_max);
-         fx.us_sum = 0;
-         fx.us_frames = fx.us_max = 0;
+         memset(buf, 0, frames * 2 * sizeof(int16_t));
+         fe_audio_batch(buf, frames);
       }
    }
 }
@@ -666,6 +1143,17 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
             px_fx_audio_set_rate(fx.audio, av.timing.sample_rate);
          }
          return ret;
+      }
+
+      case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK:
+      {
+         /* The keys for the options are taken out on their way to the inner core. */
+         struct retro_keyboard_callback wrapped;
+         if (!data || !fx.is_2600)
+            return fe_env(cmd, data);
+         ctl.inner_keyboard = ((const struct retro_keyboard_callback*)data)->callback;
+         wrapped.callback   = keyboard_wrap;
+         return fe_env(cmd, &wrapped);
       }
 
       case RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK:
@@ -752,9 +1240,9 @@ static void apply_callbacks(void)
    if (fe_audio_batch)
       inner.api.set_audio_sample_batch(audio_batch_wrap);
    if (fe_input_poll)
-      inner.api.set_input_poll(fe_input_poll);
+      inner.api.set_input_poll(input_poll_wrap);
    if (fe_input_state)
-      inner.api.set_input_state(fe_input_state);
+      inner.api.set_input_state(input_state_wrap);
 }
 
 /* Loads the game's profile and publishes its song pickers before the inner core
@@ -833,14 +1321,14 @@ RETRO_API void retro_set_input_poll(retro_input_poll_t cb)
 {
    fe_input_poll = cb;
    if (ensure_inner())
-      inner.api.set_input_poll(cb);
+      inner.api.set_input_poll(input_poll_wrap);
 }
 
 RETRO_API void retro_set_input_state(retro_input_state_t cb)
 {
    fe_input_state = cb;
    if (ensure_inner())
-      inner.api.set_input_state(cb);
+      inner.api.set_input_state(input_state_wrap);
 }
 
 RETRO_API void retro_init(void)
@@ -915,6 +1403,8 @@ RETRO_API void retro_reset(void)
    px_engine_reset(&engine);
    px_fx_video_reset(fx.video);
    px_fx_audio_reset(fx.audio);
+   if (fx.game && fx.game->reset && fx.game_state)
+      fx.game->reset(fx.game_state);
 }
 
 RETRO_API void retro_run(void)
@@ -948,6 +1438,17 @@ RETRO_API void retro_run(void)
       /* Detect before running so a mute takes effect in this frame's audio. */
       if (engine_on)
          px_engine_frame(&engine);
+   }
+
+   /* With the list of options on the picture, the game waits. */
+   if (fx.is_2600 && ctl.panel)
+   {
+      input_poll_wrap();
+      if (ctl.panel || fx_video_on())
+      {
+         fx_stand_still();
+         return;
+      }
    }
 
    fx.got_frame = false;
@@ -1042,6 +1543,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *game)
    bool ok;
    if (!ensure_inner())
       return false;
+   /* Before the options are declared, of which the game may have its own. */
+   fx_identify(game);
    load_profile_for(game ? game->path : NULL);
    /* Before the inner core loads the game, which is when it reads its options. */
    fx_start();

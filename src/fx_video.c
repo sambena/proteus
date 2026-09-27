@@ -26,13 +26,26 @@
 #include <time.h>
 #endif
 
-enum { CLS_BK = 0, CLS_PF, CLS_SPRITE, CLS_BLANK };
+#define CLS_BK     PX_CLS_BK
+#define CLS_PF     PX_CLS_PF
+#define CLS_SPRITE PX_CLS_SPRITE
+#define CLS_BLANK  PX_CLS_BLANK
 
 #define GLOW_W (PXC_W * 2)
 /* Parts a picture is drawn in, each by a thread. */
 #define BANDS_MAX (PX_POOL_MAX + 1)
-#define KEY(cls, rgb) (((uint32_t)(cls) << 24) | ((rgb) & 0xFFFFFFu))
-#define KEY_CLS(k)    ((k) >> 24)
+#define KEY(cls, rgb) PX_KEY(cls, rgb)
+#define KEY_CLS(k)    PX_KEY_CLS(k)
+
+#define SPARKS_MAX 384
+
+/* A spark: where it is among the glow's pixels, in 256ths. */
+typedef struct
+{
+   int32_t x, y, vx, vy;
+   uint32_t rgb;
+   uint16_t life, span;
+} spark;
 
 struct px_fx_video
 {
@@ -65,6 +78,17 @@ struct px_fx_video
    uint32_t *keys;       /* a row of the picture before the effects, for every band */
 
    px_pool *pool;
+
+   /* A game module's. */
+   uint32_t *backdrop;   /* a picture for where the background is */
+   size_t backdrop_cap;
+   unsigned backdrop_w, backdrop_h;
+   bool backdrop_on;
+   spark sparks[SPARKS_MAX];
+   unsigned spark_count;
+   uint32_t spark_seed;
+   unsigned flash;       /* of 256 */
+   uint32_t flash_rgb;
 
    unsigned height;      /* of the frame before, to tell when the buffers are stale */
    unsigned level;       /* how loud the voices are, smoothed, 0..256 */
@@ -124,6 +148,7 @@ void px_fx_config_read(px_fx_config *c, const char *(*get)(const char *key),
    c->reactive   = is_on(V(PX_OPT_FX_REACTIVE), true);
    c->scanlines  = is_on(V(PX_OPT_FX_SCANLINES), false);
    c->bars       = is_on(V(PX_OPT_FX_BARS), true);
+   c->game       = is_on(V(PX_OPT_FX_GAME), true);
    c->lowpass    = pick(V(PX_OPT_FX_LOWPASS), lowpass, 3, 1);
    c->reverb     = pick(V(PX_OPT_FX_REVERB), reverb, 4, 1);
    c->view       = pick(V(PX_OPT_FX_VIEW), views, 10, PX_VIEW_NORMAL);
@@ -203,6 +228,7 @@ void px_fx_video_free(px_fx_video *v)
    free(v->col_g1);
    free(v->col_gf);
    free(v->keys);
+   free(v->backdrop);
    free(v);
 }
 
@@ -212,7 +238,118 @@ void px_fx_video_reset(px_fx_video *v)
       return;
    px_objects_reset(&v->objects);
    memset(v->trail, 0, (size_t)GLOW_W * PXC_MAX_H * 3 * sizeof(uint16_t));
-   v->level = 0;
+   v->level       = 0;
+   v->spark_count = 0;
+   v->flash       = 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * For game modules
+ * ------------------------------------------------------------------------- */
+
+void px_scene_tint(px_scene *s, const px_instance *in, uint32_t rgb)
+{
+   const px_objects *o = s->objects;
+   rgb &= 0xFFFFFFu;
+   for (unsigned r = 0; r < in->h; r++)
+   {
+      int y = in->y + (int)r;
+      uint32_t bits = o->bits[in->rows + r];
+      if (y < 0 || y >= (int)s->frame->height)
+         continue;
+      for (unsigned b = 0; b < 32 && bits >> b; b++)
+      {
+         int x = in->x + (int)b;
+         size_t i;
+         if (!((bits >> b) & 1) || x < 0 || x >= PXC_W)
+            continue;
+         i = (size_t)y * PXC_W + (size_t)x;
+         if (s->sprite[i])
+            s->sprite[i] = 0xFF000000u | rgb;
+         if (PX_KEY_CLS(s->top[i]) == PX_CLS_SPRITE)
+            s->top[i] = PX_KEY(PX_CLS_SPRITE, rgb);
+      }
+   }
+}
+
+void px_scene_energy(px_scene *s, const px_instance *in, bool on)
+{
+   const px_objects *o = s->objects;
+   for (unsigned r = 0; r < in->h; r++)
+   {
+      int y = in->y + (int)r;
+      uint32_t bits = o->bits[in->rows + r];
+      if (y < 0 || y >= (int)s->frame->height)
+         continue;
+      for (unsigned b = 0; b < 32 && bits >> b; b++)
+      {
+         int x = in->x + (int)b;
+         if (((bits >> b) & 1) && x >= 0 && x < PXC_W)
+            s->energy[(size_t)y * PXC_W + (size_t)x] = on;
+      }
+   }
+}
+
+static uint32_t chance(px_fx_video *v)
+{
+   v->spark_seed = v->spark_seed * 1664525u + 1013904223u;
+   return v->spark_seed >> 8;
+}
+
+void px_scene_burst(px_scene *s, int x, int y, uint32_t rgb, unsigned count, unsigned speed)
+{
+   /* Sixteen directions of a circle, in 256ths. */
+   static const int16_t dir[16][2] = {
+      { 256, 0 }, { 237, 98 }, { 181, 181 }, { 98, 237 }, { 0, 256 }, { -98, 237 },
+      { -181, 181 }, { -237, 98 }, { -256, 0 }, { -237, -98 }, { -181, -181 }, { -98, -237 },
+      { 0, -256 }, { 98, -237 }, { 181, -181 }, { 237, -98 }
+   };
+   px_fx_video *v = s->video;
+   if (!s->advance)
+      return;
+   for (unsigned i = 0; i < count && v->spark_count < SPARKS_MAX; i++)
+   {
+      spark *k = &v->sparks[v->spark_count++];
+      unsigned d = (i * 16 / (count ? count : 1) + chance(v)) & 15;
+      int pace = (int)(speed / 2 + chance(v) % (speed ? speed : 1));
+      k->x    = (x * 2 + 1) * 256;
+      k->y    = y * 256 + 128;
+      k->vx   = dir[d][0] * pace / 256;
+      k->vy   = dir[d][1] * pace / 256;
+      k->rgb  = rgb & 0xFFFFFFu;
+      k->span = (uint16_t)(14 + chance(v) % 14);
+      k->life = k->span;
+   }
+}
+
+void px_scene_flash(px_scene *s, uint32_t rgb, unsigned strength)
+{
+   if (!s->advance)
+      return;
+   s->video->flash     = strength > 256 ? 256 : strength;
+   s->video->flash_rgb = rgb & 0xFFFFFFu;
+}
+
+static void move_sparks(px_fx_video *v, unsigned height)
+{
+   unsigned kept = 0;
+   for (unsigned i = 0; i < v->spark_count; i++)
+   {
+      spark *k = &v->sparks[i];
+      k->x += k->vx;
+      k->y += k->vy;
+      /* They slow down, and fall a little. */
+      k->vx = k->vx * 236 / 256;
+      k->vy = k->vy * 236 / 256 + 6;
+      if (--k->life == 0 || k->x < 0 || k->y < 0 || k->x >= GLOW_W * 256
+            || k->y >= (int32_t)height * 256)
+         continue;
+      v->sparks[kept++] = *k;
+   }
+   v->spark_count = kept;
+   v->flash = v->flash * 200 / 256;
+   if (v->flash < 6)
+      v->flash = 0;
 }
 
 unsigned px_fx_video_last_us(const px_fx_video *v)
@@ -430,20 +567,21 @@ static void box_blur_v(const uint16_t *src, uint16_t *dst, unsigned w, unsigned 
    }
 }
 
-static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c)
+static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+      bool advance)
 {
    const unsigned h = f->height;
    const size_t n = (size_t)GLOW_W * h * 3;
    const unsigned radius = c->glow == 1 ? 2 : c->glow == 2 ? 3 : 5;
 
    /* Shots stay in the trail and fade from it. */
-   if (c->trails)
+   if (!c->trails)
+      memset(v->trail, 0, n * sizeof(uint16_t));
+   else if (advance)
    {
       for (size_t i = 0; i < n; i++)
          v->trail[i] = (uint16_t)((v->trail[i] * 215u) >> 8);
    }
-   else
-      memset(v->trail, 0, n * sizeof(uint16_t));
 
    for (unsigned y = 0; y < h; y++)
       for (unsigned x = 0; x < PXC_W; x++)
@@ -465,7 +603,7 @@ static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_con
          for (unsigned k = 0; k < 3; k++)
             g[k] = g[3 + k] = (uint16_t)rgb[k];
 
-         if (c->trails && v->energy[i])
+         if (c->trails && advance && v->energy[i])
          {
             uint16_t *t = v->trail + ((size_t)y * GLOW_W + x * 2) * 3;
             for (unsigned k = 0; k < 3; k++)
@@ -473,6 +611,27 @@ static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_con
                   t[k] = t[3 + k] = (uint16_t)rgb[k];
          }
       }
+
+   /* Sparks light the glow where they are, and the trail behind them. */
+   for (unsigned i = 0; i < v->spark_count; i++)
+   {
+      const spark *k = &v->sparks[i];
+      unsigned x = (unsigned)(k->x >> 8), y = (unsigned)(k->y >> 8);
+      unsigned bright = 640u * k->life / k->span;
+      uint16_t *g, *t;
+      if (x >= GLOW_W || y >= h)
+         continue;
+      g = v->glow + ((size_t)y * GLOW_W + x) * 3;
+      t = v->trail + ((size_t)y * GLOW_W + x) * 3;
+      for (unsigned ch = 0; ch < 3; ch++)
+      {
+         unsigned level = (((k->rgb >> (16 - 8 * ch)) & 0xFF) * bright) >> 8;
+         if (g[ch] < level)
+            g[ch] = (uint16_t)level;
+         if (c->trails && advance && t[ch] < level / 2)
+            t[ch] = (uint16_t)(level / 2);
+      }
+   }
 
    if (c->trails)
       for (size_t i = 0; i < n; i++)
@@ -602,6 +761,14 @@ static inline uint32_t scale_rgb(uint32_t rgb, unsigned f256)
    return (r << 16) | (g << 8) | b;
 }
 
+static inline uint32_t add_rgb(uint32_t a, uint32_t b)
+{
+   unsigned r = ((a >> 16) & 0xFF) + ((b >> 16) & 0xFF);
+   unsigned g = ((a >> 8) & 0xFF) + ((b >> 8) & 0xFF);
+   unsigned bl = (a & 0xFF) + (b & 0xFF);
+   return ((r > 255 ? 255 : r) << 16) | ((g > 255 ? 255 : g) << 8) | (bl > 255 ? 255 : bl);
+}
+
 static inline uint32_t mix_rgb(uint32_t a, uint32_t b, unsigned t256)
 {
    unsigned s = 256 - t256;
@@ -686,6 +853,8 @@ typedef struct
    bool smooth;
    unsigned shadow_x, shadow_y;
    unsigned gain, gain_on_sprites;
+   const uint32_t *backdrop;   /* a game's, or NULL */
+   uint32_t flash;             /* what a flash adds to every pixel */
    /* Which corner of a captured pixel an output pixel is in: 1..4, 0 for the middle. */
    uint8_t corner[PX_FX_MAX_SY][PX_FX_MAX_SX];
 } picture;
@@ -700,6 +869,8 @@ static void draw_band(void *ctx, unsigned index, unsigned count)
    const px_fx_config *c = p->c;
    const unsigned sx = c->sx, sy = c->sy, sh = p->f->height, w = p->w, h = p->h;
    const unsigned shadow_y = p->shadow_y, gain = p->gain, gain_on_sprites = p->gain_on_sprites;
+   const uint32_t *backdrop = p->backdrop;
+   const uint32_t flash = p->flash;
    const bool smooth = p->smooth;
    const unsigned y_from = sh * index / count, y_to = sh * (index + 1) / count;
    uint32_t *keys = v->keys + (size_t)index * w;
@@ -853,6 +1024,18 @@ static void draw_band(void *ctx, unsigned index, unsigned count)
             for (unsigned X = 0; X < w; X++)
                out[X] = keys[X] & 0xFFFFFFu;
 
+         /* A game's backdrop shows where the background is dark. */
+         if (backdrop)
+         {
+            const uint32_t *b = backdrop + (size_t)Y * w;
+            for (unsigned X = 0; X < w; X++)
+            {
+               const uint32_t key = keys[X];
+               if (KEY_CLS(key) == CLS_BK && !(key & 0xE0E0E0u))
+                  out[X] = add_rgb(b[X], key & 0xFFFFFFu);
+            }
+         }
+
          /* Shadows fall on the background and the playfield. */
          if (shadows)
          {
@@ -898,6 +1081,11 @@ static void draw_band(void *ctx, unsigned index, unsigned count)
             for (unsigned X = 0; X < w; X++)
                if (KEY_CLS(keys[X]) != CLS_BLANK)
                   out[X] = scale_rgb(out[X], 176);
+
+         if (flash)
+            for (unsigned X = 0; X < w; X++)
+               if (KEY_CLS(keys[X]) != CLS_BLANK)
+                  out[X] = add_rgb(out[X], flash);
       }
    }
 }
@@ -923,6 +1111,9 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
    if (c->reactive)
       p.gain += (p.gain * v->level) >> 9;
    p.gain_on_sprites = p.gain * 90u / 256u;
+   p.backdrop = v->backdrop_on && v->backdrop && v->backdrop_w == w && v->backdrop_h == h
+         ? v->backdrop : NULL;
+   p.flash    = v->flash ? scale_rgb(v->flash_rgb, v->flash) : 0;
 
    if (!make_columns(v, w, sx, p.shadow_x))
       return;
@@ -961,17 +1152,83 @@ static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_
    px_pool_run(v->pool, draw_band, &p, parts);
 }
 
-const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
-      const px_fx_config *c, unsigned *w, unsigned *h)
+/* The bright middle of every spark. */
+static void draw_sparks(px_fx_video *v, const px_fx_config *c, unsigned w, unsigned h)
 {
+   const unsigned bw = c->sx > 1 ? c->sx / 2 : 1, bh = c->sy > 1 ? c->sy / 2 : 1;
+   for (unsigned i = 0; i < v->spark_count; i++)
+   {
+      const spark *k = &v->sparks[i];
+      const uint32_t rgb = scale_rgb(k->rgb, 80u + 176u * k->life / k->span);
+      /* A pixel of the glow is half a captured pixel wide. */
+      unsigned X = (unsigned)((int64_t)k->x * c->sx / 512), Y = (unsigned)((int64_t)k->y * c->sy / 256);
+      for (unsigned t = 0; t < bh; t++)
+         for (unsigned u = 0; u < bw; u++)
+            if (X + u < w && Y + t < h)
+            {
+               uint32_t *o = v->out + (size_t)(Y + t) * w + X + u;
+               *o = add_rgb(*o, rgb);
+            }
+   }
+}
+
+/* Lets the game module at the frame. */
+static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+      const px_fx_extra *extra, unsigned w, unsigned h, bool advance)
+{
+   const size_t need = (size_t)w * h;
+   px_scene s;
+
+   memset(&s, 0, sizeof(s));
+   if (need > v->backdrop_cap)
+   {
+      uint32_t *b = (uint32_t*)realloc(v->backdrop, need * sizeof(uint32_t));
+      if (!b)
+         return;
+      v->backdrop     = b;
+      v->backdrop_cap = need;
+   }
+   s.backdrop_stale = v->backdrop_w != w || v->backdrop_h != h;
+   v->backdrop_w    = w;
+   v->backdrop_h    = h;
+
+   s.frame    = f;
+   s.cfg      = c;
+   s.objects  = &v->objects;
+   s.ram      = extra->ram;
+   s.ram_size = extra->ram_size;
+   s.advance  = advance;
+   s.w        = w;
+   s.h        = h;
+   s.sx       = c->sx;
+   s.sy       = c->sy;
+   s.top      = v->top;
+   s.bk       = v->bk;
+   s.sprite   = v->sprite;
+   s.energy   = v->energy;
+   s.backdrop = v->backdrop;
+   s.video    = v;
+
+   extra->game->frame(extra->game_state, &s);
+   v->backdrop_on = s.backdrop_on;
+}
+
+const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
+      const px_fx_config *c, const px_fx_extra *extra, unsigned *w, unsigned *h)
+{
+   static const px_fx_extra nothing = { NULL, NULL, NULL, 0, true, NULL };
    uint64_t start = now_us();
    const bool plain = c->sx == 1;
    size_t need;
+   bool advance;
 
    if (!v || !f || !f->tags || !f->winner || !f->aux || !f->palette || f->width != PXC_W
          || !f->height || f->height > PXC_MAX_H || !c->sx || c->sx > PX_FX_MAX_SX || !c->sy
          || c->sy > PX_FX_MAX_SY)
       return NULL;
+   if (!extra)
+      extra = &nothing;
+   advance = extra->advance;
 
    px_fx_video_size(c, f->height, w, h);
    need = (size_t)*w * *h;
@@ -1001,15 +1258,27 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
    else
    {
       const bool fuse = c->flicker && !plain;
+      const bool game = c->game && extra->game && extra->game->frame && !plain;
+
       classify(v, f);
       if (c->bars && !plain)
          fill_bars(v, f);
-      if (fuse || c->view == PX_VIEW_INSTANCES)
+      if (fuse || game || c->view == PX_VIEW_INSTANCES)
       {
-         px_objects_update(&v->objects, f, fuse);
+         /* A frame drawn again has the objects it had. */
+         if (advance)
+            px_objects_update(&v->objects, f, fuse);
          if (fuse)
             draw_ghosts(v, f);
       }
+      if (advance)
+         move_sparks(v, f->height);
+      v->backdrop_on = false;
+      if (game)
+         run_game(v, f, c, extra, *w, *h, advance);
+      else
+         v->spark_count = 0;
+
       if (plain)
       {
          px_fx_config none = *c;
@@ -1019,14 +1288,19 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
       }
       else
       {
-         follow_audio(v, f);
+         if (advance)
+            follow_audio(v, f);
          if (c->glow)
-            make_glow(v, f, c);
+            make_glow(v, f, c, advance);
          draw_picture(v, f, c, *w, *h);
+         draw_sparks(v, c, *w, *h);
       }
       if (c->view == PX_VIEW_INSTANCES)
          draw_boxes(v, c, *w, *h);
    }
+
+   if (extra->panel)
+      px_panel_draw(v->out, *w, *h, extra->panel);
 
    v->last_us = (unsigned)(now_us() - start);
    return v->out;

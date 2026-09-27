@@ -262,6 +262,16 @@ static void find_small(px_objects *o, const struct pxc_frame *f, uint8_t cls, ui
    free(open);
 }
 
+const px_obj_track *px_objects_track(const px_objects *o, uint32_t id)
+{
+   if (!o || !id)
+      return NULL;
+   for (unsigned t = 0; t < PX_MAX_OBJ_TRACKS; t++)
+      if (o->tracks[t].id == id)
+         return &o->tracks[t];
+   return NULL;
+}
+
 static int iabs(int v) { return v < 0 ? -v : v; }
 
 static void match_tracks(px_objects *o, bool ghosts)
@@ -289,7 +299,8 @@ static void match_tracks(px_objects *o, bool ghosts)
             continue;
          dx = in->x - tr->last.x;
          dy = in->y - tr->last.y;
-         if (iabs(dx) > 10 || iabs(dy) > 8)
+         /* Far enough for a row of invaders that steps down, near enough to tell rows. */
+         if (iabs(dx) > 10 || iabs(dy) > 12)
             continue;
          cost = iabs(dx) + iabs(dy) + (tr->last.hash != in->hash ? 4 : 0)
                + (tr->last.copy != in->copy ? 2 : 0) + (tr->last.color != in->color ? 2 : 0);

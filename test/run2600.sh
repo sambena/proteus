@@ -94,6 +94,24 @@ COMMON="--quiet --input --sysdir $DIR/out_profile --opt stella_phosphor=off"
 run profile    "$DIR/px/proteus_stellapx_libretro.dll"
 COMMON="--quiet --input --sysdir $DIR/out --opt stella_phosphor=off"
 
+# The options by key and by button. A key at the first frame is as good as the option.
+run full_silent "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND
+run noshadow   "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --opt proteus_fx_shadow=disabled
+run key        "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --key 0:4 --show-options
+run key_local  "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --key 0:4 --no-set-variable --show-options
+run keys_off   "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --key 0:4 --opt proteus_fx_keys=disabled
+COMMON="--quiet --sysdir $DIR/out --opt stella_phosphor=off"
+run quiet      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND
+run panel      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:3 --press 200:b:3 \
+   --bmp "$DIR/out/panel.bmp"
+run panel_open "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:3 --press 120:down:3 \
+   --press 130:down:3 --press 140:right:3 --show-options --bmp "$DIR/out/panel_open.bmp"
+run chord      "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:30 --press 110:b:3 \
+   --show-options
+run button_off "$DIR/px/proteus_stellapx_libretro.dll" $NOSOUND --press 100:x:3 \
+   --opt proteus_fx_button=off
+COMMON="--quiet --input --sysdir $DIR/out --opt stella_phosphor=off"
+
 # 50 Hz
 PAL_ROM=$(dirname "$ROM")/pxtest_pal.a26
 if [ -f "$PAL_ROM" ]; then
@@ -142,6 +160,28 @@ has() {   # label, name, text
    fi
 }
 
+frames() {   # label, name, a frame, another, same or differ
+   a=$(awk -v f="$3" '$1 == f { print $3 }' "$DIR/out/$2.txt")
+   b=$(awk -v f="$4" '$1 == f { print $3 }' "$DIR/out/$2.txt")
+   if [ -n "$a" ] && { { [ "$5" = same ] && [ "$a" = "$b" ]; } || { [ "$5" = differ ] && [ "$a" != "$b" ]; }; }; then
+      printf '  %-58s ok\n' "$1"
+   else
+      printf '  %-58s FAIL\n' "$1"
+      FAIL=$((FAIL + 1))
+   fi
+}
+
+across() {   # label, a run, another, the frame, same or differ
+   a=$(awk -v f="$4" '$1 == f { print $3 }' "$DIR/out/$2.txt")
+   b=$(awk -v f="$4" '$1 == f { print $3 }' "$DIR/out/$3.txt")
+   if [ -n "$a" ] && { { [ "$5" = same ] && [ "$a" = "$b" ]; } || { [ "$5" = differ ] && [ "$a" != "$b" ]; }; }; then
+      printf '  %-58s ok\n' "$1"
+   else
+      printf '  %-58s FAIL\n' "$1"
+      FAIL=$((FAIL + 1))
+   fi
+}
+
 echo "The capture build of Stella"
 same   "its frames are Stella's, capture off"  stock px_off
 same   "its frames are Stella's, capture on"   stock px_on
@@ -158,6 +198,19 @@ objects "objects are found, followed, and fused when they flicker"
 same   "a profile's [fx] is what the options would be"   noglow profile
 apart  "stereo width 0: both voices in the middle"        mono 0 0
 apart  "stereo width 100: a voice a side"                 wide 2000 30000
+echo "The options by key and by button"
+has    "a key changes its option at the frontend"         key "option proteus_fx_shadow = disabled"
+across "and the picture as the option would"              key noshadow 400 same
+across "which is another picture"                         key full_silent 400 differ
+has    "a frontend that takes no changes keeps its option" key_local "option proteus_fx_shadow = profile"
+across "and the picture changes all the same"             key_local noshadow 400 same
+same   "keys turned off change nothing"                   keys_off full_silent
+frames "the game goes on without the list"                quiet 150 151 differ
+frames "and stands still with it"                         panel 150 151 same
+frames "and goes on when the list is closed"              panel 300 301 differ
+has    "the list changes the option chosen"               panel_open "option proteus_fx_glow = off"
+has    "the button held and fire: the picture as Stella's" chord "option proteus_fx_video = disabled"
+same   "the button turned off does nothing"               button_off quiet
 if [ -f "$PAL_ROM" ]; then
    has    "50 Hz: Stella runs the program at 50 frames"      pal_stock "50.000 fps"
    same   "50 Hz: no effects, Stella's frames, enlarged"    pal_stock pal_plain
