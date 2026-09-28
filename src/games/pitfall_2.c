@@ -113,7 +113,7 @@ static const char *const md5[] = {
 
 static const char *const fx[] = {
    "width", "50",
-   "reverb", "hall",
+   "reverb", "room",
    NULL
 };
 
@@ -981,12 +981,12 @@ static void music_play(p2 *g, px_sound *s, unsigned v, float hz)
 {
    /* wave             freq to glide attack  hold decay gain   cutoff to  vibrato */
    static const px_tone bass[2] = {
-      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.006f, 0, 0, 0.24f, 0,    0, 0, 0 },
-      { PX_WAVE_SAW,      1, 0, 0, 0.006f, 0, 0, 0.08f, 900,  0, 0, 0 }
+      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.006f, 0, 0, 0.28f, 0,    0, 0, 0 },
+      { PX_WAVE_SAW,      1, 0, 0, 0.006f, 0, 0, 0.09f, 900,  0, 0, 0 }
    };
    static const px_tone lead[2] = {
-      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.010f, 0, 0, 0.14f, 0,    0, 5.5f, 0.004f },
-      { PX_WAVE_SQUARE,   1, 0, 0, 0.020f, 0, 0, 0.05f, 2400, 0, 5.5f, 0.004f }
+      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.010f, 0, 0, 0.16f, 0,    0, 5.5f, 0.004f },
+      { PX_WAVE_SQUARE,   1, 0, 0, 0.020f, 0, 0, 0.06f, 2400, 0, 5.5f, 0.004f }
    };
    static const float pan[3] = { -0.30f, 0.0f, 0.30f };
    dpc_voice *m = &g->music[v];
