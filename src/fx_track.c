@@ -143,6 +143,7 @@ static void find_players(px_objects *o, const struct pxc_frame *f, unsigned play
       const uint8_t *aux  = f->aux + (size_t)y * PXC_W;
       const uint8_t *col  = color + (size_t)y * PXC_W;
       bool scanned[7] = { false, false, false, false, false, false, false };
+      bool at_left[4] = { false, false, false, false };
       unsigned x = 0;
 
       while (x < PXC_W)
@@ -172,15 +173,17 @@ static void find_players(px_objects *o, const struct pxc_frame *f, unsigned play
          w = x - x0;
 
          /* The same copy twice on a line: the player was placed again within it. Or it
-          * leaves at the right edge and comes in at the left: what is at the right is an
-          * instance of its own. */
+          * leaves at the right edge and comes in at the left, where the line's picture
+          * begins: what is at the right is an instance of its own. */
          slot = copy;
          if (scanned[copy])
          {
-            if (x < PXC_W || scanned[copy + 3])
+            if (x < PXC_W || !at_left[copy] || scanned[copy + 3])
                continue;
             slot = copy + 3;
          }
+         else
+            at_left[copy] = !x0 || (tags[x0 - 1] & PXC_BLANK);
          scanned[slot] = true;
          b = &open[slot];
 
