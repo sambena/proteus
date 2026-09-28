@@ -493,6 +493,275 @@ void px_kit_shades(uint32_t colors[256], uint32_t dark, uint32_t mid, uint32_t l
 }
 
 /* ---------------------------------------------------------------------------
+ * A road into the distance
+ * ------------------------------------------------------------------------- */
+
+#define ROW_SAMPLES 18
+
+/* The background's colour along a row: that of three in four of its samples, or false. */
+static bool row_color(const px_scene *s, unsigned y, uint32_t *rgb)
+{
+   const uint32_t *bk = s->bk + (size_t)y * PXC_W;
+   uint32_t seen[ROW_SAMPLES];
+   unsigned count[ROW_SAMPLES], kinds = 0, best = 0;
+
+   for (unsigned k = 0; k < ROW_SAMPLES; k++)
+   {
+      const uint32_t c = bk[12 + k * 8] & 0xFFFFFFu;
+      unsigned i = 0;
+      while (i < kinds && seen[i] != c)
+         i++;
+      if (i == kinds)
+      {
+         seen[kinds]  = c;
+         count[kinds] = 0;
+         kinds++;
+      }
+      if (++count[i] > count[best])
+         best = i;
+   }
+   *rgb = seen[best];
+   return count[best] * 4 >= ROW_SAMPLES * 3;
+}
+
+bool px_kit_horizon_find(const px_scene *s, unsigned from, unsigned to, px_kit_horizon *h)
+{
+   uint32_t c;
+   unsigned y, last_sky = from;
+
+   memset(h, 0, sizeof(*h));
+   if (!s->frame || !s->bk || to > s->frame->height)
+      to = s->frame ? s->frame->height : 0;
+   if (from + 32 > to || !row_color(s, from, &h->sky))
+      return false;
+
+   /* The sky ends where no row of its colour follows. */
+   for (y = from; y < to; y++)
+      if (row_color(s, y, &c) && c == h->sky)
+         last_sky = y;
+   h->top     = from;
+   h->horizon = last_sky + 1;
+   if (h->horizon - h->top < 16 || to - h->horizon < 16)
+      return false;
+
+   /* A band at the horizon, then the ground; or the ground from the horizon on. */
+   for (y = h->horizon; y < to && !row_color(s, y, &h->band); y++)
+      ;
+   if (y >= to)
+      return false;
+   h->ground     = y;
+   h->ground_rgb = h->band;
+   for (; y < to; y++)
+      if (row_color(s, y, &c) && c != h->band)
+      {
+         h->ground     = y;
+         h->ground_rgb = c;
+         break;
+      }
+   /* The ground goes on to the last row of its colour. */
+   h->bottom = h->ground;
+   for (y = h->ground; y < to; y++)
+      if (row_color(s, y, &c) && c == h->ground_rgb)
+         h->bottom = y + 1;
+   if (h->bottom - h->ground < 16)
+   {
+      /* What looked like a band is the ground. */
+      h->ground     = h->horizon;
+      h->ground_rgb = h->band;
+      for (y = h->horizon; y < to; y++)
+         if (row_color(s, y, &c) && c == h->band)
+            h->bottom = y + 1;
+   }
+   return h->bottom - h->ground >= 16 && h->ground_rgb != h->sky;
+}
+
+void px_kit_sky_shades(uint32_t colors[256], uint32_t sky)
+{
+   const unsigned r = (sky >> 16) & 0xFF, g = (sky >> 8) & 0xFF, b = sky & 0xFF;
+   const unsigned light = (r * 77 + g * 150 + b * 29) >> 8;
+   /* Above: deeper. At the horizon: the colour and the light of the air, which is as bright
+    * as the sky is and a little warm. */
+   const uint32_t zenith = px_rgb_add(px_rgb_scale(sky, 150), px_rgb_scale(0x000814, 256 - light));
+   const uint32_t haze = px_rgb_add(px_rgb_scale(sky, 140), px_rgb_scale(0xFFF0DC, light * 3 / 4));
+   px_kit_shades(colors, zenith, sky, px_rgb_mix(sky, haze, 190));
+}
+
+/* A run of pixels of an edge on a row, and what drew it. */
+typedef struct
+{
+   int16_t a, b;
+   uint8_t tags;
+   uint8_t color;
+} edge_run;
+
+/* Carries a side's edge from the rows it is known on to those it is not: between two, along
+ * the line from one to the other; beyond the last, as the last rows run. */
+static void carry_edge(int16_t *at, const uint8_t *known, unsigned from, unsigned to, int off)
+{
+   int prev = -1;
+   for (unsigned y = from; y < to; y++)
+   {
+      if (!known[y])
+         continue;
+      if (prev >= 0 && (int)y - prev > 1)
+         for (int k = prev + 1; k < (int)y; k++)
+            at[k] = (int16_t)(at[prev] + (at[y] - at[prev]) * (k - prev) / ((int)y - prev));
+      prev = (int)y;
+   }
+   if (prev < 0)
+   {
+      for (unsigned y = from; y < to; y++)
+         at[y] = (int16_t)off;
+      return;
+   }
+   /* Beyond the known rows at either end: as the eight rows nearest run. */
+   {
+      unsigned first = from, last = (unsigned)prev, n;
+      int slope;
+      while (!known[first])
+         first++;
+      for (n = first + 8 < last ? first + 8 : last; n > first && !known[n]; n--)
+         ;
+      slope = n > first ? (at[n] - at[first]) * 256 / (int)(n - first) : 0;
+      for (unsigned y = from; y < first; y++)
+         at[y] = (int16_t)(at[first] - slope * (int)(first - y) / 256);
+      for (n = last >= first + 8 ? last - 8 : first; n < last && !known[n]; n++)
+         ;
+      slope = n < last ? (at[last] - at[n]) * 256 / (int)(last - n) : 0;
+      for (unsigned y = last + 1; y < to; y++)
+      {
+         const int v = at[last] + slope * (int)(y - last) / 256;
+         at[y] = (int16_t)(v < -1000 ? -1000 : v > 1160 ? 1160 : v);
+      }
+   }
+}
+
+bool px_kit_road_find(px_kit_road *r, const px_scene *s, unsigned from, unsigned to, unsigned tags)
+{
+   const struct pxc_frame *f = s->frame;
+   static const uint8_t bits[5] = { PXC_P0, PXC_M0, PXC_P1, PXC_M1, PXC_BL };
+   int votes[5] = { 0 };
+   edge_run first[PXC_MAX_H], last[PXC_MAX_H];
+   uint8_t runs[PXC_MAX_H], known_l[PXC_MAX_H], known_r[PXC_MAX_H];
+   bool any = false;
+
+   memset(r->seen, 0, sizeof(r->seen));
+   memset(r->edge, 0, sizeof(r->edge));
+   if (!f || !f->tags || !f->winner)
+      return false;
+   if (to > f->height)
+      to = f->height;
+   if (from >= to)
+      return false;
+   memset(runs, 0, sizeof(runs));
+   memset(known_l, 0, sizeof(known_l));
+   memset(known_r, 0, sizeof(known_r));
+
+   /* The runs of edge on every row: the first and the last. */
+   for (unsigned y = from; y < to; y++)
+   {
+      const uint8_t *t = f->tags + (size_t)y * PXC_W;
+      unsigned x = 0;
+      while (x < PXC_W)
+      {
+         edge_run run;
+         if (!(t[x] & tags) || (t[x] & PXC_BLANK))
+         {
+            x++;
+            continue;
+         }
+         run.a = run.b = (int16_t)x;
+         run.tags  = 0;
+         run.color = f->winner[(size_t)y * PXC_W + x];
+         while (x < PXC_W && (t[x] & tags))
+         {
+            run.tags |= (uint8_t)(t[x] & tags);
+            run.b = (int16_t)x++;
+         }
+         if (!runs[y])
+            first[y] = run;
+         last[y] = run;
+         runs[y]++;
+      }
+      /* Which object draws which edge: from rows that show both, drawn by one each. */
+      if (runs[y] >= 2 && first[y].tags != last[y].tags)
+         for (unsigned k = 0; k < 5; k++)
+         {
+            if (first[y].tags == bits[k]) votes[k]++;
+            if (last[y].tags == bits[k])  votes[k]--;
+         }
+   }
+
+   for (unsigned y = from; y < to; y++)
+   {
+      if (runs[y] >= 2)
+      {
+         r->left[y]  = first[y].b;
+         r->right[y] = last[y].a;
+         known_l[y] = known_r[y] = 1;
+      }
+      else if (runs[y] == 1)
+      {
+         int side = 0;
+         for (unsigned k = 0; k < 5; k++)
+            if (first[y].tags & bits[k])
+               side += votes[k];
+         if (side > 0)
+         {
+            r->left[y] = first[y].b;
+            known_l[y] = 1;
+         }
+         else if (side < 0)
+         {
+            r->right[y] = first[y].a;
+            known_r[y] = 1;
+         }
+      }
+      if (runs[y])
+      {
+         r->edge[y] = first[y].color;
+         any = true;
+      }
+      else if (y > from)
+         r->edge[y] = r->edge[y - 1];
+   }
+   if (!any)
+      return false;
+
+   carry_edge(r->left, known_l, from, to, -1000);
+   carry_edge(r->right, known_r, from, to, 1160);
+
+   /* A lone run that no object told the side of: the side it is nearer to. */
+   {
+      bool more = false;
+      for (unsigned y = from; y < to; y++)
+         if (runs[y] == 1 && !known_l[y] && !known_r[y])
+         {
+            const int m = (first[y].a + first[y].b) / 2;
+            if (abs(m - r->left[y]) <= abs(m - r->right[y]))
+            {
+               r->left[y] = first[y].b;
+               known_l[y] = 1;
+            }
+            else
+            {
+               r->right[y] = first[y].a;
+               known_r[y] = 1;
+            }
+            more = true;
+         }
+      if (more)
+      {
+         carry_edge(r->left, known_l, from, to, -1000);
+         carry_edge(r->right, known_r, from, to, 1160);
+      }
+   }
+   for (unsigned y = from; y < to; y++)
+      r->seen[y] = (uint8_t)(known_l[y] | known_r[y] << 1);
+   return true;
+}
+
+/* ---------------------------------------------------------------------------
  * Sound
  * ------------------------------------------------------------------------- */
 
