@@ -90,6 +90,10 @@ void px_fx_config_read(px_fx_config *c, const char *(*get)(const char *key),
  * Objects: what the capture's pixels belong to, and the same object over frames
  * ------------------------------------------------------------------------- */
 
+/* Who an object is, as a game module tells it (px_game.who): 1 to 127, and this with it if
+ * the object may be anywhere in the next frame it is seen in. */
+#define PX_WHO_ANYWHERE 0x80u
+
 #define PX_MAX_INSTANCES  192
 #define PX_MAX_OBJ_TRACKS 192
 #define PX_OBJ_ROWS       48
@@ -102,6 +106,7 @@ typedef struct
    uint8_t  ghost;        /* not in this frame: drawn from its track */
    uint8_t  role;         /* PX_ROLE_*: what it is in the game, if a game module said */
    uint8_t  group;        /* which of its kind: the row of an invader */
+   uint8_t  who;          /* who it is, if a game module told (px_game.who); 0: not told */
    int16_t  x, y;         /* left edge (players: of the 8 pattern bits), top row */
    uint16_t w, h;
    uint32_t rows;         /* index of the first of h rows in the pool */
@@ -136,6 +141,12 @@ typedef struct
    px_obj_track tracks[PX_MAX_OBJ_TRACKS];
    uint32_t next_id;
    uint32_t frame;
+
+   /* Tells who an object is, before it is matched to a track; NULL: nobody does. An object
+    * that is told apart is matched to the track of who it is and to no other, and may be
+    * away for twice as long as one that is not. */
+   unsigned (*who)(void *ctx, const px_instance *in);
+   void *who_ctx;
 } px_objects;
 
 void px_objects_init(px_objects *o);
@@ -281,6 +292,14 @@ typedef struct
    const char *const *values;
 } px_game_option;
 
+/* What a module is given to tell who an object is. */
+typedef struct
+{
+   const struct pxc_frame *frame;
+   const uint8_t *ram;        /* the console's 128 bytes, or NULL */
+   size_t ram_size;
+} px_glance;
+
 typedef struct
 {
    const char *name;
@@ -298,6 +317,11 @@ typedef struct
    void (*frame)(void *state, px_scene *s);
    /* Once a frame, before its sound is mixed; may be NULL. */
    void (*sound)(void *state, px_sound *s);
+   /* Who an object is: for games that show several things with one object in turns, so
+    * near each other that where they are does not tell them apart. 0 for what the module
+    * does not tell apart, which is then told apart by where it is; may be NULL. It is asked
+    * before the frame's objects are matched to those of the frames before. */
+   unsigned (*who)(void *state, const px_glance *g, const px_instance *in);
 } px_game;
 
 /* The module for a ROM, or NULL. */

@@ -588,6 +588,7 @@ them, named after the game, turns all of it off.
 | Game | ROM | What Proteus does |
 | --- | --- | --- |
 | Space Invaders | `72ffbef6504b75e69ee1045af9075f66` (USA) | a colour for every row of invaders, or the white, red and green of the arcade cabinet's gels; a night sky where the game is black; the score drawn solid, which the game draws on every other line; sparks where an invader or the cannon is hit; the cannon's shots and the invaders' told apart. Sounds of Proteus's own for the invaders' step, the shot and the hits, each where it happens between left and right; the march in four notes, as the arcade had it; a hum that rises as the invaders get fewer and nearer. The controller shakes for all of them |
+| Pac-Man | `6e372f076fb9586aff416144f5cfe1cb` (USA) | the four ghosts in the red, pink, cyan and orange of the arcade, where the game's look alike, with eyes; blue while they can be eaten, flashing before that ends, and a pair of eyes when they were; all four in every frame, where the game draws one a frame. The maze as glowing blue outlines on black, the wafers as round dots, Pac-Man in yellow. Sparks where a ghost is eaten and where Pac-Man is caught. Sounds of Proteus's own for eating, the power pill, a ghost eaten and Pac-Man caught, each where it happens between left and right; the game's tune, its own notes in softer voices two octaves down; a siren under the chase that rises as the wafers get fewer, where the game is silent. The controller shakes for all of them |
 | Pitfall! | `3e90cf23106f2e08b2781e41299de556` (USA) | colours for every row of Harry, the logs, the fire, the cobra, the crocodiles, the scorpion, the wall and the treasures, which shine; leaves, bark, sand and earth in shades. Behind the trees the jungle further in, in three depths that move on from screen to screen, with the sun in the haze; rock in the tunnel, with daylight below the holes; water and tar that move. Sparks where Harry takes a treasure, is rolled over by a log, lands in the tunnel or loses a life. Sounds of Proteus's own for the jump, the fall, the landing, the logs and the loss of a life, where Harry is between left and right; the game's three tunes, note for note, as bells for a treasure, as a voice for Harry's call on the vine and as reeds for a life lost; birds, crickets and wind above ground and dripping water below. The controller shakes for all that happens to Harry |
 
 The TIA has two voices, and a game lets one sound cut another short. Proteus has a
@@ -686,8 +687,11 @@ SPC sets from Zophar's Domain and SNESmusic.org, input movies from TASVideos, an
 its GitHub releases; they keep their own terms, and are kept in your `%APPDATA%\ProteusStudio`
 folder, not in this repository. Use ROMs you own.
 
-Proteus Retune is not affiliated with Nintendo, Libretro/RetroArch, TASVideos, BizHawk, Zophar's
-Domain, SNESmusic.org or RetroAchievements. Game titles are trademarks of their owners.
+Proteus Retune is not affiliated with or endorsed by Nintendo, Atari, Sony, Taito, Bandai Namco,
+Activision, Libretro/RetroArch, the Stella team, TASVideos, BizHawk, Zophar's Domain,
+SNESmusic.org or RetroAchievements. Game titles and characters are trademarks of their owners,
+named here only to say which games Proteus works with. Proteus contains no code, graphics, sound
+or music from any game or console.
 
 ## Roadmap
 
