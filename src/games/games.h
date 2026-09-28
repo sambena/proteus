@@ -16,6 +16,7 @@
    X(ms_pac_man) \
    X(adventure) \
    X(river_raid) \
-   X(asteroids)
+   X(asteroids) \
+   X(kaboom)
 
 #endif
