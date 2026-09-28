@@ -88,6 +88,12 @@
 
 #define GLINTS       90
 
+/* A headlamp's light reaches 18 captured pixels ahead and 6 aside. */
+#define BEAM_REACH   18
+#define BEAM_ASIDE   13     /* half rows of the picture to a captured row, and some */
+#define BEAM_ROWS    (2 * BEAM_ASIDE * PX_FX_MAX_SY + 1)
+#define BEAM_COLS    (BEAM_REACH * PX_FX_MAX_SX)
+
 /* ---------------------------------------------------------------------------
  * The ROMs, the defaults and the options
  * ------------------------------------------------------------------------- */
@@ -174,6 +180,10 @@ typedef struct
    unsigned painted_colors;
    uint8_t wet[RIVER_END - RIVER_TOP][PXC_W];
    glint glints[GLINTS];
+   uint8_t beam[BEAM_ROWS][BEAM_COLS];    /* the headlamps' cone, for beam_sx by beam_sy */
+   uint8_t beam_from[BEAM_ROWS], beam_to[BEAM_ROWS];
+   uint32_t beam_rgb[256];
+   unsigned beam_sx, beam_sy;
 
    /* The sounds. */
    px_kit_tia tia;
@@ -386,7 +396,8 @@ static void measure(frogger *g, const px_objects *o)
  * that drifts with the lane it is in, at half the lane's speed, with glints on it and a
  * wash where a log or a turtle meets the water. The road is black in the game and takes a
  * backdrop as it is: asphalt, the lanes marked with dashes between them. The yellow of the
- * median and of the start is paving. The road and the paving are painted once and stay.
+ * median and of the start is paving. The road and the paving are painted once, into a
+ * canvas from which the road is put back every frame under the light of the headlamps.
  * ------------------------------------------------------------------------- */
 
 static bool is_water(uint32_t key)
@@ -487,8 +498,8 @@ static void ground_pixel(frogger *g, const px_scene *s, int x, int y, uint32_t r
    }
 }
 
-/* The road and the paving, painted once into a canvas of their own: the backdrop has them
- * from there every frame, and the light of the headlamps on them. */
+/* The road and the paving, painted once into a canvas of their own and into the backdrop.
+ * The backdrop has the road from the canvas again every frame, under the headlamps. */
 static void paint_ground(frogger *g, px_scene *s)
 {
    const unsigned sy = s->sy, w = s->w;
@@ -539,45 +550,79 @@ static void paint_ground(frogger *g, px_scene *s)
             ground_pixel(g, s, (int)x, ROAD_FIRST + LANE_PITCH * (int)k - 4, 0x8C8C7E,
                   sy / 2 - thin / 2, sy / 2 - thin / 2 + thin);
    }
+   memcpy(s->backdrop + (size_t)RIVER_END * sy * w, g->ground.pixels + (size_t)RIVER_END * sy * w,
+         (size_t)(START_END - RIVER_END) * sy * w * sizeof(uint32_t));
 }
 
 /* The light of a car's headlamps on the road ahead of it, as a cone that fades; and the
  * lamps themselves, and the tail lamps, as light that glows. */
-static void light_car(const frogger *g, px_scene *s, const px_instance *in)
+/* The cone of a headlamp's light, for a size of the picture: row k is 2 Y + 1 of the
+ * picture less twice the car's middle, plus BEAM_ASIDE sy; column d is how far ahead. */
+static void make_beam(frogger *g, unsigned sx, unsigned sy)
+{
+   const int reach = BEAM_REACH * 256;
+   memset(g->beam, 0, sizeof(g->beam));
+   for (unsigned k = 0; k <= 2 * BEAM_ASIDE * sy && k < BEAM_ROWS; k++)
+   {
+      /* How far aside and how far ahead, in 256ths of a captured pixel. */
+      const int aside = abs((int)k - (int)(BEAM_ASIDE * sy)) * 128 / (int)sy;
+      g->beam_from[k] = 255;
+      g->beam_to[k]   = 0;
+      for (unsigned d = 0; d < BEAM_REACH * sx && d < BEAM_COLS; d++)
+      {
+         const int along = (int)d * 256 / (int)sx;
+         const int half = 200 + along * 3 / 10;
+         int f;
+         if (aside >= half)
+            continue;
+         f = (reach - along) * 110 / reach;
+         f = f * (reach - along) / reach;
+         f = f * (half - aside) / half;
+         if (along < 256)
+            f = f * (128 + along / 2) / 256;
+         if (f <= 0)
+            continue;
+         g->beam[k][d] = (uint8_t)f;
+         if (d < g->beam_from[k])
+            g->beam_from[k] = (uint8_t)d;
+         g->beam_to[k] = (uint8_t)(d + 1);
+      }
+   }
+   for (unsigned f = 0; f < 256; f++)
+      g->beam_rgb[f] = px_rgb_scale(0xFFE2A8, f);
+   g->beam_sx = sx;
+   g->beam_sy = sy;
+}
+
+static void light_car(frogger *g, px_scene *s, const px_instance *in)
 {
    const int lane = lane_at(in->y, ROAD_FIRST);
    const int dir = lane < 0 ? 0 : g->road_speed[lane] > 0 ? 1 : -1;
    const unsigned sx = s->sx, sy = s->sy;
-   const int reach = 18;                       /* captured pixels */
    /* The front edge and the middle, in the picture's pixels. */
-   const int front = dir > 0 ? (in->x + (int)in->w) * (int)sx : in->x * (int)sx;
+   const int front = dir > 0 ? (in->x + (int)in->w) * (int)sx : in->x * (int)sx - 1;
    const int mid2 = (2 * in->y + (int)in->h) * (int)sy;   /* twice the middle */
    int lamps[2];
 
-   if (!dir)
+   if (!dir || sx > PX_FX_MAX_SX || sy > PX_FX_MAX_SY)
       return;
-   for (int Y = (in->y - 3) * (int)sy; Y < (in->y + (int)in->h + 3) * (int)sy; Y++)
+   if (g->beam_sx != sx || g->beam_sy != sy)
+      make_beam(g, sx, sy);
+   for (int Y = (in->y - 7) * (int)sy; Y < (in->y + (int)in->h + 7) * (int)sy; Y++)
    {
+      const int k = (2 * Y + 1) - mid2 + BEAM_ASIDE * (int)sy;
+      const uint8_t *beam;
       uint32_t *out;
-      if (Y < (MEDIAN_END + 1) * (int)sy || Y >= (ROAD_END - 1) * (int)sy)
+      if (k < 0 || k >= (int)BEAM_ROWS || Y < (MEDIAN_END + 1) * (int)sy
+            || Y >= (ROAD_END - 1) * (int)sy)
          continue;
+      beam = g->beam[k];
       out = s->backdrop + (size_t)Y * s->w;
-      for (int d = 0; d < reach * (int)sx; d++)
+      for (int d = g->beam_from[k]; d < g->beam_to[k]; d++)
       {
          const int X = front + dir * d;
-         /* How far ahead and how far aside, in 256ths of a captured pixel. */
-         const int along = d * 256 / (int)sx;
-         const int aside = abs((2 * Y + 1) - mid2) * 128 / (int)sy;
-         const int half = 200 + along * 3 / 10;
-         int f;
-         if (X < LEFT * (int)sx || X >= RIGHT * (int)sx || aside >= half)
-            continue;
-         f = (reach * 256 - along) * 110 / (reach * 256);
-         f = f * (reach * 256 - along) / (reach * 256);
-         f = f * (half - aside) / half;
-         if (along < 256)
-            f = f * (128 + along / 2) / 256;
-         out[X] = px_rgb_add(out[X], px_rgb_scale(0xFFE2A8, (unsigned)f));
+         if (X >= LEFT * (int)sx && X < RIGHT * (int)sx && beam[d])
+            out[X] = px_rgb_add(out[X], g->beam_rgb[beam[d]]);
       }
    }
 
@@ -765,9 +810,9 @@ static void paint_scenery(frogger *g, px_scene *s)
    }
    paint_glints(g, s);
 
-   /* The road and the paving as they were painted, and the headlamps on them. */
-   memcpy(s->backdrop + (size_t)RIVER_END * sy * s->w, g->ground.pixels + (size_t)RIVER_END * sy * s->w,
-         (size_t)(START_END - RIVER_END) * sy * s->w * sizeof(uint32_t));
+   /* The road as it was painted, and the headlamps on it. */
+   memcpy(s->backdrop + (size_t)MEDIAN_END * sy * s->w, g->ground.pixels + (size_t)MEDIAN_END * sy * s->w,
+         (size_t)(ROAD_END - MEDIAN_END) * sy * s->w * sizeof(uint32_t));
    for (unsigned i = 0; i < o->count; i++)
    {
       const px_instance *in = &o->inst[i];
@@ -840,18 +885,24 @@ static void frame(void *state, px_scene *s)
    if (s->advance)
       g->frame++;
 
-   for (unsigned i = 0; i < o->count; i++)
-   {
-      px_instance *in = &o->inst[i];
-      const unsigned kind = kind_of(o, in, ram_x, lane);
-      in->role = (uint8_t)role_of(kind);
-      if (kind == KIND_FROG && (frog_x < 0 || !in->ghost))
+   /* The frogs last: where a frog sits on a log, of which one of the two is drawn in the
+    * frame and the other from its track, the log's colour is not to be put on the frog. */
+   for (unsigned pass = 0; pass < 2; pass++)
+      for (unsigned i = 0; i < o->count; i++)
       {
-         frog_x = in->x;
-         frog_y = in->y;
+         px_instance *in = &o->inst[i];
+         const unsigned kind = kind_of(o, in, ram_x, lane);
+         const bool frog = kind == KIND_FROG || kind == KIND_LADY;
+         if (frog != (pass == 1))
+            continue;
+         in->role = (uint8_t)role_of(kind);
+         if (kind == KIND_FROG && (frog_x < 0 || !in->ghost))
+         {
+            frog_x = in->x;
+            frog_y = in->y;
+         }
+         tint(g, s, in, kind);
       }
-      tint(g, s, in, kind);
-   }
 
    if (s->advance)
    {
@@ -938,7 +989,7 @@ static void play_hop(px_sound *s, int column)
 {
    static const px_tone p[3] = {
       /* wave             freq  to    glide  attack  hold   decay  gain   cutoff to */
-      { PX_WAVE_TRIANGLE, 300,  820,  0.06f, 0.002f, 0.01f, 0.11f, 0.42f, 0, 0, 0, 0 },
+      { PX_WAVE_TRIANGLE, 300,  820,  0.06f, 0.002f, 0.01f, 0.11f, 0.60f, 0, 0, 0, 0 },
       { PX_WAVE_SQUARE,   150,  410,  0.06f, 0.002f, 0,     0.08f, 0.10f, 2400, 700, 0, 0 },
       { PX_WAVE_NOISE,   5000,  0,    0,     0,      0,     0.025f, 0.08f, 3500, 1200, 0, 0 }
    };
@@ -1015,17 +1066,17 @@ static void play_note(px_sound *s, bool high, float hz)
    if (high)
    {
       const px_tone p[3] = {
-         { PX_WAVE_TRIANGLE, f,        0, 0, 0.004f, 0.03f, 0.30f, 0.30f, 0, 0, 5.5f, 0.003f },
-         { PX_WAVE_SQUARE,   f,        0, 0, 0.004f, 0.02f, 0.22f, 0.08f, 2600, 900, 0, 0 },
-         { PX_WAVE_SINE,     f * 4.0f, 0, 0, 0.001f, 0,     0.10f, 0.05f, 0, 0, 0, 0 }
+         { PX_WAVE_TRIANGLE, f,        0, 0, 0.004f, 0.03f, 0.30f, 0.56f, 0, 0, 5.5f, 0.003f },
+         { PX_WAVE_SQUARE,   f,        0, 0, 0.004f, 0.02f, 0.22f, 0.15f, 2600, 900, 0, 0 },
+         { PX_WAVE_SINE,     f * 4.0f, 0, 0, 0.001f, 0,     0.10f, 0.08f, 0, 0, 0, 0 }
       };
       px_kit_play(s, p, 3, -0.2f);
    }
    else
    {
       const px_tone p[2] = {
-         { PX_WAVE_SINE, f, 0, 0, 0.004f, 0.04f, 0.32f, 0.40f, 0, 0, 0, 0 },
-         { PX_WAVE_SAW,  f, 0, 0, 0.004f, 0.02f, 0.26f, 0.12f, 800, 250, 0, 0 }
+         { PX_WAVE_SINE, f, 0, 0, 0.004f, 0.04f, 0.32f, 0.75f, 0, 0, 0, 0 },
+         { PX_WAVE_SAW,  f, 0, 0, 0.004f, 0.02f, 0.26f, 0.22f, 800, 250, 0, 0 }
       };
       px_kit_play(s, p, 2, 0.2f);
    }
@@ -1060,10 +1111,10 @@ static void play_ambience(frogger *g, px_sound *s, int lane, int lives)
    }
    near_road  = lane <= 5 ? 1.0f : lane == LANE_MEDIAN ? 0.7f : 0.35f;
    near_river = lane >= 7 ? 1.0f : lane == LANE_MEDIAN ? 0.6f : 0.25f;
-   if (!px_synth_move(s->synth, g->traffic, -0.3f, 0.10f * near_road, 0))
-      g->traffic = px_synth_play(s->synth, &traffic, -0.3f, 0.10f * near_road);
-   if (!px_synth_move(s->synth, g->river, 0.3f, 0.05f * near_river, 0))
-      g->river = px_synth_play(s->synth, &river, 0.3f, 0.05f * near_river);
+   if (!px_synth_move(s->synth, g->traffic, -0.3f, 0.20f * near_road, 0))
+      g->traffic = px_synth_play(s->synth, &traffic, -0.3f, 0.20f * near_road);
+   if (!px_synth_move(s->synth, g->river, 0.3f, 0.10f * near_river, 0))
+      g->river = px_synth_play(s->synth, &river, 0.3f, 0.10f * near_river);
 }
 
 static void sound(void *state, px_sound *s)
