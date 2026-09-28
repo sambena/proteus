@@ -474,15 +474,15 @@ static void ground_tables(frogger *g, uint32_t verge)
    g->verge_rgb = verge;
 }
 
-/* Paints `rgb` over captured pixel (x, y) of the backdrop, added or in place. */
-static void backdrop_pixel(px_scene *s, int x, int y, uint32_t rgb, bool add, unsigned from_v,
-      unsigned to_v)
+/* Adds `rgb` to rows `from_v` up to `to_v` of the picture's of captured pixel (x, y) of the
+ * backdrop. */
+static void backdrop_add(px_scene *s, int x, int y, uint32_t rgb, unsigned from_v, unsigned to_v)
 {
    for (unsigned v = from_v; v < to_v && v < s->sy; v++)
    {
       uint32_t *out = s->backdrop + ((size_t)y * s->sy + v) * s->w + (size_t)x * s->sx;
       for (unsigned u = 0; u < s->sx; u++)
-         out[u] = add ? px_rgb_add(out[u], rgb) : rgb;
+         out[u] = px_rgb_add(out[u], rgb);
    }
 }
 
@@ -714,16 +714,17 @@ static void paint_wash(const frogger *g, px_scene *s, const px_instance *in)
       {
          const int x = front + dir * d;
          if (x >= LEFT && x < RIGHT && g->wet[y - RIVER_TOP][x])
-            backdrop_pixel(s, x, y, px_rgb_scale(0x587088, (unsigned)(130 - d * 70)), true, 0, s->sy);
+            backdrop_add(s, x, y, px_rgb_scale(0x587088, (unsigned)(130 - d * 70)), 0, s->sy);
       }
       /* The wake: a few dashes that come and go. */
       for (int d = 1; d < 6; d++)
       {
          const int x = back - dir * d;
-         const unsigned flick = px_kit_wave(phase + (unsigned)(d * 53 + r * 97));
-         if (flick > 150 && x >= LEFT && x < RIGHT && g->wet[y - RIVER_TOP][x])
-            backdrop_pixel(s, x, y, px_rgb_scale(0x3C5870, (flick - 150) * 3 / 2 - (unsigned)d * 12), true,
-                  s->sy / 3, s->sy - s->sy / 3);
+         const int flick = (int)px_kit_wave(phase + (unsigned)(d * 53 + r * 97));
+         const int bright = (flick - 150) * 3 / 2 - d * 12;
+         if (bright > 0 && x >= LEFT && x < RIGHT && g->wet[y - RIVER_TOP][x])
+            backdrop_add(s, x, y, px_rgb_scale(0x3C5870, (unsigned)bright), s->sy / 3,
+                  s->sy - s->sy / 3);
       }
    }
 }
@@ -909,9 +910,10 @@ static void frame(void *state, px_scene *s)
       measure(g, o);
       for (unsigned k = 0; k < LANES; k++)
       {
-         /* The water drifts at half the speed of its lane. */
+         /* The water drifts at half the speed of its lane. It goes round at a length that
+          * is as many picture widths as river widths, so that nothing jumps then. */
          g->drift[k] += g->river_speed[k] / 2;
-         g->drift[k] %= 256 * 4096;
+         g->drift[k] %= 256 * 1440;
       }
 
       /* A frog lost, or come home. */
