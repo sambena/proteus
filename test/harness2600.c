@@ -117,6 +117,8 @@ static bool options_updated;
 static const char *system_dir = ".";
 static bool quiet;
 static bool scripted_input;
+static bool roaming;         /* --roam: the stick in all four directions, for mazes */
+static unsigned roam_seed;   /* --seed: another way through them */
 static unsigned frame_no;
 
 static uint32_t *video;          /* the last frame, packed */
@@ -508,6 +510,40 @@ static bool add_key(const char *spec)
    return true;
 }
 
+/* --poke <frame>:<byte>:<value> and --poke <frame>:<byte>:@<byte>: before a frame, a byte of
+ * the console's memory gets a value, or that of another byte. It stages what a game comes
+ * to but rarely: Pac-Man where a ghost is. */
+static struct { unsigned frame, byte, value; bool copy; } pokes[MAX_PRESSES];
+static unsigned poke_count;
+static bool add_poke(const char *spec)
+{
+   unsigned frame = 0, byte = 0, value = 0;
+   bool copy = false;
+   if (poke_count >= MAX_PRESSES)
+      return false;
+   if (sscanf(spec, "%u:%u:@%u", &frame, &byte, &value) == 3)
+      copy = true;
+   else if (sscanf(spec, "%u:%u:%u", &frame, &byte, &value) != 3)
+      return false;
+   pokes[poke_count].frame = frame;
+   pokes[poke_count].byte  = byte;
+   pokes[poke_count].value = value;
+   pokes[poke_count].copy  = copy;
+   poke_count++;
+   return true;
+}
+
+static void poke_memory(void)
+{
+   uint8_t *ram = poke_count && core.get_memory_data
+         ? (uint8_t*)core.get_memory_data(RETRO_MEMORY_SYSTEM_RAM) : NULL;
+   size_t n = ram ? core.get_memory_size(RETRO_MEMORY_SYSTEM_RAM) : 0;
+   for (unsigned i = 0; i < poke_count; i++)
+      if (pokes[i].frame == frame_no && pokes[i].byte < n)
+         ram[pokes[i].byte] = pokes[i].copy
+               ? (pokes[i].value < n ? ram[pokes[i].value] : 0) : (uint8_t)pokes[i].value;
+}
+
 static void press_keys(void)
 {
    for (unsigned i = 0; keyboard_cb && i < key_count; i++)
@@ -528,6 +564,22 @@ static int16_t RETRO_CALLCONV input_cb(unsigned port, unsigned device, unsigned 
          if (presses[i].id == id && frame_no >= presses[i].frame
                && frame_no < presses[i].frame + presses[i].frames)
             return 1;
+   if (roaming && port == 0 && device == RETRO_DEVICE_JOYPAD)
+   {
+      /* --roam: one of the four directions, for as long as it takes to get somewhere. */
+      r = (frame_no / 24 + roam_seed * 7919u) * 2654435761u;
+      r ^= r >> 15;
+      switch (id)
+      {
+         case RETRO_DEVICE_ID_JOYPAD_UP:    return (r & 3) == 0;
+         case RETRO_DEVICE_ID_JOYPAD_DOWN:  return (r & 3) == 1;
+         case RETRO_DEVICE_ID_JOYPAD_LEFT:  return (r & 3) == 2;
+         case RETRO_DEVICE_ID_JOYPAD_RIGHT: return (r & 3) == 3;
+         case RETRO_DEVICE_ID_JOYPAD_B:     return frame_no > 50 && frame_no < 60;
+         case RETRO_DEVICE_ID_JOYPAD_START: return frame_no > 30 && frame_no < 40;
+         default:                           return 0;
+      }
+   }
    if (!scripted_input || port != 0 || device != RETRO_DEVICE_JOYPAD)
       return 0;
    r = (frame_no / 12) * 2654435761u;
@@ -874,6 +926,16 @@ int main(int argc, char **argv)
          declare_opt(key, eq + 1, true);
       }
       else if (!strcmp(argv[i], "--input"))   scripted_input = true;
+      else if (!strcmp(argv[i], "--roam"))    roaming = true;
+      else if (!strcmp(argv[i], "--poke") && i + 1 < argc)
+      {
+         if (!add_poke(argv[++i]))
+         {
+            printf("--poke %s: not <frame>:<byte>:<value> or <frame>:<byte>:@<byte>\n", argv[i]);
+            return 2;
+         }
+      }
+      else if (!strcmp(argv[i], "--seed") && i + 1 < argc) roam_seed = (unsigned)atoi(argv[++i]);
       else if (!strcmp(argv[i], "--capture")) want_capture = true;
       else if (!strcmp(argv[i], "--state"))   want_state = true;
       else if (!strcmp(argv[i], "--native"))  native = true;
@@ -995,6 +1057,7 @@ int main(int argc, char **argv)
          while (now_ms() < until)
             ;
       }
+      poke_memory();
       ms = now_ms();
       core.run();
       ms = now_ms() - ms;
