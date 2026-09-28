@@ -87,6 +87,7 @@ static const px_game_option options[] = {
  * What the game is like
  * ------------------------------------------------------------------------- */
 
+#define RAM_SHIELD    1      /* 16 bytes: the cells, a bit each */
 #define RAM_ALIVE     34     /* 3 while Yar lives, 0 while it dies */
 #define RAM_DESTROYED 40     /* not 0 while the Qotile's destruction is shown */
 
@@ -129,6 +130,8 @@ typedef struct
 
    int alive, destroyed;    /* bytes 34 and 40 as the frame before had them; -1: not known */
    unsigned dying;          /* frames byte 34 has been 0 */
+   int cells;               /* of the shield, as memory had them; -1: not known */
+   unsigned cell_due;       /* frames left to find where a cell memory lost was */
    int yar_x, yar_y;        /* where Yar was last seen; -1: not */
    int qotile_x, qotile_y;
 
@@ -235,6 +238,58 @@ static unsigned part_of(unsigned x)
    return x >= SHIELD_FROM ? PART_SHIELD : PART_ZONE;
 }
 
+/* Whether the shield had a cell at a row and column when it was drawn before. */
+static bool held_at(const yars *g, int y, int h, unsigned x)
+{
+   return y >= 0 && y < h && g->held[(size_t)y * PXC_W + x];
+}
+
+/* A cell of the shield that was there when it was drawn before and is not now: eaten or
+ * shot. The shield moves up and down with the Qotile, so it is compared where it matches
+ * best, a few rows up or down. */
+static void lost_cell(const yars *g, const px_scene *s, int *lost_x, int *lost_y)
+{
+   const int h = (int)s->frame->height;
+   int best = -1, best_dy = 0;
+   unsigned lost = 0, gained = 0, sx = 0, sy = 0;
+
+   for (int dy = -4; dy <= 4; dy++)
+   {
+      int miss = 0;
+      for (int y = 0; y < h; y++)
+         for (unsigned x = SHIELD_FROM; x < PXC_W; x++)
+            miss += held_at(g, y - dy, h, x)
+                  != (PX_KEY_CLS(s->top[(size_t)y * PXC_W + x]) == PX_CLS_PF);
+      if (best < 0 || miss < best)
+      {
+         best    = miss;
+         best_dy = dy;
+      }
+   }
+   for (int y = 0; y < h; y++)
+      for (unsigned x = SHIELD_FROM; x < PXC_W; x++)
+      {
+         const bool was = held_at(g, y - best_dy, h, x);
+         const unsigned cls = PX_KEY_CLS(s->top[(size_t)y * PXC_W + x]);
+         const bool now = cls == PX_CLS_PF;
+         /* What an object covers is not known to be gone. */
+         if (was && cls == PX_CLS_BK)
+         {
+            lost++;
+            sx += x;
+            sy += (unsigned)y;
+         }
+         else if (now && !was)
+            gained++;
+      }
+   /* A cell is 4 columns by 8 rows. */
+   if (lost >= 8 && lost <= 48 && gained <= 8)
+   {
+      *lost_x = (int)(sx / lost);
+      *lost_y = (int)(sy / lost);
+   }
+}
+
 /* Keeps what the frame drew of each part, and draws from what was kept the part it did
  * not. A cell of the shield that was there and is not was eaten or shot: where it was is
  * given back in *lost_x, *lost_y, else -1. */
@@ -261,38 +316,20 @@ static void steady_playfield(yars *g, px_scene *s, int *lost_x, int *lost_y)
       {
          const unsigned from = p == PART_ZONE ? ZONE_FROM : SHIELD_FROM;
          const unsigned to   = p == PART_ZONE ? SHIELD_FROM : PXC_W;
-         unsigned lost = 0, gained = 0, sx = 0, sy = 0;
          if (!drawn[p])
          {
             if (g->age[p] < 99)
                g->age[p]++;
             continue;
          }
+         if (p == PART_SHIELD && g->age[p] <= 2)
+            lost_cell(g, s, lost_x, lost_y);
          for (unsigned y = 0; y < h; y++)
             for (unsigned x = from; x < to; x++)
             {
                const size_t i = (size_t)y * PXC_W + x;
-               const uint32_t now = PX_KEY_CLS(s->top[i]) == PX_CLS_PF ? s->top[i] : 0;
-               if (p == PART_SHIELD && g->age[p] <= 2)
-               {
-                  if (g->held[i] && !now)
-                  {
-                     lost++;
-                     sx += x;
-                     sy += y;
-                  }
-                  else if (now && !g->held[i])
-                     gained++;
-               }
-               g->held[i] = now;
+               g->held[i] = PX_KEY_CLS(s->top[i]) == PX_CLS_PF ? s->top[i] : 0;
             }
-         /* A cell is 4 columns by 8 rows; a shield that moved has lost as much as it
-          * gained. */
-         if (lost && lost <= 48 && gained <= 4)
-         {
-            *lost_x = (int)(sx / lost);
-            *lost_y = (int)(sy / lost);
-         }
          g->age[p] = 0;
       }
 
@@ -337,8 +374,7 @@ static void color_playfield(yars *g, px_scene *s)
          {
             /* Every cell a little apart from its neighbours. */
             uint32_t rgb = ((x / 4 + y / 8) & 1) ? ember : px_rgb_scale(ember, 216);
-            if (g->colors == COLORS_PROTEUS)
-               s->top[i] = PX_KEY(PX_CLS_PF, rgb);
+            s->top[i] = PX_KEY(PX_CLS_PF, rgb);
             s->light[i] = 0xFF000000u | px_rgb_scale(s->top[i] & 0xFFFFFFu, 80);
          }
          else
@@ -398,7 +434,8 @@ static void color_objects(yars *g, px_scene *s, bool exploding)
          g->qotile_x = in->x + 4;
          g->qotile_y = in->y + in->h / 2;
       }
-      if (exploding)
+      /* The game's own colours are the game's own picture: nothing glows more either. */
+      if (exploding || g->colors == COLORS_ORIGINAL)
          continue;
       switch (in->role)
       {
@@ -407,15 +444,13 @@ static void color_objects(yars *g, px_scene *s, bool exploding)
             {
                /* The Swirl spins through hot colours. */
                static const uint32_t hot[4] = { 0xFF3070, 0xFFB020, 0xFFF0F0, 0xFF60D0 };
-               if (g->colors == COLORS_PROTEUS)
-                  px_scene_tint(s, in, hot[(g->frame / 3) & 3]);
+               px_scene_tint(s, in, hot[(g->frame / 3) & 3]);
                px_scene_energy(s, in, true);
             }
-            else if (g->colors == COLORS_PROTEUS)
+            else
                px_scene_tint(s, in, px_rgb_mix(original, 0xFFFFFF, 64));
             break;
          case PX_ROLE_PLAYER:
-            if (g->colors == COLORS_PROTEUS)
             {
                /* Its wings catch the light as they beat. */
                unsigned wave = px_kit_wave(g->frame * 16);
@@ -423,8 +458,7 @@ static void color_objects(yars *g, px_scene *s, bool exploding)
             }
             break;
          case PX_ROLE_BOMB:
-            if (g->colors == COLORS_PROTEUS)
-               px_scene_tint(s, in, 0xFF5030);
+            px_scene_tint(s, in, 0xFF5030);
             px_scene_energy(s, in, true);
             break;
          case PX_ROLE_SHOT:
@@ -433,14 +467,12 @@ static void color_objects(yars *g, px_scene *s, bool exploding)
                /* It glows when it flies, not while it waits at the edge. */
                const px_obj_track *t = px_objects_track(o, in->track);
                unsigned wave = px_kit_wave(g->frame * 20);
-               if (g->colors == COLORS_PROTEUS)
-                  px_scene_tint(s, in, px_rgb_mix(0xE06A18, 0xFFE890, wave));
+               px_scene_tint(s, in, px_rgb_mix(0xE06A18, 0xFFE890, wave));
                px_scene_energy(s, in, t && t->vx != 0);
             }
             else
             {
-               if (g->colors == COLORS_PROTEUS)
-                  px_scene_tint(s, in, 0xE0FFFF);
+               px_scene_tint(s, in, 0xE0FFFF);
                px_scene_energy(s, in, true);
             }
             break;
@@ -450,13 +482,28 @@ static void color_objects(yars *g, px_scene *s, bool exploding)
    }
 }
 
+/* The cells of the shield, as memory has them; -1 without memory. */
+static int count_cells(const px_scene *s)
+{
+   int n = 0;
+   for (unsigned i = RAM_SHIELD; i < RAM_SHIELD + 16; i++)
+   {
+      int b = px_kit_ram(s->ram, s->ram_size, i);
+      if (b < 0)
+         return -1;
+      for (; b; b &= b - 1)
+         n++;
+   }
+   return n;
+}
+
 static void frame(void *state, px_scene *s)
 {
    yars *g = (yars*)state;
    const int alive = px_kit_ram(s->ram, s->ram_size, RAM_ALIVE);
    const int destroyed = px_kit_ram(s->ram, s->ram_size, RAM_DESTROYED);
    const bool exploding = destroyed > 0;
-   int lost_x, lost_y;
+   int lost_x, lost_y, cells;
 
    if (s->advance)
       g->frame++;
@@ -473,10 +520,20 @@ static void frame(void *state, px_scene *s)
       g->age[PART_ZONE] = g->age[PART_SHIELD] = 99;
    }
 
+   cells = count_cells(s);
    if (s->advance && g->sparks)
    {
-      if (lost_x >= 0)
-         px_scene_burst(s, lost_x, lost_y, 0xFF9A40, 14, 260);
+      /* Memory says that a cell is gone; the picture, drawn a frame later, where. Without
+       * memory, the picture alone says it. */
+      if (cells >= 0 && g->cells >= 0 && cells < g->cells)
+         g->cell_due = 4;
+      if (lost_x >= 0 && (cells < 0 || g->cell_due))
+      {
+         px_scene_burst(s, lost_x, lost_y, 0xFF9A40, 16, 260);
+         g->cell_due = 0;
+      }
+      else if (g->cell_due && --g->cell_due == 0 && g->yar_x >= 0)
+         px_scene_burst(s, g->yar_x, g->yar_y, 0xFF9A40, 16, 260);
       /* Yar is hit: the byte stays 0 for more than one frame. */
       if (alive == 0 && g->dying == 1 && g->yar_x >= 0)
       {
@@ -488,7 +545,7 @@ static void frame(void *state, px_scene *s)
          int x = g->qotile_x >= 0 ? g->qotile_x : 154, y = g->qotile_y >= 0 ? g->qotile_y : 110;
          px_scene_burst(s, x, y, 0xFFE0A0, 120, 560);
          px_scene_burst(s, x, y, 0xFF4080, 60, 300);
-         px_scene_flash(s, 0xFFF0D0, 230);
+         px_scene_flash(s, 0xFFF0D0, 180);
       }
    }
 
@@ -497,6 +554,7 @@ static void frame(void *state, px_scene *s)
       g->dying     = alive == 0 ? g->dying + 1 : 0;
       g->alive     = alive;
       g->destroyed = destroyed;
+      g->cells     = cells;
    }
 
    if (g->backdrop)
@@ -617,8 +675,8 @@ static void play_launch(yars *g, px_sound *s)
 static void play_blast(yars *g, px_sound *s, bool first)
 {
    static const px_tone big[4] = {
-      { PX_WAVE_NOISE, 6000,  200, 2.5f, 0,      0.20f, 3.0f, 0.70f, 6000, 120, 0, 0 },
-      { PX_WAVE_SINE,    90,   24, 2.0f, 0.002f, 0.20f, 2.6f, 0.95f, 0, 0, 0, 0 },
+      { PX_WAVE_NOISE, 6000,  200, 2.5f, 0,      0.20f, 3.0f, 0.45f, 6000, 120, 0, 0 },
+      { PX_WAVE_SINE,    90,   24, 2.0f, 0.002f, 0.20f, 2.6f, 0.60f, 0, 0, 0, 0 },
       { PX_WAVE_SAW,    600,   40, 1.8f, 0.002f, 0.10f, 2.2f, 0.34f, 3000, 150, 6.0f, 0.05f },
       { PX_WAVE_SQUARE, 1200, 300, 0.4f, 0.001f, 0.05f, 0.6f, 0.20f, 5000, 800, 0, 0 }
    };
@@ -783,6 +841,8 @@ static void reset(void *state)
    yars *g = (yars*)state;
    g->alive = g->destroyed = -1;
    g->dying = 0;
+   g->cells = -1;
+   g->cell_due = 0;
    g->yar_x = g->yar_y = g->qotile_x = g->qotile_y = -1;
    g->held_height = 0;
    g->age[PART_ZONE] = g->age[PART_SHIELD] = 99;
