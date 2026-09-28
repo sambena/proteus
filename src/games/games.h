@@ -12,6 +12,7 @@
    X(warlords) \
    X(missile_command) \
    X(yars_revenge) \
-   X(pitfall)
+   X(pitfall) \
+   X(ms_pac_man)
 
 #endif

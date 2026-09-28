@@ -132,13 +132,20 @@ done.
 | Shows several things with one object, in turns (flicker) | Nothing, where they are far enough apart to be told by where they are: they are drawn in every frame as for any game. Where they are not, the module says who each is (`px_game.who`), from its colour or from memory, and they are followed by that. | Pac-Man: the ghosts |
 | Draws rows of copies of one object, set again for every row | Tags each with the row it began in, since rows move. | Space Invaders: the invaders |
 | Draws its score on every other line, or with the playfield | Fills the lines between; recolours the rows of the score. | Space Invaders |
-| Draws a maze or scenery with the playfield | Recolours it, and gives it light so that it glows. Tells what is wall from what is to be eaten by its shape. | Pac-Man |
+| Draws a maze or scenery with the playfield | Recolours it, and gives it light so that it glows. Tells what is wall from what is to be eaten by its shape, and draws that as dots (`px_kit_dots`). | Pac-Man, Ms. Pac-Man |
+| Is silent by a pitch too high to hear, its volume left on | Takes a voice for silent by that pitch. | Ms. Pac-Man |
+| Makes a sound for one thing and none for another like it | One hook tells the other: the picture sees the power pill eaten, the sound hears her caught. | Ms. Pac-Man |
 | Has a black background | Paints a backdrop, which shows where the background is dark. | Space Invaders: the night sky |
 | Counts lives, enemies, dots in memory | Compares with the frame before: sparks, a flash, the controller shakes. | both |
 | Has one voice for two sounds | Plays each with voices of its own, so that neither cuts the other off. | Space Invaders: the step and the hit |
 | Has silence where the arcade had a sound | Adds one that follows the game: a hum, a siren. It has an option of its own. | both |
 | Gives its things holes for eyes | Fills what an object encloses with a colour. | Pac-Man: the ghosts |
 | Plays a tune | Plays its notes with other voices. | Pac-Man: the four notes at the start |
+
+**Games of one family share a file.** What two games have in common and no third would
+need (the colours of the arcade's ghosts, the sound of eating) is neither in the kit nor in
+both modules: it is in a header next to them, `src/games/pac_family.h` for Pac-Man and
+Ms. Pac-Man. Each module still tells by itself what happens in its game.
 
 What no module has had to do yet, and the games that will ask for it, is in
 `docs/TOP_GAMES.md`.
