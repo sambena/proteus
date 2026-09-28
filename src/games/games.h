@@ -7,6 +7,7 @@
 
 #define PX_GAMES(X) \
    X(space_invaders) \
+   X(pac_man) \
    X(river_raid)
 
 #endif

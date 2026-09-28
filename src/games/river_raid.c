@@ -1275,5 +1275,5 @@ static void configure(void *state, const char *(*get)(const char *key))
 }
 
 const px_game px_game_river_raid = {
-   "River Raid", md5, fx, options, create, destroy, reset, configure, frame, sound
+   "River Raid", md5, fx, options, create, destroy, reset, configure, frame, sound, NULL
 };
