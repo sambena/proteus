@@ -30,7 +30,7 @@
  *
  * Not known: what the vitamin is drawn with. It shows as the game draws it.
  */
-#include "../kit.h"
+#include "pac_family.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -43,8 +43,6 @@
 #define MAZE_END   178    /* the row after its last */
 #define LIVES_TOP  193
 
-#define GHOSTS 4
-
 #define RAM_FRAME   0
 #define RAM_PAC_X   49
 #define RAM_GHOST_X 50
@@ -54,9 +52,6 @@
 #define WAFERS      126    /* in a maze, by the count of them on the screen */
 
 #define SHAPE_EYES 0x88DEB1F3u
-
-/* What the ghosts are about, by the colour of the one drawn. */
-enum { MODE_IDLE = 0, MODE_CHASE, MODE_SCARED, MODE_WARNING };
 
 /* ---------------------------------------------------------------------------
  * The ROMs, the defaults and the options
@@ -122,11 +117,10 @@ typedef struct
    bool dots, sparks, own_sound, siren;
 
    uint32_t frame;                  /* counts the pictures that advance */
-   uint32_t ticks;                  /* counts the frames heard */
 
    /* The picture. */
-   unsigned mode;                   /* MODE_* */
-   bool eyes[GHOSTS];               /* a ghost was a pair of eyes when it was drawn last */
+   unsigned mode;                   /* PAC_IDLE and the like */
+   bool eyes[PAC_GHOSTS];               /* a ghost was a pair of eyes when it was drawn last */
    unsigned dying;                  /* frames since Pac-Man began to die; 0: he does not */
    uint8_t *small;                  /* where the wafers are: an entry a captured pixel */
 
@@ -135,24 +129,12 @@ typedef struct
    unsigned heard0;                 /* what voice 0 played in the frame before: SOUND_* */
    unsigned sweep;                  /* SOUND_CAUGHT or SOUND_EATEN while voice 0 plays it */
    unsigned silent0;                /* frames for which voice 0 has been silent */
-   bool waka;                       /* which of the two sounds of eating is next */
    unsigned caught_for;             /* frames since Pac-Man was caught; 0: he was not */
-   unsigned warble, hum;            /* the voices at the synth that go on: 0 for none */
+   pac_voices voices;               /* what of Proteus's sounds goes on */
    unsigned moved;                  /* frames since a ghost last moved */
-   uint8_t ghost_at[2 * GHOSTS];    /* where memory had the ghosts */
+   uint8_t ghost_at[2 * PAC_GHOSTS];    /* where memory had the ghosts */
    int pac_at;                      /* Pac-Man's column, for where a sound is; -1: not known */
 } pm;
-
-static const uint32_t ghost_colors[GHOSTS] = { 0xFF2A1A, 0xFFA8E0, 0x2AE8F0, 0xFFA030 };
-
-#define RGB_PAC     0xFFE81Au
-#define RGB_SCARED  0x2438FFu
-#define RGB_PALE    0xF2F2F8u
-#define RGB_EYES    0xE4EAFFu
-#define RGB_WAFER   0xFFB897u
-#define RGB_WALL    0x2A48FFu
-#define RGB_WITHIN  0x05082Cu
-#define RGB_SCORE   0xF0F0F0u
 
 /* ---------------------------------------------------------------------------
  * The picture
@@ -196,10 +178,10 @@ static unsigned mode_of(const px_instance *in)
 {
    const unsigned hue = in->color >> 4, light = in->color & 0x0F;
    if (in->color == 0x7A)
-      return MODE_SCARED;
+      return PAC_SCARED;
    if (in->color == 0x5A)
-      return MODE_WARNING;
-   return light == 0x0C && hue >= 0x0C ? MODE_CHASE : MODE_IDLE;
+      return PAC_WARNING;
+   return light == 0x0C && hue >= 0x0C ? PAC_CHASE : PAC_IDLE;
 }
 
 /* The ghosts are often too near each other to be told apart by where they are, and leave
@@ -248,53 +230,6 @@ static void find_things(pm *g, px_scene *s)
    }
 }
 
-/* The wafers as dots: two pixels by two in the middle of each. Two wafers side by side, as
- * in the middle of the maze where its halves meet, are one. */
-static void draw_wafers(pm *g, px_scene *s)
-{
-   const uint32_t *palette = s->frame->palette;
-   const struct pxc_frame *f = s->frame;
-
-   for (unsigned y = MAZE_TOP; y < MAZE_END && y < f->height; y++)
-   {
-      const uint8_t *row = g->small + (size_t)y * PXC_W;
-      for (unsigned x = 0; x < PXC_W; )
-      {
-         unsigned end = x;
-         uint32_t rgb;
-         while (end < PXC_W && row[end])
-            end++;
-         if (end == x)
-         {
-            x++;
-            continue;
-         }
-         rgb = g->colors == COLORS_ARCADE ? RGB_WAFER
-               : palette[f->color[PXC_L_PF][(size_t)y * PXC_W + x]] & 0xFFFFFFu;
-
-         for (unsigned u = x; u < end; u++)
-         {
-            const size_t i = (size_t)y * PXC_W + u;
-            /* In the middle of what there is of it, or of each four pixels of it. */
-            const unsigned len = end - x, cell = len == 8 ? 8 : 4, at = (u - x) % cell;
-            const bool dot = at == cell / 2 - 1 || at == cell / 2;
-            if (PX_KEY_CLS(s->top[i]) != PX_CLS_PF)
-               continue;
-            if (!g->dots)
-               s->top[i] = PX_KEY(PX_CLS_PF, rgb);
-            else if (dot)
-            {
-               s->top[i]    = PX_KEY(PX_CLS_SPRITE, rgb);
-               s->sprite[i] = 0xFF000000u | rgb;
-            }
-            else
-               s->top[i] = PX_KEY(PX_CLS_BK, s->bk[i]);
-         }
-         x = end;
-      }
-   }
-}
-
 static void draw_maze(pm *g, px_scene *s)
 {
    if (!g->small)
@@ -305,41 +240,14 @@ static void draw_maze(pm *g, px_scene *s)
    {
       px_kit_background(s, 0, s->frame->height, 0x000000);
       if (g->maze == MAZE_NEON)
-         px_kit_outline(s, MAZE_TOP, MAZE_END, RGB_WALL, RGB_WITHIN, px_rgb_scale(RGB_WALL, 120),
+         px_kit_outline(s, MAZE_TOP, MAZE_END, PAC_RGB_WALL, PAC_RGB_WITHIN, px_rgb_scale(PAC_RGB_WALL, 120),
                g->small);
       else
-         px_kit_outline(s, MAZE_TOP, MAZE_END, RGB_WALL, RGB_WALL, 0, g->small);
-      px_kit_playfield(s, LIVES_TOP, s->frame->height, RGB_PAC);
+         px_kit_outline(s, MAZE_TOP, MAZE_END, PAC_RGB_WALL, PAC_RGB_WALL, 0, g->small);
+      px_kit_playfield(s, LIVES_TOP, s->frame->height, PAC_RGB_PAC);
    }
    if (g->dots || g->colors == COLORS_ARCADE)
-      draw_wafers(g, s);
-}
-
-static uint32_t ghost_color(const pm *g, const px_instance *in, uint32_t *eyes)
-{
-   if (is_eyes(in))
-   {
-      *eyes = 0;
-      return RGB_EYES;
-   }
-   switch (g->mode)
-   {
-      case MODE_SCARED:
-         *eyes = 0xFFC4A8;
-         return RGB_SCARED;
-      case MODE_WARNING:
-         /* Pale and blue in turns, faster than the eye follows the game's purple. */
-         if ((g->frame >> 3) & 1)
-         {
-            *eyes = 0xFF3030;
-            return RGB_PALE;
-         }
-         *eyes = 0xFFC4A8;
-         return RGB_SCARED;
-      default:
-         *eyes = 0xF8F8FF;
-         return ghost_colors[in->group & 3];
-   }
+      px_kit_dots(s, g->small, MAZE_TOP, MAZE_END, g->colors == COLORS_ARCADE, PAC_RGB_WAFER, g->dots);
 }
 
 static void color_things(pm *g, px_scene *s)
@@ -353,7 +261,7 @@ static void color_things(pm *g, px_scene *s)
       {
          /* The score is black, as the maze is then. */
          if (g->maze != MAZE_ORIGINAL)
-            px_scene_tint(s, in, RGB_SCORE);
+            px_scene_tint(s, in, PAC_RGB_SCORE);
          continue;
       }
       if (g->colors != COLORS_ARCADE)
@@ -363,17 +271,17 @@ static void color_things(pm *g, px_scene *s)
          case PX_ROLE_ENEMY:
          {
             uint32_t eyes = 0;
-            px_scene_tint(s, in, ghost_color(g, in, &eyes));
+            px_scene_tint(s, in, pac_ghost_color(g->mode, g->frame, in->group, is_eyes(in), &eyes));
             if (eyes)
                px_kit_fill_holes(s, in, eyes);
             break;
          }
          case PX_ROLE_PLAYER:
-            px_scene_tint(s, in, RGB_PAC);
+            px_scene_tint(s, in, PAC_RGB_PAC);
             break;
          case PX_ROLE_BONUS:
             /* The power pills beat. */
-            px_scene_tint(s, in, px_rgb_scale(RGB_WAFER, 150 + (px_kit_wave(g->frame * 10) * 105 >> 8)));
+            px_scene_tint(s, in, pac_pill_color(g->frame));
             px_scene_energy(s, in, true);
             break;
          default:
@@ -399,8 +307,8 @@ static void find_events(pm *g, px_scene *s, unsigned mode_before)
          const bool eyes = is_eyes(in);
          if (eyes && !g->eyes[which] && g->sparks)
          {
-            px_scene_burst(s, in->x + 4, in->y + 3, ghost_colors[which], 26, 340);
-            px_scene_burst(s, in->x + 4, in->y + 3, RGB_SCARED, 14, 220);
+            px_scene_burst(s, in->x + 4, in->y + 3, pac_ghost_colors[which], 26, 340);
+            px_scene_burst(s, in->x + 4, in->y + 3, PAC_RGB_SCARED, 14, 220);
          }
          g->eyes[which] = eyes;
       }
@@ -412,15 +320,15 @@ static void find_events(pm *g, px_scene *s, unsigned mode_before)
          /* The last of him. */
          if (in->h == 2 && g->dying < 1000 && g->sparks)
          {
-            px_scene_burst(s, in->x + 4, in->y, RGB_PAC, 36, 400);
+            px_scene_burst(s, in->x + 4, in->y, PAC_RGB_PAC, 36, 400);
             g->dying = 1000;
          }
       }
    }
    g->dying = dies ? g->dying + 1 : 0;
 
-   if (g->mode == MODE_SCARED && mode_before == MODE_CHASE && g->sparks)
-      px_scene_flash(s, RGB_SCARED, 80);
+   if (g->mode == PAC_SCARED && mode_before == PAC_CHASE && g->sparks)
+      px_scene_flash(s, PAC_RGB_SCARED, 80);
 }
 
 static void frame(void *state, px_scene *s)
@@ -490,141 +398,19 @@ static unsigned voice0_plays(const px_kit_tia *t)
    return SOUND_OTHER;
 }
 
-/* A note of the game's tune: the melody two octaves down, where it is a tune and not a
- * whistle, and the second voice below it. */
-static void play_note(px_sound *s, unsigned voice, float hz)
-{
-   const float f = px_kit_tune(hz / 4.0f);
-   px_tone lead[2] = {
-      /* wave            freq  to  glide  attack  hold   decay  gain   cutoff to */
-      { PX_WAVE_SQUARE,   0,   0,  0,     0.004f, 0.10f, 0.30f, 0.20f, 2600, 900, 5.5f, 0.004f },
-      { PX_WAVE_TRIANGLE, 0,   0,  0,     0.004f, 0.12f, 0.36f, 0.42f, 0,    0,   0,    0 }
-   };
-   px_tone bass[2] = {
-      { PX_WAVE_TRIANGLE, 0,   0,  0,     0.006f, 0.14f, 0.34f, 0.50f, 0,    0,   0,    0 },
-      { PX_WAVE_SAW,      0,   0,  0,     0.006f, 0.10f, 0.26f, 0.12f, 700,  300, 0,    0 }
-   };
-   if (f <= 0.0f)
-      return;
-   if (voice == 0)
-   {
-      lead[0].freq = f;
-      lead[1].freq = f * 2.0f;
-      px_kit_play(s, lead, 2, 0.25f);
-   }
-   else
-   {
-      bass[0].freq = f;
-      bass[1].freq = f;
-      px_kit_play(s, bass, 2, -0.25f);
-   }
-}
-
-/* Eating: up and down in turns, over a low note that goes the same way and carries it. */
-static void play_wafer(pm *g, px_sound *s)
-{
-   static const px_tone up[3] = {
-      /* wave            freq  to   glide  attack  hold   decay  gain   cutoff to */
-      { PX_WAVE_SQUARE,   300, 640, 0.07f, 0.002f, 0.03f, 0.08f, 0.22f, 2400, 1200, 0, 0 },
-      { PX_WAVE_TRIANGLE, 150, 320, 0.07f, 0.002f, 0.03f, 0.09f, 0.46f, 0, 0, 0, 0 },
-      { PX_WAVE_SINE,      62, 124, 0.07f, 0.003f, 0.04f, 0.13f, 0.76f, 0, 0, 0, 0 }
-   };
-   static const px_tone down[3] = {
-      { PX_WAVE_SQUARE,   640, 300, 0.07f, 0.002f, 0.03f, 0.08f, 0.22f, 2400, 1200, 0, 0 },
-      { PX_WAVE_TRIANGLE, 320, 150, 0.07f, 0.002f, 0.03f, 0.09f, 0.46f, 0, 0, 0, 0 },
-      { PX_WAVE_SINE,     124,  62, 0.07f, 0.003f, 0.04f, 0.13f, 0.76f, 0, 0, 0, 0 }
-   };
-   px_kit_play(s, g->waka ? down : up, 3, px_kit_pan(g->pac_at));
-   g->waka = !g->waka;
-   px_sound_rumble(s, 9000, 7000, 3);
-}
-static void play_pill(pm *g, px_sound *s)
-{
-   static const px_tone p[3] = {
-      { PX_WAVE_SAW,      196, 784, 0.22f, 0.003f, 0.10f, 0.30f, 0.30f, 1200, 5000, 0, 0 },
-      { PX_WAVE_SQUARE,   392, 1568, 0.22f, 0.003f, 0.08f, 0.24f, 0.14f, 2000, 6000, 0, 0 },
-      { PX_WAVE_SINE,      98,  49, 0.30f, 0.002f, 0.10f, 0.40f, 0.70f, 0, 0, 0, 0 }
-   };
-   px_kit_play(s, p, 3, px_kit_pan(g->pac_at));
-   px_sound_rumble(s, 26000, 20000, 14);
-}
-
-static void play_eaten(pm *g, px_sound *s)
-{
-   static const px_tone p[3] = {
-      { PX_WAVE_SQUARE,   330, 1760, 0.40f, 0.002f, 0.30f, 0.22f, 0.24f, 1500, 6000, 14.0f, 0.03f },
-      { PX_WAVE_TRIANGLE, 165,  880, 0.40f, 0.002f, 0.30f, 0.22f, 0.44f, 0, 0, 14.0f, 0.03f },
-      { PX_WAVE_NOISE,   6000,  900, 0.10f, 0,      0.01f, 0.12f, 0.24f, 5000, 800, 0, 0 }
-   };
-   px_kit_play(s, p, 3, px_kit_pan(g->pac_at));
-   px_sound_rumble(s, 30000, 36000, 12);
-}
-
-/* Pac-Man caught: down and away, and the burst at the end of it. */
-static void play_caught(pm *g, px_sound *s)
-{
-   static const px_tone p[2] = {
-      { PX_WAVE_TRIANGLE, 988, 110, 1.45f, 0.004f, 1.30f, 0.30f, 0.60f, 0, 0, 7.0f, 0.06f },
-      { PX_WAVE_SQUARE,   494,  55, 1.45f, 0.004f, 1.30f, 0.30f, 0.16f, 1800, 300, 7.0f, 0.06f }
-   };
-   px_kit_play(s, p, 2, px_kit_pan(g->pac_at));
-   px_sound_rumble(s, 52000, 30000, 30);
-}
-
-static void play_burst(pm *g, px_sound *s)
-{
-   static const px_tone p[2] = {
-      { PX_WAVE_NOISE, 5000, 500, 0.20f, 0,      0.02f, 0.28f, 0.40f, 4000, 400, 0, 0 },
-      { PX_WAVE_SINE,   160,  50, 0.14f, 0.001f, 0.02f, 0.24f, 0.70f, 0, 0, 0, 0 }
-   };
-   px_kit_play(s, p, 2, px_kit_pan(g->pac_at));
-   px_sound_rumble(s, 65535, 40000, 16);
-}
-
-static void stop(px_sound *s, unsigned *voice, float seconds)
-{
-   if (*voice)
-      px_synth_stop(s->synth, *voice, seconds);
-   *voice = 0;
-}
-
-/* While the ghosts can be eaten: a note that climbs with the game's own, over and over, and
- * faster when that is about to end, which the game passes over in silence. */
+/* While the ghosts can be eaten: a note that climbs with the game's own, and by itself
+ * when that is about to end, which the game passes over in silence. */
 static void play_warble(pm *g, px_sound *s, bool on)
 {
-   static const px_tone p = { PX_WAVE_SQUARE, 220, 0, 0, 0.02f, 0, 0, 1.0f, 1500, 0, 0, 0 };
-   float climb;
-
-   if (!on)
-   {
-      stop(s, &g->warble, 0.08f);
-      return;
-   }
-   if (voice1_warbles(&g->tia))
-      climb = (float)g->tia.pitch[1] / 13.0f;
-   else
-      climb = (float)(g->ticks % 12) / 12.0f;
-   if (!px_synth_move(s->synth, g->warble, 0.0f, 0.13f, 196.0f * (1.0f + climb)))
-      g->warble = px_synth_play(s->synth, &p, 0.0f, 0.13f);
+   pac_warble(&g->voices, s, on, voice1_warbles(&g->tia) ? (float)g->tia.pitch[1] / 13.0f
+         : (float)(g->voices.ticks % 12) / 12.0f);
 }
 
-/* The chase: a siren that goes up and down, higher and faster as the wafers get fewer. */
 static void play_siren(pm *g, px_sound *s, bool on)
 {
-   static const px_tone p = { PX_WAVE_TRIANGLE, 330, 0, 0, 0.25f, 0, 0, 1.0f, 1400, 0, 0, 0 };
    const int eaten = px_kit_ram(s->ram, s->ram_size, RAM_WAFERS);
-   float few, swing, hz;
-
-   if (!on)
-   {
-      stop(s, &g->hum, 0.25f);
-      return;
-   }
-   few   = eaten < 0 ? 0.0f : eaten >= WAFERS ? 1.0f : (float)eaten / (float)WAFERS;
-   swing = (float)px_kit_wave(g->ticks * (unsigned)(5 + (int)(few * 6.0f))) / 254.0f;
-   hz    = (300.0f + 220.0f * few) * (1.0f + 0.45f * swing);
-   if (!px_synth_move(s->synth, g->hum, 0.0f, 0.085f, hz))
-      g->hum = px_synth_play(s->synth, &p, 0.0f, 0.085f);
+   pac_siren(&g->voices, s, on,
+         eaten < 0 ? 0.0f : eaten >= WAFERS ? 1.0f : (float)eaten / (float)WAFERS);
 }
 
 /* Whether the game is on: the ghosts move. They stand while the tune plays and while
@@ -632,9 +418,9 @@ static void play_siren(pm *g, px_sound *s, bool on)
 static bool ghosts_move(pm *g, const px_sound *s)
 {
    bool moved = false;
-   for (unsigned i = 0; i < 2 * GHOSTS; i++)
+   for (unsigned i = 0; i < 2 * PAC_GHOSTS; i++)
    {
-      const unsigned at = i < GHOSTS ? RAM_GHOST_X + i : RAM_GHOST_Y + i - GHOSTS;
+      const unsigned at = i < PAC_GHOSTS ? RAM_GHOST_X + i : RAM_GHOST_Y + i - PAC_GHOSTS;
       const int v = px_kit_ram(s->ram, s->ram_size, at);
       if (v < 0)
          return false;
@@ -660,7 +446,7 @@ static void sound(void *state, px_sound *s)
    if (g->pac_at < 0 && px_kit_ram(s->ram, s->ram_size, RAM_PAC_X) >= 0)
       g->pac_at = px_kit_ram(s->ram, s->ram_size, RAM_PAC_X) + 4;
 
-   g->ticks++;
+   g->voices.ticks++;
    px_kit_tia_hear(&g->tia, s->frame);
    heard = voice0_plays(&g->tia);
 
@@ -675,14 +461,16 @@ static void sound(void *state, px_sound *s)
       {
          g->sweep      = SOUND_CAUGHT;
          g->caught_for = 1;
-         if (g->own_sound) play_caught(g, s);
-         else              px_sound_rumble(s, 52000, 30000, 30);
+         if (g->own_sound)
+            pac_play_caught(s, g->pac_at);
+         PAC_RUMBLE_CAUGHT(s);
       }
       else if (!g->sweep && g->tia.volume[0] == 15 && g->tia.pitch[0] == 16)
       {
          g->sweep = SOUND_EATEN;
-         if (g->own_sound) play_eaten(g, s);
-         else              px_sound_rumble(s, 30000, 36000, 12);
+         if (g->own_sound)
+            pac_play_eaten(s, g->pac_at);
+         PAC_RUMBLE_EATEN(s);
       }
    }
    if (g->sweep)
@@ -694,22 +482,24 @@ static void sound(void *state, px_sound *s)
          if (!g->own_sound)
             break;
          if (g->heard0 != SOUND_TUNE || g->tia.pitch[0] != g->tia.was_pitch[0])
-            play_note(s, 0, px_kit_tia_hz(4, g->tia.pitch[0]));
+            pac_play_note(s, true, px_kit_tia_hz(4, g->tia.pitch[0]) / 4.0f);
          if (g->heard0 != SOUND_TUNE || g->tia.pitch[1] != g->tia.was_pitch[1])
-            play_note(s, 1, px_kit_tia_hz(4, g->tia.pitch[1]));
+            pac_play_note(s, false, px_kit_tia_hz(4, g->tia.pitch[1]) / 4.0f);
          break;
       case SOUND_WAFER:
          if (g->heard0 != SOUND_WAFER || px_kit_tia_louder(&g->tia, 0))
          {
-            if (g->own_sound) play_wafer(g, s);
-            else              px_sound_rumble(s, 0, 7000, 2);
+            if (g->own_sound)
+               pac_play_wafer(&g->voices, s, g->pac_at);
+            PAC_RUMBLE_WAFER(s);
          }
          break;
       case SOUND_PILL:
          if (g->heard0 != SOUND_PILL)
          {
-            if (g->own_sound) play_pill(g, s);
-            else              px_sound_rumble(s, 26000, 20000, 14);
+            if (g->own_sound)
+               pac_play_pill(s, g->pac_at);
+            PAC_RUMBLE_PILL(s);
          }
          break;
       default:
@@ -720,16 +510,17 @@ static void sound(void *state, px_sound *s)
    /* The burst when the last of Pac-Man is gone: 118 frames after he was caught. */
    if (g->caught_for && ++g->caught_for == 118)
    {
-      if (g->own_sound) play_burst(g, s);
-      else              px_sound_rumble(s, 65535, 40000, 16);
+      if (g->own_sound)
+         pac_play_burst(s, g->pac_at);
+      PAC_RUMBLE_BURST(s);
    }
    if (g->caught_for > 118 || (g->caught_for && heard != SOUND_CAUGHT && g->silent0 > 6))
       g->caught_for = 0;
 
    running = ghosts_move(g, s) && heard != SOUND_TUNE && heard != SOUND_CAUGHT;
-   scared  = voice1_warbles(&g->tia) || (running && g->mode == MODE_WARNING);
+   scared  = voice1_warbles(&g->tia) || (running && g->mode == PAC_WARNING);
    play_warble(g, s, g->own_sound && scared);
-   play_siren(g, s, g->own_sound && g->siren && running && !scared && g->mode == MODE_CHASE);
+   play_siren(g, s, g->own_sound && g->siren && running && !scared && g->mode == PAC_CHASE);
 
    if (g->own_sound)
    {
@@ -750,13 +541,12 @@ static void reset(void *state)
    px_kit_tia_reset(&g->tia);
    memset(g->eyes, 0, sizeof(g->eyes));
    memset(g->ghost_at, 0, sizeof(g->ghost_at));
-   g->mode   = MODE_IDLE;
+   g->mode   = PAC_IDLE;
    g->dying  = 0;
    g->heard0 = g->sweep = SOUND_NONE;
    g->silent0 = g->caught_for = 0;
    g->moved  = 1000;
-   g->warble = g->hum = 0;
-   g->waka   = false;
+   pac_voices_reset(&g->voices);
    g->pac_at = -1;
 }
 
