@@ -144,6 +144,12 @@ void px_kit_background(px_scene *s, unsigned from, unsigned to, uint32_t rgb);
  * the playfield does not hide it. Returns how many pixels it marked. */
 unsigned px_kit_small_playfield(const px_scene *s, unsigned from, unsigned to, unsigned rows,
       uint8_t *small);
+/* Draws what `small` marks in rows `from` up to `to` as dots of two pixels by two, in the
+ * middle of every four pixels of it (of eight, where two pieces meet: the halves of a maze
+ * mirrored), or with `round` false as the pieces they are. They get `rgb`, or with `own` false
+ * the colour they have. Dots are objects: they glow and have their corners cut. */
+void px_kit_dots(px_scene *s, const uint8_t *small, unsigned from, unsigned to, bool own,
+      uint32_t rgb, bool round);
 /* Draws the playfield in rows `from` up to `to` as outlines: `edge` where it ends,
  * `inside` within, and `light` (0: none) glowing from its edges. What `skip` marks (may be
  * NULL) is no part of it. */

@@ -147,6 +147,52 @@ unsigned px_kit_small_playfield(const px_scene *s, unsigned from, unsigned to, u
    return marked;
 }
 
+void px_kit_dots(px_scene *s, const uint8_t *small, unsigned from, unsigned to, bool own,
+      uint32_t rgb, bool round)
+{
+   const struct pxc_frame *f = s->frame;
+
+   to = rows_of(s, to);
+   for (unsigned y = from; y < to; y++)
+   {
+      const uint8_t *row = small + (size_t)y * PXC_W;
+      for (unsigned x = 0; x < PXC_W; )
+      {
+         unsigned end = x;
+         uint32_t color;
+         while (end < PXC_W && row[end])
+            end++;
+         if (end == x)
+         {
+            x++;
+            continue;
+         }
+         color = own ? rgb & 0xFFFFFFu
+               : f->palette[f->color[PXC_L_PF][(size_t)y * PXC_W + x]] & 0xFFFFFFu;
+
+         for (unsigned u = x; u < end; u++)
+         {
+            const size_t i = (size_t)y * PXC_W + u;
+            /* In the middle of what there is of it, or of each four pixels of it. */
+            const unsigned len = end - x, cell = len == 8 ? 8 : 4, at = (u - x) % cell;
+            const bool dot = at == cell / 2 - 1 || at == cell / 2;
+            if (PX_KEY_CLS(s->top[i]) != PX_CLS_PF)
+               continue;
+            if (!round)
+               s->top[i] = PX_KEY(PX_CLS_PF, color);
+            else if (dot)
+            {
+               s->top[i]    = PX_KEY(PX_CLS_SPRITE, color);
+               s->sprite[i] = 0xFF000000u | color;
+            }
+            else
+               s->top[i] = PX_KEY(PX_CLS_BK, s->bk[i]);
+         }
+         x = end;
+      }
+   }
+}
+
 void px_kit_outline(px_scene *s, unsigned from, unsigned to, uint32_t edge, uint32_t inside,
       uint32_t light, const uint8_t *skip)
 {

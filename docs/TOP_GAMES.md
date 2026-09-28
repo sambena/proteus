@@ -36,7 +36,7 @@ What this cannot tell:
 | 7 | Missile Command | Atari | 1981 | 10 | | **done** |
 | 8 | Yars' Revenge | Atari | 1982 | 10 | 1.0 m | **done** |
 | 9 | Warlords | Atari | 1981 | 10 | 1.8 m | **done** |
-| 10 | Ms. Pac-Man | Atari | 1983 | 9 | 2.3 m | |
+| 10 | Ms. Pac-Man | Atari | 1983 | 9 | 2.3 m | **done** |
 | 11 | Frogger | Parker Brothers | 1982 | 8 | | |
 | 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | its music is not the TIA's |
 | 13 | Pac-Man | Atari | 1982 | 7 | 8.1 m | **done** |
@@ -101,7 +101,7 @@ need, the first twenty fall into few kinds, and most of what a kind needs is mad
 | Kind | Games | What it needs | Made? |
 |---|---|---|---|
 | Rows of enemies over a cannon | Space Invaders, Demon Attack, Megamania, Galaxian, Phoenix | rows told apart, a backdrop, shots and hits | yes: Space Invaders |
-| A maze and what roams it | Pac-Man, Ms. Pac-Man, Berzerk, Wizard of Wor, Dig Dug | things shown in turns told apart, walls recoloured and lit, what is eaten drawn anew | yes: Pac-Man |
+| A maze and what roams it | Pac-Man, Ms. Pac-Man, Berzerk, Wizard of Wor, Dig Dug | things shown in turns told apart, walls recoloured and lit, what is eaten drawn anew | yes: Pac-Man and Ms. Pac-Man, which share `src/games/pac_family.h` |
 | Rooms, one screen at a time | Adventure, Pitfall!, H.E.R.O., Haunted House, Montezuma's Revenge, Raiders of the Lost Ark | the room known from memory, a look for every kind of room, light and dark | no |
 | Land that scrolls | River Raid, Stargate, Defender, The Empire Strikes Back, Jungle Hunt, Moon Patrol | a backdrop that moves with the land, in layers | yes: River Raid |
 | A road into the distance | Pole Position, Enduro | the horizon and the time of day from the game's colours | no |
