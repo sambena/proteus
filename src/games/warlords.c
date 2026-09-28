@@ -79,7 +79,7 @@ static const char *const md5[] = {
 static const char *const fx[] = {
    "glow", "high",
    "width", "70",
-   "reverb", "hall",
+   "reverb", "room",
    NULL
 };
 
