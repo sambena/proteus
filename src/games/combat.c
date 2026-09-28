@@ -287,9 +287,9 @@ static void light_clouds(px_scene *s)
    for (size_t i = (size_t)SCORE_END * PXC_W; i < (size_t)s->frame->height * PXC_W; i++)
       if (PX_KEY_CLS(s->top[i]) == PX_CLS_PF)
       {
-         const uint32_t rgb = px_rgb_mix(s->top[i] & 0xFFFFFFu, 0xF4F8FF, 150);
+         const uint32_t rgb = px_rgb_mix(s->top[i] & 0xFFFFFFu, 0xF4F8FF, 110);
          s->top[i]   = PX_KEY(PX_CLS_PF, rgb);
-         s->light[i] = 0xFF000000u | px_rgb_scale(rgb, 90);
+         s->light[i] = 0xFF000000u | px_rgb_scale(rgb, 40);
       }
 }
 
