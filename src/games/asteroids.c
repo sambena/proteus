@@ -186,7 +186,9 @@ typedef struct
    uint32_t clock;                 /* counts the frames heard */
    uint32_t beat_at, beat_true;    /* when the heart beat last, and when the game's did */
    uint32_t beat_every;            /* frames from one beat to the next; 0: not known */
+   uint32_t shot_heard;            /* when the game's voice last played the shot */
    uint8_t beat_pitch;             /* of the beat that is next */
+   uint8_t true_pitch;             /* of the game's own beat that was heard last */
    int score;                      /* in tens, as the frame before had it; -1: not known */
    int heard_fate, heard_row;
    bool heard_away;
@@ -871,7 +873,7 @@ static void frame(void *state, px_scene *s)
          burst(g, s, fate);
       /* Into hyperspace, and out of it where the ship is seen again. */
       if (row == NO_SHIP && g->row >= 0 && g->row != NO_SHIP && fate > 0 && !(fate & 0x80)
-            && g->ship_x >= 0)
+            && g->fate >= 0 && !(g->fate & 0x80) && g->ship_x >= 0)
       {
          px_scene_burst(s, g->ship_x, g->ship_y, g->colors == COLORS_VECTOR ? 0xE4F0FF : 0x80B8FF, 26, 240);
          g->away = true;
@@ -1171,17 +1173,23 @@ static void sound(void *state, px_sound *s)
       else              px_sound_rumble(s, 0, 12000, 3);
    }
 
+   if (heard1 == V1_SHOT)
+      g->shot_heard = g->clock;
    if (heard1 == V1_BEAT && (g->heard1 != V1_BEAT || g->tia.pitch[1] != g->tia.was_pitch[1]))
    {
-      if (g->heard1 != V1_SHOT)
+      /* After a shot the voice is silent for a frame before it goes on with the beat. */
+      if (g->clock - g->shot_heard > 2)
       {
          /* The game's own beat, on time. From the one before it is as far as beats are
-          * apart, unless one between them was not heard for a shot. */
-         const uint32_t since = g->clock - g->beat_true;
-         if (g->beat_true && since >= 8 && since <= 60
-               && !(g->beat_every && since + 3 >= g->beat_every * 2))
+          * apart; twice as far if it has the same note, as the one between them was not
+          * heard for a shot. */
+         uint32_t since = g->clock - g->beat_true;
+         if (g->true_pitch == g->tia.pitch[1])
+            since /= 2;
+         if (g->beat_true && since >= 6 && since <= 40)
             g->beat_every = since;
-         g->beat_true = g->clock;
+         g->beat_true  = g->clock;
+         g->true_pitch = g->tia.pitch[1];
          if (!g->own_sound)
             px_sound_rumble(s, 8000, 0, 3);
          else if (g->clock - g->beat_at >= 6)
@@ -1198,7 +1206,9 @@ static void sound(void *state, px_sound *s)
 
    if (g->own_sound && g->warp && row >= 0 && g->heard_row >= 0)
    {
-      if (row == NO_SHIP && g->heard_row != NO_SHIP && fate > 0 && !(fate & 0x80))
+      /* The count down without the ship having exploded before it. */
+      if (row == NO_SHIP && g->heard_row != NO_SHIP && fate > 0 && !(fate & 0x80)
+            && g->heard_fate >= 0 && !(g->heard_fate & 0x80))
       {
          play_warp(s, false, px_kit_pan(g->ship_at));
          g->heard_away = true;
@@ -1255,8 +1265,8 @@ static void reset(void *state)
    g->heard1 = V1_NONE;
    memset(g->thrust, 0, sizeof(g->thrust));
    memset(g->hum, 0, sizeof(g->hum));
-   g->clock = g->beat_at = g->beat_true = g->beat_every = 0;
-   g->beat_pitch = 0;
+   g->clock = g->beat_at = g->beat_true = g->beat_every = g->shot_heard = 0;
+   g->beat_pitch = g->true_pitch = 0;
    g->score = g->heard_fate = g->heard_row = -1;
    g->heard_away = false;
    g->ship_at = g->saucer_at = -1;
