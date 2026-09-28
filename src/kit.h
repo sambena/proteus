@@ -215,15 +215,6 @@ void px_kit_texture_show(const px_kit_texture *t, px_kit_canvas *c, const uint32
  * are not of the colours a canvas was made with. */
 void px_kit_texture_roll(const px_kit_texture *t, uint32_t *out, unsigned y, unsigned from,
       unsigned to, int32_t dx, int32_t dy, const uint32_t *colors);
-/* A shade of a texture moved `dx` and `dy`, at column `x` of row `y`. */
-static inline unsigned px_kit_texture_at(const px_kit_texture *t, unsigned x, unsigned y,
-      int32_t dx, int32_t dy)
-{
-   int32_t tx = ((int32_t)x - dx) % (int32_t)t->w, ty = ((int32_t)y - dy) % (int32_t)t->h;
-   if (tx < 0) tx += (int32_t)t->w;
-   if (ty < 0) ty += (int32_t)t->h;
-   return t->shades[(size_t)ty * t->w + (size_t)tx];
-}
 /* Paints the texture with smooth noise that fits itself at the edges: `across` by `down`
  * cells of chance to the picture, so that it looks alike at every size of it. The same
  * every time for a seed. Textures are made of several of these, coarse and fine. */

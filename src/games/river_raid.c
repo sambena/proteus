@@ -50,10 +50,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#ifdef RR_TIMING
-#include <stdio.h>
-#include <time.h>
-#endif
 
 #define OPT_COLORS  "proteus_rr_colors"
 #define OPT_BACKDROP "proteus_rr_backdrop"
@@ -444,21 +440,20 @@ static bool find_shore(rr *g, const px_scene *s)
 
 /* A pixel of the picture where the river goes over from water to land: `near` is 0 in open
  * water, 127 at the water's edge, 128 at the land's and 255 far from the water. */
-static uint32_t shore_pixel(const rr *g, unsigned x, unsigned y, unsigned near, int32_t dy,
+static uint32_t shore_pixel(const rr *g, unsigned near, unsigned water, unsigned grass,
       unsigned land)
 {
    if (near < 128)
    {
-      unsigned shade = px_kit_texture_at(&g->water_shades, x, y, 0, dy);
       /* Shallows, and foam at the very edge. */
-      shade += near / 3;
+      unsigned shade = water + near / 3;
       if (near > 100)
          shade += (near - 100) * 3;
       return g->water_colors[shade > 255 ? 255 : shade];
    }
    else
    {
-      const unsigned shade = px_kit_texture_at(&g->land_shades, x, y, 0, dy);
+      const unsigned shade = grass;
       const unsigned far = near - 128;
       uint32_t sand = g->sand_colors[shade];
       /* Wet sand at the edge, dry sand, and grass from a third of the way on. */
@@ -477,7 +472,7 @@ static uint32_t shore_pixel(const rr *g, unsigned x, unsigned y, unsigned near, 
 static void paint_glints(const rr *g, px_scene *s, int32_t dy)
 {
    const unsigned sx = s->sx, sy = s->sy, w = s->w, h = s->h;
-   const unsigned thick = sy >= 6 ? 2 : 1;
+   const unsigned thick = (sy + 2) / 3;
 
    for (unsigned i = 0; i < GLINTS; i++)
    {
@@ -498,7 +493,7 @@ static void paint_glints(const rr *g, px_scene *s, int32_t dy)
       if (!open)
          continue;
 
-      bright = (wave - 96) * 3 / 2;
+      bright = 40 + (wave - 96) * 4 / 3;
       for (unsigned t = 0; t < thick; t++)
       {
          uint32_t *out = s->backdrop + (size_t)(Y + t) * w + X;
@@ -507,7 +502,7 @@ static void paint_glints(const rr *g, px_scene *s, int32_t dy)
             /* Fainter towards its ends. */
             const unsigned end = u < length - 1 - u ? u : length - 1 - u;
             const unsigned part = end * 4 >= length ? 256 : 96 + end * 640 / length;
-            out[u] = px_rgb_add(out[u], px_rgb_scale(0xB8DCFF, bright * part >> 8));
+            out[u] = px_rgb_add(out[u], px_rgb_scale(0xD0E8FF, bright * part >> 8));
          }
       }
    }
@@ -518,6 +513,7 @@ static void paint_river(rr *g, px_scene *s)
    const unsigned sx = s->sx, sy = s->sy, w = s->w;
    const bool banks = g->backdrop == BACKDROP_RIVER;
    uint8_t near[PXC_W];
+   uint16_t part[PX_FX_MAX_SX];
    unsigned rows_of[LANDS] = { 0 }, most = 0;
    int32_t dy;
    bool fresh, stale;
@@ -544,23 +540,8 @@ static void paint_river(rr *g, px_scene *s)
 
    /* The canvases are in the colours the game has at hand: its water's, and the green of
     * most of its rows. */
-#ifdef RR_TIMING
-   {
-      static double sum; static unsigned n;
-      struct timespec a, b;
-      bool found;
-      clock_gettime(CLOCK_MONOTONIC, &a);
-      found = find_shore(g, s);
-      clock_gettime(CLOCK_MONOTONIC, &b);
-      sum += (b.tv_sec - a.tv_sec) * 1e3 + (b.tv_nsec - a.tv_nsec) / 1e6;
-      if (++n % 400 == 0) fprintf(stderr, "shore %.3f ms on average\n", sum / n);
-      if (!found)
-         return;
-   }
-#else
    if (!find_shore(g, s))
       return;
-#endif
    for (size_t i = (size_t)TOP * PXC_W; i < (size_t)BOTTOM * PXC_W; i++)
       if (is_water(s->top[i]))
       {
@@ -587,6 +568,13 @@ static void paint_river(rr *g, px_scene *s)
 
    /* The river moves down the picture as its line counts up. */
    dy = g->scroll.total * (int32_t)sy;
+   /* Where a pixel of the picture is between the middle of the game's pixel and that of
+    * the one before or after it, of 256. */
+   for (unsigned u = 0; u < sx && u < PX_FX_MAX_SX; u++)
+   {
+      const unsigned at = (2 * u + 1) * 256 / (2 * sx);
+      part[u] = (uint16_t)(u * 2 < sx ? at + 128 : at - 128);
+   }
 
    for (unsigned Y = TOP * sy; Y < BOTTOM * sy; Y++)
    {
@@ -598,6 +586,10 @@ static void paint_river(rr *g, px_scene *s)
       const uint8_t *side = g->side[r];
       const unsigned land = g->land_of[r - 1];
       uint32_t *out = s->backdrop + (size_t)Y * w;
+      /* The textures' row that has come to this one. */
+      const int32_t from = ((int32_t)Y - dy) % (int32_t)s->h;
+      const size_t row = (size_t)(from < 0 ? from + (int32_t)s->h : from) * w;
+      const uint8_t *water = g->water_shades.shades + row, *grass = g->land_shades.shades + row;
       unsigned x = 0;
 
       for (unsigned i = 0; i < PXC_W; i++)
@@ -633,16 +625,14 @@ static void paint_river(rr *g, px_scene *s)
          }
          for (unsigned u = 0; u < sx; u++)
          {
-            const unsigned hx = (2 * u + 1) * 256 / (2 * sx);
-            const unsigned fh = hx < 128 ? hx + 128 : hx - 128;
-            unsigned t = hx < 128 ? (l * (256 - fh) + m * fh) >> 8 : (m * (256 - fh) + n * fh) >> 8;
-            /* The shore is where the game has it. Without the banks the land's side of it
-             * is the game's, and the water's is all there is. */
+            const unsigned X = x * sx + u, fh = part[u];
+            unsigned t = u * 2 < sx ? (l * (256 - fh) + m * fh) >> 8 : (m * (256 - fh) + n * fh) >> 8;
+            /* The shore is where the game has it. */
             if (side[x])
                t = t < 128 ? 128 : t;
             else
                t = t > 127 ? 127 : t;
-            out[x * sx + u] = shore_pixel(g, x * sx + u, Y, t, dy, land);
+            out[X] = shore_pixel(g, t, water[X], grass[X], land);
          }
          x++;
       }
@@ -761,7 +751,7 @@ static void burst_block(rr *g, px_scene *s, unsigned block, int kind)
          for (int k = 0; k < 4; k++)
             px_scene_burst(s, left + 4 + k * (right - left - 8) / 3, y, k & 1 ? 0xFFE9A0 : 0xFF8A30,
                   26, 460);
-         px_scene_flash(s, 0xFFE0A0, 170);
+         px_scene_flash(s, 0xFFE0A0, 110);
          break;
       case KIND_FUEL:
          px_scene_burst(s, x, y, 0xFF5A30, 22, 380);
@@ -832,15 +822,18 @@ static void frame(void *state, px_scene *s)
             jet_y = in->y + (int)in->h / 2;
             if (jet == JET_WRECKED)
             {
-               px_scene_energy(s, in, true);
+               if (g->sparks)
+                  px_scene_energy(s, in, true);
                break;
             }
-            if (proteus)
-               for (unsigned r = 0; r < in->h; r++)
-               {
-                  const px_instance row = row_of(in, r);
-                  px_scene_tint(s, &row, px_rgb_mix(0xFFF8C8, 0xFFB020, r * 256 / in->h));
-               }
+            if (!proteus)
+               break;
+            /* Lighter at the nose, and the light of its engine behind it. */
+            for (unsigned r = 0; r < in->h; r++)
+            {
+               const px_instance row = row_of(in, r);
+               px_scene_tint(s, &row, px_rgb_mix(0xFFF8C8, 0xFFB020, r * 256 / in->h));
+            }
             light_exhaust(g, s, in, speed);
             break;
 
@@ -882,7 +875,8 @@ static void frame(void *state, px_scene *s)
                case KIND_WRECK:
                case KIND_WRECK_2:
                case KIND_WRECK_3:
-                  px_scene_energy(s, in, true);
+                  if (g->sparks)
+                     px_scene_energy(s, in, true);
                   break;
                default:
                   break;
@@ -912,21 +906,7 @@ static void frame(void *state, px_scene *s)
       g->jet = jet;
 
    if (g->backdrop != BACKDROP_OFF)
-   {
-#ifdef RR_TIMING
-      static double sum, least = 1e9; static unsigned n;
-      struct timespec a, b; double ms;
-      clock_gettime(CLOCK_MONOTONIC, &a);
       paint_river(g, s);
-      clock_gettime(CLOCK_MONOTONIC, &b);
-      ms = (b.tv_sec - a.tv_sec) * 1e3 + (b.tv_nsec - a.tv_nsec) / 1e6;
-      if (ms > 20.0) fprintf(stderr, "river %.3f ms in frame %u\n", ms, g->frame);
-      else if (ms > 0.2) { sum += ms; n++; if (ms < least) least = ms; }
-      if (n % 200 == 199) fprintf(stderr, "river %.3f ms on average, %.3f at least\n", sum / n, least);
-#else
-      paint_river(g, s);
-#endif
-   }
 }
 
 /* ---------------------------------------------------------------------------
@@ -996,9 +976,9 @@ static void play_shot(rr *g, px_sound *s)
 static void play_hit(rr *g, px_sound *s)
 {
    static const px_tone p[3] = {
-      { PX_WAVE_NOISE,  6500, 700, 0.30f, 0,      0.03f, 0.36f, 0.48f, 5000, 400, 0, 0 },
-      { PX_WAVE_SQUARE,  620,  85, 0.24f, 0.001f, 0.01f, 0.26f, 0.20f, 3500, 500, 0, 0 },
-      { PX_WAVE_SINE,    130,  40, 0.14f, 0.001f, 0.02f, 0.30f, 0.70f, 0, 0, 0, 0 }
+      { PX_WAVE_NOISE,  6500, 700, 0.30f, 0,      0.03f, 0.36f, 0.40f, 5000, 400, 0, 0 },
+      { PX_WAVE_SQUARE,  620,  85, 0.24f, 0.001f, 0.01f, 0.26f, 0.17f, 3500, 500, 0, 0 },
+      { PX_WAVE_SINE,    130,  40, 0.14f, 0.001f, 0.02f, 0.30f, 0.56f, 0, 0, 0, 0 }
    };
    px_kit_play(s, p, 3, px_kit_pan(g->shot_at >= 0 ? g->shot_at : g->jet_at));
    px_sound_rumble(s, 20000, 28000, 8);
@@ -1008,10 +988,10 @@ static void play_hit(rr *g, px_sound *s)
 static void play_bridge(px_sound *s)
 {
    static const px_tone p[4] = {
-      { PX_WAVE_NOISE, 5000, 260, 0.9f,  0,      0.12f, 1.2f, 0.60f, 4000, 150, 0, 0 },
-      { PX_WAVE_SINE,    72,  26, 0.8f,  0.002f, 0.10f, 1.1f, 0.85f, 0, 0, 0, 0 },
-      { PX_WAVE_SAW,    300,  36, 0.7f,  0.002f, 0.05f, 0.8f, 0.26f, 2200, 200, 9.0f, 0.04f },
-      { PX_WAVE_NOISE, 9000, 3000, 0.2f, 0,      0.01f, 0.2f, 0.30f, 8000, 2500, 0, 0 }
+      { PX_WAVE_NOISE, 5000, 260, 0.9f,  0,      0.12f, 1.2f, 0.44f, 4000, 150, 0, 0 },
+      { PX_WAVE_SINE,    72,  26, 0.8f,  0.002f, 0.10f, 1.1f, 0.54f, 0, 0, 0, 0 },
+      { PX_WAVE_SAW,    300,  36, 0.7f,  0.002f, 0.05f, 0.8f, 0.20f, 2200, 200, 9.0f, 0.04f },
+      { PX_WAVE_NOISE, 9000, 3000, 0.2f, 0,      0.01f, 0.2f, 0.22f, 8000, 2500, 0, 0 }
    };
    px_kit_play(s, p, 2, -0.45f);
    px_kit_play(s, p + 2, 2, 0.45f);
@@ -1021,9 +1001,9 @@ static void play_bridge(px_sound *s)
 static void play_lost(rr *g, px_sound *s)
 {
    static const px_tone p[3] = {
-      { PX_WAVE_NOISE, 5000, 300, 1.0f, 0,      0.15f, 1.3f, 0.62f, 3500, 150, 0, 0 },
-      { PX_WAVE_SINE,    80,  28, 0.9f, 0.002f, 0.10f, 1.2f, 0.85f, 0, 0, 0, 0 },
-      { PX_WAVE_SAW,    440,  40, 0.8f, 0.002f, 0.05f, 0.9f, 0.30f, 2500, 200, 11.0f, 0.04f }
+      { PX_WAVE_NOISE, 5000, 300, 1.0f, 0,      0.15f, 1.3f, 0.50f, 3500, 150, 0, 0 },
+      { PX_WAVE_SINE,    80,  28, 0.9f, 0.002f, 0.10f, 1.2f, 0.58f, 0, 0, 0, 0 },
+      { PX_WAVE_SAW,    440,  40, 0.8f, 0.002f, 0.05f, 0.9f, 0.24f, 2500, 200, 11.0f, 0.04f }
    };
    px_kit_play(s, p, 3, px_kit_pan(g->jet_at));
    px_sound_rumble(s, 65535, 40000, 45);
@@ -1074,7 +1054,7 @@ static void play_engine(rr *g, px_sound *s, unsigned volume)
       { PX_WAVE_SAW,     80, 0, 0, 0.25f, 0, 0, 1.0f,  520, 0, 5.0f, 0.008f },
       { PX_WAVE_SINE,  1300, 0, 0, 0.25f, 0, 0, 1.0f,    0, 0, 0, 0 }
    };
-   static const float gains[3] = { 0.13f, 0.11f, 0.014f };
+   static const float gains[3] = { 0.18f, 0.15f, 0.018f };
    /* From 0 slow to 1 fast. */
    const float fast = (27.0f - (float)g->engine_pitch) / 11.0f;
    const float push = volume >= 7 ? 1.35f : volume <= 4 ? 0.75f : 1.0f;
@@ -1182,7 +1162,8 @@ static void sound(void *state, px_sound *s)
          if (g->own_sound) play_bridge(s);
          else              px_sound_rumble(s, 52000, 40000, 30);
       }
-      else
+      /* What the jet flew into goes up with it, in the jet's own sound. */
+      else if (heard0 != SOUND_LOST || g->heard0 == SOUND_LOST)
       {
          if (g->own_sound) play_hit(g, s);
          else              px_sound_rumble(s, 20000, 28000, 8);
