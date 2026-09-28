@@ -24,6 +24,7 @@
    X(dig_dug) \
    X(solaris) \
    X(pitfall_2) \
-   X(hero)
+   X(hero) \
+   X(jungle_hunt)
 
 #endif
