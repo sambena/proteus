@@ -23,6 +23,10 @@
  * are shots and pieces in the first frame after they appeared, and rocks that came in at
  * another edge, which begin a new track.
  *
+ * A rock that leaves at the right comes in at the left, behind the eight columns the game
+ * leaves black, and may be at both edges for seconds. The object finder finds what is at
+ * the right edge as an instance of its own (fx_track.c: the same copy twice on a line).
+ *
  * Of its memory ($80 is 0):
  *
  *   57   counts the frames: the rocks are drawn when it is odd, the ship when it is even
@@ -1043,14 +1047,14 @@ static void play_beat(as *g, px_sound *s, unsigned pitch)
 static void play_warp(px_sound *s, bool back, float pan)
 {
    static const px_tone out[3] = {
-      { PX_WAVE_SINE,   180, 2600, 0.40f, 0.01f, 0.20f, 0.25f, 0.30f, 0, 0, 0, 0 },
-      { PX_WAVE_SAW,     90, 1300, 0.40f, 0.01f, 0.20f, 0.25f, 0.14f, 600, 5000, 17.0f, 0.03f },
-      { PX_WAVE_NOISE, 2000, 9000, 0.40f, 0.05f, 0.15f, 0.30f, 0.16f, 900, 7000, 0, 0 }
+      { PX_WAVE_SINE,   180, 2600, 0.40f, 0.01f, 0.20f, 0.25f, 0.20f, 0, 0, 0, 0 },
+      { PX_WAVE_SAW,     90, 1300, 0.40f, 0.01f, 0.20f, 0.25f, 0.10f, 600, 5000, 17.0f, 0.03f },
+      { PX_WAVE_NOISE, 2000, 9000, 0.40f, 0.05f, 0.15f, 0.30f, 0.12f, 900, 7000, 0, 0 }
    };
    static const px_tone in[3] = {
-      { PX_WAVE_SINE,  2600, 180, 0.35f, 0.01f, 0.15f, 0.30f, 0.30f, 0, 0, 0, 0 },
-      { PX_WAVE_SAW,   1300,  90, 0.35f, 0.01f, 0.15f, 0.30f, 0.14f, 5000, 600, 17.0f, 0.03f },
-      { PX_WAVE_NOISE, 9000, 2000, 0.35f, 0.02f, 0.10f, 0.30f, 0.16f, 7000, 900, 0, 0 }
+      { PX_WAVE_SINE,  2600, 180, 0.35f, 0.01f, 0.15f, 0.30f, 0.20f, 0, 0, 0, 0 },
+      { PX_WAVE_SAW,   1300,  90, 0.35f, 0.01f, 0.15f, 0.30f, 0.10f, 5000, 600, 17.0f, 0.03f },
+      { PX_WAVE_NOISE, 9000, 2000, 0.35f, 0.02f, 0.10f, 0.30f, 0.12f, 7000, 900, 0, 0 }
    };
    px_kit_play(s, back ? in : out, 3, pan);
    px_sound_rumble(s, 0, 20000, 8);
