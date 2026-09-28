@@ -685,8 +685,11 @@ SPC sets from Zophar's Domain and SNESmusic.org, input movies from TASVideos, an
 its GitHub releases; they keep their own terms, and are kept in your `%APPDATA%\ProteusStudio`
 folder, not in this repository. Use ROMs you own.
 
-Proteus Retune is not affiliated with Nintendo, Libretro/RetroArch, TASVideos, BizHawk, Zophar's
-Domain, SNESmusic.org or RetroAchievements. Game titles are trademarks of their owners.
+Proteus Retune is not affiliated with or endorsed by Nintendo, Atari, Sony, Taito, Bandai Namco,
+Activision, Libretro/RetroArch, the Stella team, TASVideos, BizHawk, Zophar's Domain,
+SNESmusic.org or RetroAchievements. Game titles and characters are trademarks of their owners,
+named here only to say which games Proteus works with. Proteus contains no code, graphics, sound
+or music from any game or console.
 
 ## Roadmap
 
