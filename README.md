@@ -658,12 +658,13 @@ games of your own.
 | Path | Purpose |
 | --- | --- |
 | `src/proteus_capture.h` | the capture interface between a core and Proteus: objects at every pixel, their colours, register writes, the voices |
-| `src/fx_video.c` | Atari 2600: draws the picture from its captured parts |
+| `src/fx_video.c` | draws the picture again, with its effects, from what a system tells of a frame (`px_source`) |
+| `src/sys_tia.c` | Atari 2600: the TIA's capture as a `px_source`, and what Proteus holds Stella's options at |
 | `src/fx_track.c` | Atari 2600: the objects in a frame, and the same object over frames |
 | `src/fx_audio.c` | Atari 2600: the two voices, filtered, panned and in a room |
-| `src/fx_synth.c` | Atari 2600: sounds of Proteus's own, of 32 voices |
-| `src/fx_pool.c` | Atari 2600: the threads a picture is drawn by |
-| `src/fx_panel.c` | Atari 2600: the options drawn on the picture |
+| `src/fx_synth.c` | sounds of Proteus's own, of 32 voices |
+| `src/fx_pool.c` | the threads a picture is drawn by |
+| `src/fx_panel.c` | the options drawn on the picture |
 | `src/fx_game.c`, `src/games/` | Atari 2600: the games Proteus knows in particular, found by MD5; `games.h` lists them |
 | `src/kit.h`, `src/kit.c` | Atari 2600: what game modules have in common |
 | `docs/` | the standard for game modules, and the games that get one |
