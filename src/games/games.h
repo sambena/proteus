@@ -9,6 +9,7 @@
    X(space_invaders) \
    X(pac_man) \
    X(combat) \
-   X(warlords)
+   X(warlords) \
+   X(missile_command)
 
 #endif
