@@ -145,6 +145,7 @@ done.
 | Has silence where the arcade had a sound | Adds one that follows the game: a hum, a siren. It has an option of its own. | both |
 | Gives its things holes for eyes | Fills what an object encloses with a colour. | Pac-Man: the ghosts |
 | Plays a tune | Plays its notes with other voices. | Pac-Man: the four notes at the start |
+| Draws a thing and what it stands on in turns | Colours what stands on top last: of the two, one is drawn from its track, and the colour of the other is not to be put over it. | Frogger: the frog on a log |
 
 **Games of one family share a file.** What two games have in common and no third would
 need (the colours of the arcade's ghosts, the sound of eating) is neither in the kit nor in

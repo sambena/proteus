@@ -37,7 +37,7 @@ What this cannot tell:
 | 8 | Yars' Revenge | Atari | 1982 | 10 | 1.0 m | **done** |
 | 9 | Warlords | Atari | 1981 | 10 | 1.8 m | **done** |
 | 10 | Ms. Pac-Man | Atari | 1983 | 9 | 2.3 m | **done** |
-| 11 | Frogger | Parker Brothers | 1982 | 8 | | |
+| 11 | Frogger | Parker Brothers | 1982 | 8 | | **done** |
 | 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | its music is not the TIA's |
 | 13 | Pac-Man | Atari | 1982 | 7 | 8.1 m | **done** |
 | 14 | Berzerk | Atari | 1982 | 7 | 1.9 m | |
