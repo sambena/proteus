@@ -94,15 +94,14 @@
 #define COLOR_GREY   0x08   /* the background, the dot, and the walls of the dark mazes */
 #define COLOR_ORANGE 0x28   /* the square that shows them */
 #define DRAGON_HEAD  14     /* rows of a dragon that are its head */
-#define SHAPE_ROWS   64     /* the highest thing that is shown in turns: the orange square */
-#define TURNS        6      /* frames a thing is not shown for, at most, while it is there */
 
 /* What a player object shows: memory's number for it, by nine. */
 enum
 {
    OBJ_SQUARE = 0, OBJ_GATE_YELLOW, OBJ_GATE_WHITE, OBJ_GATE_BLACK, OBJ_AUTHOR, OBJ_NUMBER,
    OBJ_RED, OBJ_YELLOW, OBJ_GREEN, OBJ_SWORD, OBJ_BRIDGE, OBJ_KEY_YELLOW, OBJ_KEY_WHITE,
-   OBJ_KEY_BLACK, OBJ_BAT, OBJ_DOT, OBJ_CHALICE, OBJ_MAGNET, OBJ_NOTHING, OBJ_UNKNOWN
+   OBJ_KEY_BLACK, OBJ_BAT, OBJ_DOT, OBJ_CHALICE, OBJ_MAGNET, OBJ_NOTHING, OBJ_UNKNOWN,
+   OBJ_GONE     /* one more of a thing than there is: taken out of the picture */
 };
 
 /* A room is painted in blocks of stone and slabs of floor, in pixels of the capture. */
@@ -140,7 +139,7 @@ static const px_game_option options[] = {
      "The rooms painted: walls of stone in the colour the game gives them, a dark floor, and in the dark mazes the light of a lantern where the game has a square of orange. Off: the rooms as the game draws them.",
      "stone", backdrop },
    { OPT_STEADY, "Steady objects",
-     "With three things in a room the game shows each in six frames of nine, and the light in the dark mazes goes out with them. Draw them in every frame. Needs flicker fusion.",
+     "With three things in a room the game shows each in six frames of nine, and the light in the dark mazes goes out with them. Tell flicker fusion what each is, so that it draws them in every frame.",
      "enabled", px_kit_toggle },
    { OPT_SPARKS, "Explosions",
      "Sparks and a flash when a dragon bites, eats or is slain, and a glitter around the chalice.",
@@ -167,17 +166,6 @@ typedef struct
    bool on;
 } lantern;
 
-/* A thing as it was seen last. */
-typedef struct
-{
-   px_instance as;
-   uint32_t bits[SHAPE_ROWS];
-   uint8_t colors[SHAPE_ROWS];
-   uint32_t seen;        /* the frame it was seen in; 0: not yet */
-   int dx, dy;           /* from the ball, if that was there: `held` */
-   bool held;
-} shape;
-
 typedef struct
 {
    /* The options. */
@@ -185,12 +173,9 @@ typedef struct
    bool rooms, steady, sparks, own_sound, ambience;
 
    uint32_t frame;               /* counts the frames that advance */
-   px_kit_tags known;            /* tagged with what each object is: OBJ_* */
-   shape shapes[OBJ_NOTHING];    /* what was seen of each thing there is */
-   uint64_t walls;               /* of the frame before: other walls are another room */
 
    /* Memory as the frame before had it; -1 before the first. */
-   int dragon[3], carried, won, room;
+   int dragon[3], carried, won;
 
    /* The room as it is painted. */
    px_kit_canvas lit;            /* walls and floor */
@@ -199,7 +184,8 @@ typedef struct
    uint64_t painted_walls;       /* what tells one room's walls from another's */
    uint32_t painted_rgb;         /* and the colour the game gave them */
    bool painted, painted_dark;
-   uint32_t new_rgb;             /* another colour, and for how many frames it has been there */
+   bool walls_painted;           /* in this frame the walls are the backdrop's to show */
+   uint32_t new_rgb;            /* another colour, and for how many frames it has been there */
    unsigned new_for;
    lantern lamp;                 /* as it is in the backdrop */
 
@@ -593,16 +579,26 @@ static void hide(px_scene *s, const px_instance *in, bool (*keep)(const px_scene
          {
             static const uint8_t tag[5]   = { PXC_P0, PXC_M0, PXC_P1, PXC_M1, PXC_BL };
             static const uint8_t layer[5] = { PXC_L_P0, PXC_L_M0, PXC_L_P1, PXC_L_M1, PXC_L_BL };
-            const uint8_t tags = s->frame->tags[i];
+            const struct pxc_frame *f = s->frame;
+            const uint8_t tags = f->tags[i];
+            /* Walls that are in the backdrop: the thin ones, and in the dark mazes all. */
+            const bool walled = g->walls_painted && g->wall[i];
             uint32_t other = 0;
             /* Drawn from its track, it is not in the frame: what is, is another. */
             for (unsigned k = 0; k < 5 && !other; k++)
-               if ((tags & tag[k]) && (in->ghost || layer[k] != in->cls) && !g->wall[i])
-                  other = 0xFF000000u | (s->frame->palette[s->frame->color[layer[k]][i]] & 0xFFFFFFu);
+               if ((tags & tag[k]) && (in->ghost || layer[k] != in->cls)
+                     && !(walled && (g->painted_dark || k == 1 || k == 3)))
+                  other = 0xFF000000u | (f->palette[f->color[layer[k]][i]] & 0xFFFFFFu);
             s->sprite[i] = other;
             s->energy[i] = 0;
-            if (PX_KEY_CLS(s->top[i]) == PX_CLS_SPRITE)
-               s->top[i] = other ? PX_KEY(PX_CLS_SPRITE, other) : PX_KEY(PX_CLS_BK, 0);
+            if (PX_KEY_CLS(s->top[i]) != PX_CLS_SPRITE)
+               continue;
+            if (other)
+               s->top[i] = PX_KEY(PX_CLS_SPRITE, other);
+            else if ((tags & PXC_PF) && !g->walls_painted)
+               s->top[i] = PX_KEY(PX_CLS_PF, f->palette[f->color[PXC_L_PF][i]]);
+            else
+               s->top[i] = PX_KEY(PX_CLS_BK, s->bk[i]);
          }
       }
    }
@@ -655,95 +651,56 @@ static int byte_of(const px_scene *s, unsigned index)
    return px_kit_ram(s->ram, s->ram_size, index);
 }
 
-/* What an object is, from what memory says the player objects show. */
-static unsigned object_of(av *g, const px_scene *s, const px_instance *in)
+/* What memory says a player object shows, or OBJ_UNKNOWN. */
+static unsigned shown_by(const uint8_t *ram, size_t size, const px_instance *in)
 {
-   unsigned what = OBJ_UNKNOWN;
-
+   const int code = px_kit_ram(ram, size, in->cls == PXC_L_P0 ? RAM_SHOWN : RAM_SHOWN + 1);
    if (!px_kit_is_player(in))
       return OBJ_UNKNOWN;
-   /* One of the module's own, in a frame that is drawn again: it says what it is. */
-   if (in->ghost && !in->track)
-      return in->group < OBJ_NOTHING ? in->group : OBJ_UNKNOWN;
-   if (in->ghost)
-   {
-      /* Drawn from its track: it is what it was when it was seen. */
-      const px_kit_tagged *seen = px_kit_tags_keep(&g->known, in, OBJ_UNKNOWN);
-      return seen ? seen->tag : OBJ_UNKNOWN;
-   }
-   {
-      const int code = byte_of(s, in->cls == PXC_L_P0 ? RAM_SHOWN : RAM_SHOWN + 1);
-      px_kit_tagged *seen;
-      if (code >= 0 && code % 9 == 0 && code / 9 <= OBJ_NOTHING)
-         what = (unsigned)code / 9;
-      /* Without memory, what no other thing looks like. */
-      else if (code < 0 && in->w == 32 && in->color == COLOR_ORANGE)
-         what = OBJ_SQUARE;
-      else if (code < 0 && in->h <= 2 && in->color == COLOR_GREY)
-         what = OBJ_DOT;
-      seen = px_kit_tags_keep(&g->known, in, what);
-      if (seen)
-         seen->tag = (uint8_t)what;
-   }
-   return what;
+   if (code >= 0 && code % 9 == 0 && code / 9 <= OBJ_NOTHING)
+      return (unsigned)code / 9;
+   /* Without memory, what no other thing looks like. */
+   if (code < 0 && in->w == 32 && in->color == COLOR_ORANGE)
+      return OBJ_SQUARE;
+   if (code < 0 && in->h <= 2 && in->color == COLOR_GREY)
+      return OBJ_DOT;
+   return OBJ_UNKNOWN;
 }
 
 /* ---------------------------------------------------------------------------
  * Things shown in turns
  *
  * With three things in a room the game shows each for three frames with one player object,
- * for three with the other, and for three not at all. To the tracks, which are of one
- * object of the TIA each, that is a thing gone for six frames, which is too long to be
- * flicker. The module knows what each player object shows, and so what is missing: it is
- * drawn as it was seen last, for as long as the longest turn takes.
+ * for three with the other, and for three not at all. A track is of one object of the TIA,
+ * so each thing has two, and to each of them the thing is gone for six frames of nine.
+ * That is too long to be flicker for what is told apart by where it is, and not for what
+ * the module says who it is: memory names what each player object shows.
+ *
+ * Both tracks of a thing draw it while it is away, and one of them still does while the
+ * other player object shows it. Of all that there is of a thing in a frame the module
+ * keeps one: the one the game draws, or else the one seen last.
  * ------------------------------------------------------------------------- */
 
-static void remember(av *g, const px_scene *s, const px_instance *in, unsigned what,
-      const px_instance *ball)
+static unsigned who(void *state, const px_glance *g, const px_instance *in)
 {
-   shape *k = &g->shapes[what];
-   const px_objects *o = s->objects;
-   if (in->h > SHAPE_ROWS)
-      return;
-   k->as   = *in;
-   k->seen = g->frame;
-   k->held = ball != NULL;
-   if (ball)
-   {
-      k->dx = in->x - ball->x;
-      k->dy = in->y - ball->y;
-   }
-   memcpy(k->bits, o->bits + in->rows, in->h * sizeof(uint32_t));
-   memcpy(k->colors, o->colors + in->rows, in->h);
+   const av *a = (const av*)state;
+   unsigned what;
+   if (!a || !a->steady)
+      return 0;
+   what = shown_by(g->ram, g->ram_size, in);
+   /* What the player carries goes where he goes, and a dragon after him. */
+   return what < OBJ_NOTHING ? PX_WHO_ANYWHERE | (what + 1) : 0;
 }
 
-static void show(px_scene *s, const px_instance *in);
-
-/* Adds what is missing of `what` to the frame's objects and to the picture. */
-static void recall(av *g, px_scene *s, unsigned what, const px_instance *ball, bool with_ball)
+/* What an object is. */
+static unsigned object_of(const px_scene *s, const px_instance *in)
 {
-   const shape *k = &g->shapes[what];
-   px_objects *o = s->objects;
-   px_instance *in;
-
-   if (o->count >= PX_MAX_INSTANCES || o->pool_used + k->as.h > o->pool_cap)
-      return;
-   in  = &o->inst[o->count++];
-   *in = k->as;
-   in->ghost = 1;
-   in->track = 0;
-   in->group = (uint8_t)what;
-   in->rows  = (uint32_t)o->pool_used;
-   /* What the player has with him, and the light around him, are where he is. */
-   if (with_ball && ball && k->held)
-   {
-      in->x = (int16_t)(ball->x + k->dx);
-      in->y = (int16_t)(ball->y + k->dy);
-   }
-   memcpy(o->bits + o->pool_used, k->bits, in->h * sizeof(uint32_t));
-   memcpy(o->colors + o->pool_used, k->colors, in->h);
-   o->pool_used += in->h;
-   show(s, in);
+   if (!px_kit_is_player(in))
+      return OBJ_UNKNOWN;
+   if (in->who)
+      return (in->who & 0x7Fu) - 1u;
+   /* Drawn from its track and not told apart: it is not known what it was. */
+   return in->ghost ? OBJ_UNKNOWN : shown_by(s->ram, s->ram_size, in);
 }
 
 /* Draws an object that is not in the frame where no other is. */
@@ -776,6 +733,46 @@ static void show(px_scene *s, const px_instance *in)
          s->energy[i] = 0;
       }
    }
+}
+
+/* Keeps one of each thing, and takes the others out of the picture. They are OBJ_GONE
+ * from then on. */
+static void keep_one_of_each(av *g, px_scene *s)
+{
+   px_objects *o = s->objects;
+   px_instance *kept[OBJ_NOTHING] = { NULL };
+   unsigned away[OBJ_NOTHING] = { 0 };
+   bool gone = false;
+
+   for (unsigned i = 0; i < o->count; i++)
+   {
+      px_instance *in = &o->inst[i];
+      const unsigned what = in->group;
+      const px_obj_track *t;
+      unsigned missed;
+      if (what >= OBJ_NOTHING)
+         continue;
+      t      = in->ghost ? px_objects_track(o, in->track) : NULL;
+      missed = !in->ghost ? 0 : t ? 1u + t->missed : 1000u;
+      if (!kept[what] || missed < away[what])
+      {
+         kept[what] = in;
+         away[what] = missed;
+      }
+   }
+   for (unsigned i = 0; i < o->count; i++)
+   {
+      px_instance *in = &o->inst[i];
+      if (in->group >= OBJ_NOTHING || kept[in->group] == in)
+         continue;
+      hide(s, in, NULL, g, 0);
+      in->group = OBJ_GONE;
+      gone      = true;
+   }
+   /* What was taken out may have been over what is kept. */
+   for (unsigned k = 0; gone && k < OBJ_NOTHING; k++)
+      if (kept[k] && kept[k]->ghost)
+         show(s, kept[k]);
 }
 
 static uint32_t dragon_color(unsigned what)
@@ -824,9 +821,7 @@ static void frame(void *state, px_scene *s)
    const size_t n = (size_t)PXC_W * f->height;
    const px_instance *ball = NULL, *square = NULL, *chalice = NULL;
    const px_instance *dragon[3] = { NULL, NULL, NULL };
-   const unsigned found = o->count;
-   int states[3], carried, won, number;
-   bool there[OBJ_UNKNOWN + 1] = { false };
+   int states[3], carried, won;
    uint32_t walls_rgb;
    uint64_t walls;
    bool room;
@@ -838,21 +833,13 @@ static void frame(void *state, px_scene *s)
       states[d] = byte_of(s, RAM_DRAGONS + d * DRAGON_BYTES + DRAGON_STATE);
    carried = byte_of(s, RAM_CARRIED);
    won     = byte_of(s, RAM_WON);
-   number  = byte_of(s, RAM_ROOM);
 
    /* The room. */
    walls = read_walls(g, s, &walls_rgb, &g->dark);
    room  = g->rooms && have_room(g, s, walls, walls_rgb, g->dark);
    if (!g->rooms)
       g->painted = false;
-   if (s->advance && (walls != g->walls || number != g->room))
-   {
-      /* Another room: what was seen is not in it. */
-      for (unsigned k = 0; k < OBJ_NOTHING; k++)
-         g->shapes[k].seen = 0;
-      g->walls = walls;
-      g->room  = number;
-   }
+   g->walls_painted = room;
    if (g->rooms)
    {
       const uint32_t wall_light = 0xFF000000u | glow_of(g->painted_rgb);
@@ -884,25 +871,16 @@ static void frame(void *state, px_scene *s)
    }
 
    /* What the objects are. */
-   px_kit_tags_begin(&g->known);
    g->dragon_near = false;
    g->player_at   = g->dragon_at = -1;
-   for (unsigned i = 0; i < found; i++)
-      if (o->inst[i].cls == PXC_L_BL)
-         ball = &o->inst[i];
-   for (unsigned i = 0; i < found; i++)
+   for (unsigned i = 0; i < o->count; i++)
    {
       px_instance *in = &o->inst[i];
-      const unsigned what = object_of(g, s, in);
-      in->group   = (uint8_t)what;
-      there[what] = true;
-      if (s->advance && !in->ghost && what < OBJ_NOTHING)
-         remember(g, s, in, what, ball);
+      in->group = (uint8_t)object_of(s, in);
+      if (in->cls == PXC_L_BL)
+         ball = in;
    }
-   /* What is shown in turns and not in this one. A frame drawn again has them already. */
-   for (unsigned k = 0; k < OBJ_NOTHING && s->advance && g->steady && s->cfg->flicker; k++)
-      if (!there[k] && g->shapes[k].seen && g->frame - g->shapes[k].seen <= TURNS)
-         recall(g, s, k, ball, k == OBJ_SQUARE || (int)k * 9 == carried);
+   keep_one_of_each(g, s);
 
    for (unsigned i = 0; i < o->count; i++)
    {
@@ -995,7 +973,7 @@ static void frame(void *state, px_scene *s)
          hide(s, square, NULL, g, 0);
          /* What is drawn from its track was not drawn where the square was. */
          for (unsigned i = 0; i < o->count; i++)
-            if (o->inst[i].ghost && &o->inst[i] != square)
+            if (o->inst[i].ghost && &o->inst[i] != square && o->inst[i].group != OBJ_GONE)
                show(s, &o->inst[i]);
          /* Its light on what is in it. */
          for (int y = g->lamp.y0 / (int)s->sy; g->lamp.on && y < g->lamp.y1 / (int)s->sy; y++)
@@ -1026,7 +1004,7 @@ static void frame(void *state, px_scene *s)
          continue;
       }
       /* A thin wall: painted with the room, or else the game's to draw. */
-      if (!px_kit_is_player(in))
+      if (!px_kit_is_player(in) || what == OBJ_GONE)
          continue;
       if (what == OBJ_SQUARE && g->painted && g->painted_dark)
          continue;
@@ -1071,7 +1049,8 @@ static void frame(void *state, px_scene *s)
    }
    if (room && g->painted_dark)
       for (unsigned i = 0; i < o->count; i++)
-         if (px_kit_is_player(&o->inst[i]) && o->inst[i].group != OBJ_SQUARE)
+         if (px_kit_is_player(&o->inst[i]) && o->inst[i].group != OBJ_SQUARE
+               && o->inst[i].group != OBJ_GONE)
             behind_walls(s, g, &o->inst[i]);
 
    /* What happens. */
@@ -1118,7 +1097,6 @@ static void frame(void *state, px_scene *s)
 
    if (s->advance)
    {
-      px_kit_tags_end(&g->known);
       for (unsigned d = 0; d < 3; d++)
          g->dragon[d] = states[d];
       g->carried = carried;
@@ -1149,8 +1127,8 @@ static void frame(void *state, px_scene *s)
  *               923 Hz.
  *
  * Here each is a sound of several voices where it happens between left and right, and the
- * sixteen pitches of the end are chimes. The game's voice is silent while it plays one of
- * these.
+ * sixteen pitches of the end are chimes, each at the note it is nearest to. The game's
+ * voice is silent while it plays one of these.
  * ------------------------------------------------------------------------- */
 
 enum { SOUND_NONE = 0, SOUND_HANDS, SOUND_BITE, SOUND_EATEN, SOUND_SLAIN, SOUND_END, SOUND_OTHER };
@@ -1236,7 +1214,7 @@ static void play_slain(av *g, px_sound *s)
 /* One of the sixteen pitches of the end, as loud as the game plays it. */
 static void play_chime(px_sound *s, unsigned pitch, unsigned volume)
 {
-   const float f = px_kit_tia_hz(4, pitch), loud = 0.35f + 0.65f * (float)volume / 15.0f;
+   const float f = px_kit_tune(px_kit_tia_hz(4, pitch)), loud = 0.35f + 0.65f * (float)volume / 15.0f;
    px_tone p[3] = {
       { PX_WAVE_SINE,     0, 0, 0, 0.002f, 0.02f, 0.90f, 0.40f, 0, 0, 5.0f, 0.002f },
       { PX_WAVE_TRIANGLE, 0, 0, 0, 0.002f, 0.01f, 0.45f, 0.16f, 0, 0, 0, 0 },
@@ -1360,14 +1338,10 @@ static void reset(void *state)
 {
    av *g = (av*)state;
    g->dragon[0] = g->dragon[1] = g->dragon[2] = -1;
-   g->carried = g->won = g->room = -1;
+   g->carried = g->won = -1;
    g->new_for = 0;
-   g->walls   = 0;
-   for (unsigned k = 0; k < OBJ_NOTHING; k++)
-      g->shapes[k].seen = 0;
    g->dark = g->dragon_near = false;
    g->player_at = g->dragon_at = -1;
-   px_kit_tags_reset(&g->known);
    px_kit_tia_reset(&g->tia);
    g->heard  = SOUND_NONE;
    g->rising = false;
@@ -1411,5 +1385,5 @@ static void configure(void *state, const char *(*get)(const char *key))
 }
 
 const px_game px_game_adventure = {
-   "Adventure", md5, fx, options, create, destroy, reset, configure, frame, sound
+   "Adventure", md5, fx, options, create, destroy, reset, configure, frame, sound, who
 };
