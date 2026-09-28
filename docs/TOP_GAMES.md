@@ -32,7 +32,7 @@ What this cannot tell:
 | 3 | Adventure | Atari | 1980 | 14 | 1.0 m | **done** |
 | 4 | Combat | Atari | 1977 | 14 | pack-in | **done** |
 | 5 | River Raid | Activision | 1982 | 13 | 1.0 m | **done** |
-| 6 | Asteroids | Atari | 1981 | 13 | 3.8 m | |
+| 6 | Asteroids | Atari | 1981 | 13 | 3.8 m | **done** |
 | 7 | Missile Command | Atari | 1981 | 10 | | **done** |
 | 8 | Yars' Revenge | Atari | 1982 | 10 | 1.0 m | **done** |
 | 9 | Warlords | Atari | 1981 | 10 | 1.8 m | **done** |
@@ -105,7 +105,7 @@ need, the first twenty fall into few kinds, and most of what a kind needs is mad
 | Rooms, one screen at a time | Adventure, Pitfall!, H.E.R.O., Haunted House, Montezuma's Revenge, Raiders of the Lost Ark | the room known from memory, a look for every kind of room, light and dark | no |
 | Land that scrolls | River Raid, Stargate, Defender, The Empire Strikes Back, Jungle Hunt, Moon Patrol | a backdrop that moves with the land, in layers | yes: River Raid |
 | A road into the distance | Pole Position, Enduro | the horizon and the time of day from the game's colours | no |
-| Rocks and ships in space | Asteroids, Yars' Revenge, Solaris, Gravitar, Cosmic Ark | many things shown in turns, trails, a backdrop | mostly: Space Invaders |
+| Rocks and ships in space | Asteroids, Yars' Revenge, Solaris, Gravitar, Cosmic Ark | many things shown in turns, trails, a backdrop | yes: Asteroids |
 | A field and a bat | Warlords, Kaboom!, Breakout, Video Olympics | what is hit bursts; little else | yes: Warlords and Kaboom! |
 | Two players against each other | Combat, Joust | sounds placed by who makes them | mostly |
 
