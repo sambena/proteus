@@ -65,7 +65,7 @@ struct inner_api
    size_t (*get_memory_size)(unsigned);
    /* The capture interface (proteus_capture.h); NULL in cores without it. */
    void (*capture_enable)(unsigned);
-   const struct pxc_frame *(*capture)(unsigned);
+   const void *(*capture)(unsigned);
 };
 
 static struct
@@ -100,10 +100,10 @@ static struct
    size_t scratch_frames;
 } st;
 
-/* The Atari 2600's picture and sound (fx.h). */
+/* The picture and sound of a console Proteus draws and hears again (fx.h). */
 static struct
 {
-   bool is_2600;            /* the inner core is Stella */
+   const px_system *sys;    /* the inner core's console, if Proteus draws it again */
    px_fx_config cfg;
    px_fx_video *video;
    px_fx_audio *audio;
@@ -348,17 +348,17 @@ static bool ensure_inner(void)
 
 #ifdef _WIN32
    inner.api.capture_enable = (void (*)(unsigned))(void*)GetProcAddress(inner.lib, "retro_proteus_capture_enable");
-   inner.api.capture = (const struct pxc_frame *(*)(unsigned))(void*)GetProcAddress(inner.lib, "retro_proteus_capture");
+   inner.api.capture = (const void *(*)(unsigned))(void*)GetProcAddress(inner.lib, "retro_proteus_capture");
 #else
    inner.api.capture_enable = (void (*)(unsigned))dlsym(inner.lib, "retro_proteus_capture_enable");
-   inner.api.capture = (const struct pxc_frame *(*)(unsigned))dlsym(inner.lib, "retro_proteus_capture");
+   inner.api.capture = (const void *(*)(unsigned))dlsym(inner.lib, "retro_proteus_capture");
 #endif
    if (!inner.api.capture_enable || !inner.api.capture)
       inner.api.capture_enable = NULL, inner.api.capture = NULL;
 
-   /* stella_libretro, stellapx_libretro, stella2014_libretro */
-   fx.is_2600 = strncasecmp(base + strlen(PX_PREFIX), "stella", 6) == 0;
-   px_options_set_fx(fx.is_2600);
+   /* stella_libretro, stellapx_libretro, stella2014_libretro: the 2600 (px_system_for) */
+   fx.sys = px_system_for(base + strlen(PX_PREFIX));
+   px_options_set_fx(fx.sys != NULL);
 
    inner.ok = true;
    apply_callbacks();
@@ -476,37 +476,40 @@ static const px_host engine_host = {
 };
 
 /* ---------------------------------------------------------------------------
- * The Atari 2600's picture and sound
+ * The picture and sound of a console
  * ------------------------------------------------------------------------- */
 
 static int16_t *scratch_buffer(size_t frames);
 
 static bool fx_video_on(void)
 {
-   return fx.is_2600 && fx.video && fx.cfg.video && inner.api.capture;
+   return fx.sys && fx.video && fx.cfg.video && inner.api.capture;
 }
 
 static bool fx_audio_on(void)
 {
-   return fx.is_2600 && fx.audio && fx.cfg.audio;
+   return fx.sys && fx.audio && fx.cfg.audio;
 }
 
 /* The value an option of the inner core is held at, or NULL: Proteus needs the voices apart
- * and the picture as the TIA made it. */
+ * and the picture as the console made it. */
 static const char *fx_override(const char *key)
 {
-   if (!fx.is_2600 || !key)
+   if (!fx.sys || !key)
       return NULL;
-   if (fx_audio_on() && !strcmp(key, "stella_stereo"))
-      return "on";
-   if (fx_video_on())
-   {
-      if (!strcmp(key, "stella_filter"))         return "disabled";
-      if (!strcmp(key, "stella_phosphor"))       return "off";
-      if (!strcmp(key, "stella_crop_hoverscan")) return "disabled";
-      if (!strcmp(key, "stella_crop_voverscan")) return "0";
-   }
-   return NULL;
+   return fx.sys->hold(key, fx_video_on(), fx_audio_on());
+}
+
+/* The capture of this frame, as the system reads it; NULL: none. */
+static const void *fx_capture(void)
+{
+   return fx.sys && inner.api.capture ? inner.api.capture(fx.sys->abi) : NULL;
+}
+
+/* The 2600's capture, for its game modules; NULL for other consoles. */
+static const struct pxc_frame *fx_tia_capture(void)
+{
+   return fx.sys && !strcmp(fx.sys->core, "stella") ? (const struct pxc_frame*)fx_capture() : NULL;
 }
 
 /* Makes the inner core's geometry that of the picture Proteus draws. */
@@ -584,7 +587,7 @@ static void fx_read_config(void)
 {
    bool video_was = fx_video_on(), audio_was = fx_audio_on();
    const char *v;
-   if (!fx.is_2600)
+   if (!fx.sys)
       return;
    px_fx_config_read(&fx.cfg, fx_option_get, fx_profile_get);
    if (fx.game && fx.game->configure && fx.game_state)
@@ -610,19 +613,28 @@ static void fx_identify(const struct retro_game_info *game)
 {
    fx.game   = NULL;
    fx.md5[0] = '\0';
-   if (!fx.is_2600 || !game)
+   if (!fx.sys || !game)
       return;
    if (game->data && game->size)
       px_md5(game->data, game->size, fx.md5);
    else if (game->path)
    {
+      /* Up to the largest cartridges there are: 32 MB, of the Game Boy Advance. */
+      const long most = 32l * 1024 * 1024;
       FILE *f = px_fopen(game->path, "rb");
-      static uint8_t rom[512 * 1024];
-      size_t n = f ? fread(rom, 1, sizeof(rom), f) : 0;
+      long size = -1;
+      if (f && !fseek(f, 0, SEEK_END))
+         size = ftell(f);
+      if (f && size > 0 && size <= most && !fseek(f, 0, SEEK_SET))
+      {
+         uint8_t *rom = (uint8_t*)malloc((size_t)size);
+         size_t n = rom ? fread(rom, 1, (size_t)size, f) : 0;
+         if (n)
+            px_md5(rom, n, fx.md5);
+         free(rom);
+      }
       if (f)
          fclose(f);
-      if (n)
-         px_md5(rom, n, fx.md5);
    }
    fx.game = px_game_find(fx.md5);
    px_options_set_game(fx.game);
@@ -630,7 +642,7 @@ static void fx_identify(const struct retro_game_info *game)
 
 static void fx_start(void)
 {
-   if (!fx.is_2600)
+   if (!fx.sys)
       return;
    if (!fx.video)
       fx.video = px_fx_video_new();
@@ -655,8 +667,8 @@ static void fx_start(void)
       px_log(RETRO_LOG_INFO, "ROM %s: drawn as any game", fx.md5);
    if (!inner.api.capture)
       px_log(RETRO_LOG_WARN, "%s has no capture interface: the picture is passed through. "
-            "Install stellapx_libretro and name Proteus " PX_PREFIX "stellapx_libretro for the enhanced picture.",
-            inner.path);
+            "Install %s_libretro and name Proteus " PX_PREFIX "%s_libretro for the enhanced picture.",
+            inner.path, fx.sys->px_core, fx.sys->px_core);
 }
 
 static void fx_stop(void)
@@ -693,7 +705,7 @@ static void fx_sound_frame(void)
       return;
 
    memset(&s, 0, sizeof(s));
-   s.frame    = inner.api.capture ? inner.api.capture(PXC_ABI_VERSION) : NULL;
+   s.frame    = fx_tia_capture();
    s.ram      = (const uint8_t*)inner.api.get_memory_data(RETRO_MEMORY_SYSTEM_RAM);
    s.ram_size = inner.api.get_memory_size(RETRO_MEMORY_SYSTEM_RAM);
    s.objects  = px_fx_video_objects(fx.video);
@@ -889,7 +901,7 @@ static void RETRO_CALLCONV keyboard_wrap(bool down, unsigned keycode, uint32_t c
       uint16_t mods)
 {
    uint32_t key = 0;
-   if (fx.is_2600 && ctl.keys_on)
+   if (fx.sys && ctl.keys_on)
       switch (keycode)
       {
          case RETROK_BACKSLASH:    key = KEY_PANEL; break;
@@ -926,7 +938,7 @@ static void ctl_update(void)
    uint32_t keys = ctl.keys;
 
    ctl.keys = 0;
-   if (!fx.is_2600)
+   if (!fx.sys)
       return;
    if (ctl.toast_frames)
       ctl.toast_frames--;
@@ -1025,7 +1037,7 @@ static const px_panel *ctl_view(void)
 
    if (n > PX_PANEL_LINES)
       n = PX_PANEL_LINES;
-   snprintf(ctl.title, sizeof(ctl.title), "Proteus 2600%s%s", fx.game ? " - " : "",
+   snprintf(ctl.title, sizeof(ctl.title), "Proteus %s%s%s", fx.sys->name, fx.game ? " - " : "",
          fx.game ? fx.game->name : "");
    ctl.view.title    = ctl.title;
    ctl.view.hint     = "Up/Down choose  Left/Right change  Fire back";
@@ -1054,7 +1066,7 @@ static int16_t RETRO_CALLCONV input_state_wrap(unsigned port, unsigned device, u
       unsigned id)
 {
    int16_t v = fe_input_state ? fe_input_state(port, device, index, id) : 0;
-   if (!fx.is_2600 || !ctl.button_on || port != 0
+   if (!fx.sys || !ctl.button_on || port != 0
          || (device & RETRO_DEVICE_MASK) != RETRO_DEVICE_JOYPAD)
       return v;
    if (ctl.held || ctl.panel)
@@ -1093,7 +1105,7 @@ static void fx_timing(unsigned w, unsigned h)
 /* Shows the frame of this retro_run: drawn from its capture, or else as the core made it. */
 static void fx_present(void)
 {
-   const struct pxc_frame *c = NULL;
+   px_source src;
    const uint32_t *px = NULL;
    unsigned w = 0, h = 0;
 
@@ -1107,13 +1119,12 @@ static void fx_present(void)
       return;
    }
 
-   if (fx.video_enabled && fx_video_on())
-      c = inner.api.capture(PXC_ABI_VERSION);
-   if (c && c->struct_size >= sizeof(*c) && c->width == fx.frame_w && c->height == fx.frame_h)
+   if (fx.video_enabled && fx_video_on() && fx.frame_w && fx.frame_h
+         && fx.sys->source(&src, fx_capture(), fx.frame_w, fx.frame_h))
    {
       px_fx_extra extra;
       fx_extra(&extra, true);
-      px = px_fx_video_render(fx.video, c, &fx.cfg, &extra, &w, &h);
+      px = px_fx_video_draw(fx.video, &src, &fx.cfg, &extra, &w, &h);
    }
 
    if (!px)
@@ -1132,15 +1143,15 @@ static void fx_present(void)
  * again as the options are now, and nothing is to be heard. */
 static void fx_stand_still(void)
 {
-   const struct pxc_frame *c = inner.api.capture ? inner.api.capture(PXC_ABI_VERSION) : NULL;
+   px_source src;
    const uint32_t *px = NULL;
    unsigned w = 0, h = 0;
 
-   if (c && c->struct_size >= sizeof(*c) && fe_video)
+   if (fe_video && fx.sys && fx.sys->source(&src, fx_capture(), 0, 0))
    {
       px_fx_extra extra;
       fx_extra(&extra, false);
-      px = px_fx_video_render(fx.video, c, &fx.cfg, &extra, &w, &h);
+      px = px_fx_video_draw(fx.video, &src, &fx.cfg, &extra, &w, &h);
    }
    if (px)
    {
@@ -1194,7 +1205,7 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
       case RETRO_ENVIRONMENT_SET_GEOMETRY:
       {
          struct retro_system_av_info av;
-         if (!data || !fx.is_2600)
+         if (!data || !fx.sys)
             return fe_env(cmd, data);
          /* Only the geometry is the core's to give here; the timing is as before. */
          av = fx.have_av ? fx.av : *(const struct retro_system_av_info*)data;
@@ -1227,7 +1238,7 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
          if (!data)
             return fe_env(cmd, data);
          av = *(const struct retro_system_av_info*)data;
-         if (fx.is_2600)
+         if (fx.sys)
             fx_geometry(&av);
          ret = fe_env(cmd, &av);
          if (ret)
@@ -1242,7 +1253,7 @@ static bool RETRO_CALLCONV env_wrap(unsigned cmd, void *data)
       {
          /* The keys for the options are taken out on their way to the inner core. */
          struct retro_keyboard_callback wrapped;
-         if (!data || !fx.is_2600)
+         if (!data || !fx.sys)
             return fe_env(cmd, data);
          ctl.inner_keyboard = ((const struct retro_keyboard_callback*)data)->callback;
          wrapped.callback   = keyboard_wrap;
@@ -1280,7 +1291,7 @@ static bool mixing_active(void)
 static void RETRO_CALLCONV audio_sample_wrap(int16_t left, int16_t right)
 {
    int16_t frame[2] = { left, right };
-   if (fx.is_2600 && st.audio_enabled)
+   if (fx.sys && st.audio_enabled)
       fx_sound_frame();
    if (fx_audio_on() && st.audio_enabled)
       px_fx_audio_process(fx.audio, &fx.cfg, frame, 1, fx.voice, fx.synth);
@@ -1298,7 +1309,7 @@ static size_t RETRO_CALLCONV audio_batch_wrap(const int16_t *data, size_t frames
       return frames;
    /* The game module hears the frame whether its sound is changed or not: the controller
     * shakes for what happens all the same. */
-   if (fx.is_2600 && st.audio_enabled)
+   if (fx.sys && st.audio_enabled)
       fx_sound_frame();
    if ((!voices && !mixing_active()) || !(buf = scratch_buffer(frames)))
       return fe_audio_batch(data, frames);
@@ -1484,7 +1495,7 @@ RETRO_API void retro_get_system_av_info(struct retro_system_av_info *info)
    inner.api.get_system_av_info(info);
    px_engine_set_rate(&engine, info->timing.sample_rate);
    fx_set_rate(info->timing.sample_rate);
-   if (fx.is_2600)
+   if (fx.sys)
       fx_geometry(info);
 }
 
@@ -1515,7 +1526,7 @@ RETRO_API void retro_run(void)
       return;
    engine_on = px_engine_loaded(&engine);
 
-   if (engine_on || fx.is_2600)
+   if (engine_on || fx.sys)
    {
       int av = 0;
       bool updated = false;
@@ -1541,7 +1552,7 @@ RETRO_API void retro_run(void)
    }
 
    /* With the list of options on the picture, the game waits. */
-   if (fx.is_2600 && ctl.panel)
+   if (fx.sys && ctl.panel)
    {
       input_poll_wrap();
       if (ctl.panel || fx_video_on())
@@ -1559,7 +1570,7 @@ RETRO_API void retro_run(void)
    inner.api.run();
    if (fx.got_frame)
       fx_present();
-   if (fx.is_2600)
+   if (fx.sys)
       fx_rumble_frame();
 }
 

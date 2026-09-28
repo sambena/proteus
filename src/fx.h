@@ -386,6 +386,55 @@ px_fx_video *px_fx_video_new(void);
 void px_fx_video_free(px_fx_video *v);
 void px_fx_video_reset(px_fx_video *v);
 
+/* A console's frame, told in the terms the effects are drawn from. A system (sys_tia.c,
+ * sys_gb.c) makes one of what its core captured; the picture has PXC_W pixels a row. */
+typedef struct px_source px_source;
+struct px_source
+{
+   unsigned height;
+   const struct pxc_frame *tia;   /* the 2600's capture, for its game modules; or NULL */
+   const void *capture;           /* what the system reads the frame from */
+
+   /* Every pixel: what is on top (PX_KEY), the background's colour, an object's colour
+    * with 0xFF000000 set or 0, and whether the object glows brighter and leaves a trail.
+    * `tidy` is for what a system mends of its picture before the effects (the 2600's bars). */
+   void (*classify)(const px_source *s, uint32_t *top, uint32_t *bk, uint32_t *sprite,
+         uint8_t *energy, bool tidy);
+   /* Pixel i as the core shows it. */
+   uint32_t (*pixel)(const px_source *s, size_t i);
+   /* Pixel i in a debug view (PX_VIEW_LAYERS, PX_VIEW_LAYER + n). */
+   uint32_t (*view)(const px_source *s, size_t i, unsigned view);
+   /* How loud the frame's sound is, 0..256; -1: not known. */
+   int (*loudness)(const px_source *s);
+   /* Finds the frame's objects and matches them to their tracks; NULL: the system has
+    * none to tell. */
+   void (*objects)(const px_source *s, px_objects *o, bool ghosts);
+   /* The colour of an object's row, as its track keeps it. */
+   uint32_t (*object_rgb)(const px_source *s, uint8_t color);
+};
+
+/* A 2600 frame as a source. */
+void px_tia_source(px_source *s, const struct pxc_frame *f);
+
+/* A console whose picture and sound Proteus draws and hears again, and what it takes of
+ * the inner cores that run it. */
+typedef struct
+{
+   const char *core;        /* the start of the names of its inner cores: "stella" */
+   const char *name;        /* in the panel's title: "2600" */
+   const char *px_core;     /* its core with the capture interface: "stellapx" */
+   unsigned abi;            /* the version of the capture it reads */
+   /* The value an option of the inner core is held at while Proteus draws the picture
+    * (`video`) or processes the sound (`audio`), or NULL. */
+   const char *(*hold)(const char *key, bool video, bool audio);
+   /* The capture as a source, if it is of the frame of w by h the core handed over (0: of
+    * any size). */
+   bool (*source)(px_source *s, const void *capture, unsigned w, unsigned h);
+} px_system;
+
+/* The system of an inner core, by its name without "_libretro" ("stellapx"); NULL: none. */
+const px_system *px_system_for(const char *core);
+
 /* What a frame is drawn with besides its capture. */
 typedef struct
 {
@@ -403,6 +452,9 @@ void px_fx_video_size(const px_fx_config *c, unsigned height, unsigned *w, unsig
 /* Draws the captured frame. Returns XRGB8888 pixels of *w by *h, *w * 4 bytes a row, valid
  * until the next call; NULL if the frame cannot be drawn (the caller shows the core's). */
 const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
+      const px_fx_config *c, const px_fx_extra *extra, unsigned *w, unsigned *h);
+/* The same for a frame of any system. */
+const uint32_t *px_fx_video_draw(px_fx_video *v, const px_source *src,
       const px_fx_config *c, const px_fx_extra *extra, unsigned *w, unsigned *h);
 
 /* How long the last frame took to draw, in microseconds. */

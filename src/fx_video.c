@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Draws an Atari 2600 frame again from its captured parts, larger and with effects that
- * need to know what is an object and what is scenery:
+/* Draws a frame again from its captured parts, larger and with effects that need to know
+ * what is an object and what is scenery:
  *
  *   - objects glow, and shots leave a trail
  *   - objects throw a shadow on the playfield and the background behind them
@@ -8,8 +8,8 @@
  *   - objects that the game shows in turns (flicker) are drawn in every frame
  *   - the background gets a vignette, and its colour bands blend into each other
  *
- * The picture is made of three classes (background, playfield, objects), from the capture's
- * tags and the priority the TIA used at each pixel.
+ * The picture is made of three classes (background, playfield, objects), which a system
+ * (sys_tia.c) tells from what its core captured: a px_source.
  */
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize("O3")
@@ -407,95 +407,6 @@ static uint64_t now_us(void)
 #endif
 }
 
-/* ---------------------------------------------------------------------------
- * The picture's classes
- * ------------------------------------------------------------------------- */
-
-/* What the TIA puts on top, as a class and the layer it takes the colour from. */
-static unsigned top_of(uint8_t tags, unsigned priority, unsigned *layer)
-{
-   static const struct { uint8_t tag, layer, cls; } order[3][6] = {
-      { { PXC_P0, PXC_L_P0, CLS_SPRITE }, { PXC_M0, PXC_L_M0, CLS_SPRITE },
-        { PXC_P1, PXC_L_P1, CLS_SPRITE }, { PXC_M1, PXC_L_M1, CLS_SPRITE },
-        { PXC_PF, PXC_L_PF, CLS_PF },     { PXC_BL, PXC_L_BL, CLS_SPRITE } },
-      { { PXC_PF, PXC_L_PF, CLS_PF },     { PXC_BL, PXC_L_BL, CLS_SPRITE },
-        { PXC_P0, PXC_L_P0, CLS_SPRITE }, { PXC_M0, PXC_L_M0, CLS_SPRITE },
-        { PXC_P1, PXC_L_P1, CLS_SPRITE }, { PXC_M1, PXC_L_M1, CLS_SPRITE } },
-      { { PXC_P0, PXC_L_P0, CLS_SPRITE }, { PXC_M0, PXC_L_M0, CLS_SPRITE },
-        { PXC_PF, PXC_L_PF, CLS_PF },     { PXC_P1, PXC_L_P1, CLS_SPRITE },
-        { PXC_M1, PXC_L_M1, CLS_SPRITE }, { PXC_BL, PXC_L_BL, CLS_SPRITE } },
-   };
-   if (priority > 2)
-      priority = 0;
-   for (unsigned i = 0; i < 6; i++)
-      if (tags & order[priority][i].tag)
-      {
-         *layer = order[priority][i].layer;
-         return order[priority][i].cls;
-      }
-   *layer = PXC_L_BK;
-   return CLS_BK;
-}
-
-/* The bars at the left of lines on which a game moved its objects (HMOVE): the TIA blanks
- * eight pixels there. Black on black they do not show, on a background that is lit they
- * would, so they are given what is next to them of the scenery. */
-static void fill_bars(px_fx_video *v, const struct pxc_frame *f)
-{
-   for (unsigned y = 0; y < f->height; y++)
-   {
-      uint32_t *top = v->top + (size_t)y * PXC_W;
-      uint32_t *bk  = v->bk + (size_t)y * PXC_W;
-      unsigned n = 0;
-      uint32_t key;
-      while (n < PXC_W && KEY_CLS(top[n]) == CLS_BLANK)
-         n++;
-      if (!n || n > 16)
-         continue;
-      key = KEY_CLS(top[n]) == CLS_SPRITE ? KEY(CLS_BK, bk[n]) : top[n];
-      for (unsigned x = 0; x < n; x++)
-      {
-         top[x] = key;
-         bk[x]  = bk[n];
-      }
-   }
-}
-
-static void classify(px_fx_video *v, const struct pxc_frame *f)
-{
-   static const uint8_t sprite_tag[5]   = { PXC_P0, PXC_M0, PXC_P1, PXC_M1, PXC_BL };
-   static const uint8_t sprite_layer[5] = { PXC_L_P0, PXC_L_M0, PXC_L_P1, PXC_L_M1, PXC_L_BL };
-   const size_t n = (size_t)PXC_W * f->height;
-
-   for (size_t i = 0; i < n; i++)
-   {
-      uint8_t tags = f->tags[i];
-      unsigned layer;
-
-      v->sprite[i] = 0;
-      v->energy[i] = 0;
-      v->crisp[i]  = 0;
-      if (tags & PXC_BLANK)
-      {
-         v->top[i] = KEY(CLS_BLANK, f->palette[f->winner[i]]);
-         v->bk[i]  = 0;
-         continue;
-      }
-      v->top[i] = KEY(top_of(tags, PXC_AUX_PRIORITY(f->aux[i]), &layer), f->palette[f->winner[i]]);
-      v->bk[i]  = f->palette[f->color[PXC_L_BK][i]] & 0xFFFFFFu;
-      if (tags & PXC_SPRITES)
-      {
-         for (unsigned s = 0; s < 5; s++)
-            if (tags & sprite_tag[s])
-            {
-               v->sprite[i] = 0xFF000000u | (f->palette[f->color[sprite_layer[s]][i]] & 0xFFFFFFu);
-               break;
-            }
-         v->energy[i] = (tags & (PXC_M0 | PXC_M1 | PXC_BL)) != 0;
-      }
-   }
-}
-
 /* Asks the game module who an object is. */
 static unsigned ask_who(void *ctx, const px_instance *in)
 {
@@ -504,7 +415,7 @@ static unsigned ask_who(void *ctx, const px_instance *in)
 }
 
 /* Objects that are in turn not to be drawn in this frame, drawn from their tracks. */
-static void draw_ghosts(px_fx_video *v, const struct pxc_frame *f)
+static void draw_ghosts(px_fx_video *v, const px_source *f)
 {
    const px_objects *o = &v->objects;
 
@@ -517,7 +428,7 @@ static void draw_ghosts(px_fx_video *v, const struct pxc_frame *f)
       {
          int y = in->y + (int)r;
          uint32_t bits = o->bits[in->rows + r];
-         uint32_t rgb  = f->palette[o->colors[in->rows + r]] & 0xFFFFFFu;
+         uint32_t rgb  = f->object_rgb(f, o->colors[in->rows + r]);
          if (y < 0 || y >= (int)f->height)
             continue;
          for (unsigned b = 0; b < 32 && bits >> b; b++)
@@ -609,7 +520,7 @@ static void box_blur_v(const uint16_t *src, uint16_t *dst, unsigned w, unsigned 
    }
 }
 
-static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+static void make_glow(px_fx_video *v, const px_source *f, const px_fx_config *c,
       bool advance)
 {
    const unsigned h = f->height;
@@ -695,60 +606,24 @@ static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_con
    }
 }
 
-/* How loud the two voices are in this frame, 0..256, following up fast and down slowly. */
-static void follow_audio(px_fx_video *v, const struct pxc_frame *f)
+/* How loud the frame's sound is, 0..256, following up fast and down slowly. */
+static void follow_audio(px_fx_video *v, const px_source *f)
 {
-   unsigned sum = 0, level;
-   if (!f->audio.count || !f->audio.v0 || !f->audio.v1)
+   const int level = f->loudness ? f->loudness(f) : -1;
+   if (level < 0)
    {
       v->level = (v->level * 230u) >> 8;
       return;
    }
-   for (uint32_t i = 0; i < f->audio.count; i++)
-      sum += f->audio.v0[i] + f->audio.v1[i];
-   /* Sound is a square wave between 0 and the volume, so its mean is about half of it. */
-   level = sum * 256u / (f->audio.count * 15u);
-   if (level > 256)
-      level = 256;
-   v->level = level > v->level ? (v->level + level * 3u) / 4u : (v->level * 7u + level) / 8u;
+   v->level = (unsigned)level > v->level ? (v->level + (unsigned)level * 3u) / 4u
+         : (v->level * 7u + (unsigned)level) / 8u;
 }
 
 /* ---------------------------------------------------------------------------
  * Debug views
  * ------------------------------------------------------------------------- */
 
-static const uint32_t layer_tint[PXC_LAYERS] = {
-   0x101018, 0x2060C0, 0xF0F0F0, 0xF04040, 0xF0A020, 0x40D040, 0x20D0D0
-};
-static const uint8_t layer_tag[PXC_LAYERS] = { 0, PXC_PF, PXC_BL, PXC_P0, PXC_M0, PXC_P1, PXC_M1 };
-
-static uint32_t view_pixel(const struct pxc_frame *f, size_t i, unsigned view)
-{
-   uint8_t tags = f->tags[i];
-   if (view == PX_VIEW_LAYERS)
-   {
-      unsigned r = 0x10, g = 0x10, b = 0x18;
-      if (tags & PXC_BLANK)
-         return 0;
-      for (unsigned l = 1; l < PXC_LAYERS; l++)
-         if (tags & layer_tag[l])
-         {
-            r += (layer_tint[l] >> 16) & 0xFF;
-            g += (layer_tint[l] >> 8) & 0xFF;
-            b += layer_tint[l] & 0xFF;
-         }
-      return ((r > 255 ? 255 : r) << 16) | ((g > 255 ? 255 : g) << 8) | (b > 255 ? 255 : b);
-   }
-   else
-   {
-      unsigned l = view - PX_VIEW_LAYER;
-      if (l >= PXC_LAYERS || (tags & PXC_BLANK) || (l != PXC_L_BK && !(tags & layer_tag[l])))
-         return 0x400040;
-      return f->palette[f->color[l][i]] & 0xFFFFFFu;
-   }
-}
-
-static void draw_views(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+static void draw_views(px_fx_video *v, const px_source *f, const px_fx_config *c,
       unsigned w, unsigned h)
 {
    (void)h;
@@ -757,7 +632,7 @@ static void draw_views(px_fx_video *v, const struct pxc_frame *f, const px_fx_co
       uint32_t *row = v->out + (size_t)y * c->sy * w;
       for (unsigned x = 0; x < PXC_W; x++)
       {
-         uint32_t p = view_pixel(f, (size_t)y * PXC_W + x, c->view);
+         uint32_t p = f->view(f, (size_t)y * PXC_W + x, c->view);
          for (unsigned u = 0; u < c->sx; u++)
             row[x * c->sx + u] = p;
       }
@@ -893,7 +768,7 @@ static bool make_columns(px_fx_video *v, unsigned w, unsigned sx, unsigned shado
 typedef struct
 {
    px_fx_video *v;
-   const struct pxc_frame *f;
+   const px_source *f;
    const px_fx_config *c;
    unsigned w, h;
    bool smooth;
@@ -1136,7 +1011,7 @@ static void draw_band(void *ctx, unsigned index, unsigned count)
    }
 }
 
-static void draw_picture(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+static void draw_picture(px_fx_video *v, const px_source *f, const px_fx_config *c,
       unsigned w, unsigned h)
 {
    static const unsigned glow_gain[4] = { 0, 150, 215, 280 };
@@ -1224,7 +1099,7 @@ static void draw_sparks(px_fx_video *v, const px_fx_config *c, unsigned w, unsig
 }
 
 /* Lets the game module at the frame. */
-static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_config *c,
+static void run_game(px_fx_video *v, const px_source *f, const px_fx_config *c,
       const px_fx_extra *extra, unsigned w, unsigned h, bool advance)
 {
    const size_t need = (size_t)w * h;
@@ -1243,7 +1118,7 @@ static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_conf
    v->backdrop_w    = w;
    v->backdrop_h    = h;
 
-   s.frame    = f;
+   s.frame    = f->tia;
    s.cfg      = c;
    s.objects  = &v->objects;
    s.ram      = extra->ram;
@@ -1272,7 +1147,7 @@ static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_conf
    v->backdrop_on = s.backdrop_on;
 }
 
-const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
+const uint32_t *px_fx_video_draw(px_fx_video *v, const px_source *f,
       const px_fx_config *c, const px_fx_extra *extra, unsigned *w, unsigned *h)
 {
    static const px_fx_extra nothing = { NULL, NULL, NULL, 0, true, NULL };
@@ -1281,9 +1156,8 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
    size_t need;
    bool advance;
 
-   if (!v || !f || !f->tags || !f->winner || !f->aux || !f->palette || f->width != PXC_W
-         || !f->height || f->height > PXC_MAX_H || !c->sx || c->sx > PX_FX_MAX_SX || !c->sy
-         || c->sy > PX_FX_MAX_SY)
+   if (!v || !f || !f->classify || !f->pixel || !f->view || !f->height || f->height > PXC_MAX_H
+         || !c->sx || c->sx > PX_FX_MAX_SX || !c->sy || c->sy > PX_FX_MAX_SY)
       return NULL;
    if (!extra)
       extra = &nothing;
@@ -1312,17 +1186,16 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
    {
       /* The core's own frame. */
       for (size_t i = 0; i < need; i++)
-         v->out[i] = f->palette[f->winner[i]] & 0xFFFFFFu;
+         v->out[i] = f->pixel(f, i);
    }
    else
    {
-      const bool fuse = c->flicker && !plain;
+      const bool fuse = c->flicker && !plain && f->objects;
       const bool game = c->game && extra->game && extra->game->frame && !plain;
 
-      classify(v, f);
-      if (c->bars && !plain)
-         fill_bars(v, f);
-      if (fuse || game || c->view == PX_VIEW_INSTANCES)
+      memset(v->crisp, 0, (size_t)PXC_W * f->height);
+      f->classify(f, v->top, v->bk, v->sprite, v->energy, c->bars && !plain);
+      if (f->objects && (fuse || game || c->view == PX_VIEW_INSTANCES))
       {
          /* A frame drawn again has the objects it had. */
          if (advance)
@@ -1330,12 +1203,12 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
             const bool tells = game && extra->game->who;
             v->who_game        = extra->game;
             v->who_state       = extra->game_state;
-            v->glance.frame    = f;
+            v->glance.frame    = f->tia;
             v->glance.ram      = extra->ram;
             v->glance.ram_size = extra->ram_size;
             v->objects.who     = tells ? ask_who : NULL;
             v->objects.who_ctx = v;
-            px_objects_update(&v->objects, f, fuse);
+            f->objects(f, &v->objects, fuse);
          }
          if (fuse)
             draw_ghosts(v, f);
@@ -1374,4 +1247,14 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
 
    v->last_us = (unsigned)(now_us() - start);
    return v->out;
+}
+
+const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
+      const px_fx_config *c, const px_fx_extra *extra, unsigned *w, unsigned *h)
+{
+   px_source src;
+   if (!f || !f->tags || !f->winner || !f->aux || !f->palette || f->width != PXC_W)
+      return NULL;
+   px_tia_source(&src, f);
+   return px_fx_video_draw(v, &src, c, extra, w, h);
 }

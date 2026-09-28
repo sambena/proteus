@@ -47,10 +47,11 @@ endif
 
 CORE     := $(BUILD)/proteus_libretro.$(EXT)
 DSP      := $(BUILD)/proteus_dsp.$(EXT)
-# Atari 2600: the effects, the kit for game modules, and every game module there is. A file
-# whose name begins with an underscore is not a game (src/games/_template.c).
+# The effects and the systems they draw from, the kit for game modules, and every game
+# module there is. A file whose name begins with an underscore is not a game
+# (src/games/_template.c).
 FX_SRC   := src/fx_video.c src/fx_track.c src/fx_audio.c src/fx_pool.c src/fx_panel.c src/fx_synth.c \
-            src/fx_game.c src/kit.c
+            src/fx_game.c src/kit.c src/sys_tia.c
 GAME_SRC := $(sort $(filter-out src/games/_%,$(wildcard src/games/*.c)))
 SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/usf_play.c src/options.c src/util.c src/game_options.c \
             $(FX_SRC) $(GAME_SRC)
