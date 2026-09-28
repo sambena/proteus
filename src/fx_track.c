@@ -130,7 +130,9 @@ static void find_players(px_objects *o, const struct pxc_frame *f, unsigned play
    const uint8_t tag = player ? PXC_P1 : PXC_P0;
    const uint8_t cls = player ? PXC_L_P1 : PXC_L_P0;
    const uint8_t *color = f->color[cls];
-   open_instance *open = (open_instance*)calloc(4, sizeof(*open));   /* by copy */
+   /* By copy; and from 4 on by copy what of one is at the right edge while the rest of it
+    * is at the left. */
+   open_instance *open = (open_instance*)calloc(7, sizeof(*open));
 
    if (!open)
       return;
@@ -140,13 +142,13 @@ static void find_players(px_objects *o, const struct pxc_frame *f, unsigned play
       const uint8_t *tags = f->tags + (size_t)y * PXC_W;
       const uint8_t *aux  = f->aux + (size_t)y * PXC_W;
       const uint8_t *col  = color + (size_t)y * PXC_W;
-      bool scanned[4] = { false, false, false, false };
+      bool scanned[7] = { false, false, false, false, false, false, false };
       unsigned x = 0;
 
       while (x < PXC_W)
       {
          unsigned copy = player ? PXC_AUX_P1_COPY(aux[x]) : PXC_AUX_P0_COPY(aux[x]);
-         unsigned x0 = x, w;
+         unsigned x0 = x, w, slot;
          uint32_t bits = 0;
          uint8_t c = 0;
          open_instance *b;
@@ -168,12 +170,19 @@ static void find_players(px_objects *o, const struct pxc_frame *f, unsigned play
             x++;
          }
          w = x - x0;
-         b = &open[copy];
 
-         /* The same copy twice on a line: the player was placed again within it. */
+         /* The same copy twice on a line: the player was placed again within it. Or it
+          * leaves at the right edge and comes in at the left: what is at the right is an
+          * instance of its own. */
+         slot = copy;
          if (scanned[copy])
-            continue;
-         scanned[copy] = true;
+         {
+            if (x < PXC_W || scanned[copy + 3])
+               continue;
+            slot = copy + 3;
+         }
+         scanned[slot] = true;
+         b = &open[slot];
 
          if (b->used && (b->x != (int)x0 || b->w != w || b->empty > 1))
             close_instance(o, b);
@@ -186,12 +195,12 @@ static void find_players(px_objects *o, const struct pxc_frame *f, unsigned play
          add_row(b, bits, c);
       }
 
-      for (unsigned copy = 1; copy < 4; copy++)
-         if (open[copy].used && !scanned[copy])
-            close_instance(o, &open[copy]);
+      for (unsigned slot = 1; slot < 7; slot++)
+         if (open[slot].used && !scanned[slot])
+            close_instance(o, &open[slot]);
    }
-   for (unsigned copy = 1; copy < 4; copy++)
-      close_instance(o, &open[copy]);
+   for (unsigned slot = 1; slot < 7; slot++)
+      close_instance(o, &open[slot]);
    free(open);
 }
 
