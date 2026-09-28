@@ -15,6 +15,7 @@
    X(pitfall) \
    X(ms_pac_man) \
    X(adventure) \
-   X(river_raid)
+   X(river_raid) \
+   X(asteroids)
 
 #endif
