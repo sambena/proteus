@@ -1034,7 +1034,9 @@ static void play_note(pf *g, px_sound *s, unsigned heard, bool begins)
    static const px_tone call_high = { PX_WAVE_TRIANGLE, 1, 0, 0, 0.03f, 0, 0, 0.30f, 0, 0, 5.5f, 0.012f };
    static const px_tone reed_low  = { PX_WAVE_SAW,      1, 0, 0, 0.02f, 0, 0, 0.40f, 700, 0, 4.0f, 0.006f };
    static const px_tone reed_high = { PX_WAVE_SQUARE,   1, 0, 0, 0.02f, 0, 0, 0.16f, 1100, 0, 4.0f, 0.006f };
-   const float hz = px_kit_tia_hz(g->tia.wave[0], g->tia.pitch[0]), pan = pan_of(g) * 0.5f;
+   /* The TIA's pitches are between the notes: the note each is nearest to. */
+   const float hz = px_kit_tune(px_kit_tia_hz(g->tia.wave[0], g->tia.pitch[0]));
+   const float pan = pan_of(g) * 0.5f;
    px_tone p[3];
 
    if (hz <= 0.0f)
