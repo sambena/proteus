@@ -144,6 +144,12 @@ void px_kit_background(px_scene *s, unsigned from, unsigned to, uint32_t rgb);
  * the playfield does not hide it. Returns how many pixels it marked. */
 unsigned px_kit_small_playfield(const px_scene *s, unsigned from, unsigned to, unsigned rows,
       uint8_t *small);
+/* Draws what `small` marks in rows `from` up to `to` as dots of two pixels by two, in the
+ * middle of every four pixels of it (of eight, where two pieces meet: the halves of a maze
+ * mirrored), or with `round` false as the pieces they are. They get `rgb`, or with `own` false
+ * the colour they have. Dots are objects: they glow and have their corners cut. */
+void px_kit_dots(px_scene *s, const uint8_t *small, unsigned from, unsigned to, bool own,
+      uint32_t rgb, bool round);
 /* Draws the playfield in rows `from` up to `to` as outlines: `edge` where it ends,
  * `inside` within, and `light` (0: none) glowing from its edges. What `skip` marks (may be
  * NULL) is no part of it. */
@@ -164,6 +170,63 @@ typedef struct
  * or the size changed. False too if there is no memory, with `pixels` NULL. */
 bool px_kit_canvas_fit(px_kit_canvas *c, const px_scene *s);
 void px_kit_canvas_free(px_kit_canvas *c);
+
+/* An object of several colours, a row each (a helicopter's rotor, body and skids): every
+ * row gets the colour `map` has for its own, which is an index into the palette. `map` has
+ * 256 entries; rows whose entry is PX_KIT_KEEP stay as they are. */
+#define PX_KIT_KEEP 0xFF000000u
+void px_kit_repaint(px_scene *s, const px_instance *in, const uint32_t *map);
+
+/* Scenery that moves. A game that scrolls counts in memory how far, with a counter that
+ * goes round (the line of a block of 32 that the river has come to). This follows such a
+ * counter and adds up how far the scenery has moved in all. */
+typedef struct
+{
+   int16_t at;       /* the counter as it was last; -1: not known */
+   int16_t step;     /* how far it went in the frame at hand */
+   int32_t total;    /* and since the reset */
+} px_kit_scroll;
+
+void px_kit_scroll_reset(px_kit_scroll *k);
+/* The counter is `value` now (-1: not to be had, the scenery stands still) and goes round
+ * at `period`. Of the two ways round it is taken to have gone the shorter. Returns the
+ * step. Not to be called for a frame that is drawn again. */
+int px_kit_scroll_follow(px_kit_scroll *k, int value, unsigned period);
+
+/* A backdrop that moves with the scenery is a canvas that goes round: what leaves it at
+ * one edge comes in at the other, so it is painted to fit itself there
+ * (px_kit_texture_noise does). This paints columns `from` up to `to` of row `y` of a picture as wide as the
+ * canvas, of which `out` is that row, with the canvas moved `dx` to the right and `dy`
+ * down. A second canvas, moved by another measure, is what is nearer or further off. */
+void px_kit_canvas_roll(const px_kit_canvas *c, uint32_t *out, unsigned y, unsigned from,
+      unsigned to, int32_t dx, int32_t dy);
+
+/* A texture: a picture in shades 0..255, of the size of the scene's, painted once. It is
+ * what a canvas is made of when the colours are not known until the game shows them, or
+ * change: grass in the green the game has for it. It goes round as a canvas does. */
+typedef struct
+{
+   uint8_t *shades;
+   unsigned w, h;
+} px_kit_texture;
+
+/* Makes the texture the size of the scene's picture. True if it is to be painted: it is
+ * new, or the size changed. False too if there is no memory, with `shades` NULL. */
+bool px_kit_texture_fit(px_kit_texture *t, const px_scene *s);
+void px_kit_texture_free(px_kit_texture *t);
+/* Paints a canvas of the texture's size with it, in the colours `colors` has for the
+ * shades. */
+void px_kit_texture_show(const px_kit_texture *t, px_kit_canvas *c, const uint32_t *colors);
+/* As px_kit_canvas_roll, of the texture in the colours of `colors`: for the few rows that
+ * are not of the colours a canvas was made with. */
+void px_kit_texture_roll(const px_kit_texture *t, uint32_t *out, unsigned y, unsigned from,
+      unsigned to, int32_t dx, int32_t dy, const uint32_t *colors);
+/* Paints the texture with smooth noise that fits itself at the edges: `across` by `down`
+ * cells of chance to the picture, so that it looks alike at every size of it. The same
+ * every time for a seed. Textures are made of several of these, coarse and fine. */
+void px_kit_texture_noise(px_kit_texture *t, unsigned across, unsigned down, uint32_t seed);
+/* A table of colours for the shades: `dark` at 0, `mid` at 128, `light` at 255. */
+void px_kit_shades(uint32_t colors[256], uint32_t dark, uint32_t mid, uint32_t light);
 
 /* ---------------------------------------------------------------------------
  * Sound

@@ -147,6 +147,52 @@ unsigned px_kit_small_playfield(const px_scene *s, unsigned from, unsigned to, u
    return marked;
 }
 
+void px_kit_dots(px_scene *s, const uint8_t *small, unsigned from, unsigned to, bool own,
+      uint32_t rgb, bool round)
+{
+   const struct pxc_frame *f = s->frame;
+
+   to = rows_of(s, to);
+   for (unsigned y = from; y < to; y++)
+   {
+      const uint8_t *row = small + (size_t)y * PXC_W;
+      for (unsigned x = 0; x < PXC_W; )
+      {
+         unsigned end = x;
+         uint32_t color;
+         while (end < PXC_W && row[end])
+            end++;
+         if (end == x)
+         {
+            x++;
+            continue;
+         }
+         color = own ? rgb & 0xFFFFFFu
+               : f->palette[f->color[PXC_L_PF][(size_t)y * PXC_W + x]] & 0xFFFFFFu;
+
+         for (unsigned u = x; u < end; u++)
+         {
+            const size_t i = (size_t)y * PXC_W + u;
+            /* In the middle of what there is of it, or of each four pixels of it. */
+            const unsigned len = end - x, cell = len == 8 ? 8 : 4, at = (u - x) % cell;
+            const bool dot = at == cell / 2 - 1 || at == cell / 2;
+            if (PX_KEY_CLS(s->top[i]) != PX_CLS_PF)
+               continue;
+            if (!round)
+               s->top[i] = PX_KEY(PX_CLS_PF, color);
+            else if (dot)
+            {
+               s->top[i]    = PX_KEY(PX_CLS_SPRITE, color);
+               s->sprite[i] = 0xFF000000u | color;
+            }
+            else
+               s->top[i] = PX_KEY(PX_CLS_BK, s->bk[i]);
+         }
+         x = end;
+      }
+   }
+}
+
 void px_kit_outline(px_scene *s, unsigned from, unsigned to, uint32_t edge, uint32_t inside,
       uint32_t light, const uint8_t *skip)
 {
@@ -250,6 +296,200 @@ void px_kit_canvas_free(px_kit_canvas *c)
    free(c->pixels);
    c->pixels = NULL;
    c->w = c->h = 0;
+}
+
+void px_kit_repaint(px_scene *s, const px_instance *in, const uint32_t *map)
+{
+   const px_objects *o = s->objects;
+   for (unsigned r = 0; r < in->h; r++)
+   {
+      const int y = in->y + (int)r;
+      const uint32_t bits = o->bits[in->rows + r];
+      const uint32_t rgb = map[o->colors[in->rows + r]];
+      if (rgb == PX_KIT_KEEP || y < 0 || y >= (int)s->frame->height)
+         continue;
+      for (unsigned b = 0; b < 32 && bits >> b; b++)
+      {
+         const int x = in->x + (int)b;
+         size_t i;
+         if (!((bits >> b) & 1) || x < 0 || x >= PXC_W)
+            continue;
+         i = (size_t)y * PXC_W + (size_t)x;
+         if (s->sprite[i])
+            s->sprite[i] = 0xFF000000u | (rgb & 0xFFFFFFu);
+         if (PX_KEY_CLS(s->top[i]) == PX_CLS_SPRITE)
+            s->top[i] = PX_KEY(PX_CLS_SPRITE, rgb);
+      }
+   }
+}
+
+void px_kit_scroll_reset(px_kit_scroll *k)
+{
+   k->at    = -1;
+   k->step  = 0;
+   k->total = 0;
+}
+
+int px_kit_scroll_follow(px_kit_scroll *k, int value, unsigned period)
+{
+   int step = 0;
+   if (value >= 0 && k->at >= 0 && period)
+   {
+      step = (value - k->at) % (int)period;
+      if (step < 0)
+         step += (int)period;
+      if ((unsigned)step * 2 > period)
+         step -= (int)period;
+   }
+   k->at     = (int16_t)(value < 0 ? -1 : value);
+   k->step   = (int16_t)step;
+   k->total += step;
+   return step;
+}
+
+bool px_kit_texture_fit(px_kit_texture *t, const px_scene *s)
+{
+   uint8_t *p;
+   if (t->shades && t->w == s->w && t->h == s->h)
+      return false;
+   p = (uint8_t*)realloc(t->shades, (size_t)s->w * s->h);
+   if (!p)
+   {
+      px_kit_texture_free(t);
+      return false;
+   }
+   t->shades = p;
+   t->w      = s->w;
+   t->h      = s->h;
+   return true;
+}
+
+void px_kit_texture_free(px_kit_texture *t)
+{
+   free(t->shades);
+   t->shades = NULL;
+   t->w = t->h = 0;
+}
+
+/* Where column `x` of a picture is in a texture `size` wide that was moved by `by`. */
+static unsigned rolled(unsigned x, int32_t by, unsigned size)
+{
+   int32_t at = ((int32_t)x - by) % (int32_t)size;
+   return (unsigned)(at < 0 ? at + (int32_t)size : at);
+}
+
+void px_kit_canvas_roll(const px_kit_canvas *c, uint32_t *out, unsigned y, unsigned from,
+      unsigned to, int32_t dx, int32_t dy)
+{
+   const uint32_t *row;
+   unsigned at;
+
+   if (!c->pixels || !c->w || !c->h)
+      return;
+   if (to > c->w)
+      to = c->w;
+   if (from >= to)
+      return;
+   row = c->pixels + (size_t)rolled(y, dy, c->h) * c->w;
+   at  = rolled(from, dx, c->w);
+   /* In stretches in which it does not go round. */
+   while (from < to)
+   {
+      const unsigned n = to - from < c->w - at ? to - from : c->w - at;
+      memcpy(out + from, row + at, n * sizeof(uint32_t));
+      from += n;
+      at    = at + n == c->w ? 0 : at + n;
+   }
+}
+
+void px_kit_texture_show(const px_kit_texture *t, px_kit_canvas *c, const uint32_t *colors)
+{
+   if (!t->shades || !c->pixels || c->w != t->w || c->h != t->h)
+      return;
+   for (size_t i = 0; i < (size_t)t->w * t->h; i++)
+      c->pixels[i] = colors[t->shades[i]];
+}
+
+void px_kit_texture_roll(const px_kit_texture *t, uint32_t *out, unsigned y, unsigned from,
+      unsigned to, int32_t dx, int32_t dy, const uint32_t *colors)
+{
+   const uint8_t *row;
+   unsigned at;
+
+   if (!t->shades || !t->w || !t->h)
+      return;
+   if (to > t->w)
+      to = t->w;
+   if (from >= to)
+      return;
+   row = t->shades + (size_t)rolled(y, dy, t->h) * t->w;
+   at  = rolled(from, dx, t->w);
+   while (from < to)
+   {
+      const unsigned n = to - from < t->w - at ? to - from : t->w - at;
+      for (unsigned i = 0; i < n; i++)
+         out[from + i] = colors[row[at + i]];
+      from += n;
+      at    = at + n == t->w ? 0 : at + n;
+   }
+}
+
+static unsigned chance_at(unsigned x, unsigned y, uint32_t seed)
+{
+   uint32_t n = x * 0x9E3779B1u ^ y * 0x85EBCA77u ^ seed * 0xC2B2AE3Du;
+   n ^= n >> 15;
+   n *= 0x2C1B3C6Du;
+   n ^= n >> 12;
+   n *= 0x297A2D39u;
+   n ^= n >> 15;
+   return n & 255;
+}
+
+/* Where in its cell, of 256, eased so that the cells do not show as squares. */
+static unsigned eased(unsigned f)
+{
+   return (f * f * (768 - 2 * f)) >> 16;
+}
+
+void px_kit_texture_noise(px_kit_texture *t, unsigned across, unsigned down, uint32_t seed)
+{
+   const unsigned w = t->w, h = t->h;
+   uint16_t *cell, *part, *line;
+
+   if (!t->shades || !w || !h || !across || !down)
+      return;
+   /* For every column its cell and where in it; for a row, what the cells' corners come
+    * to at its height. */
+   cell = (uint16_t*)malloc(((size_t)w * 2 + across + 1) * sizeof(uint16_t));
+   if (!cell)
+      return;
+   part = cell + w;
+   line = part + w;
+   for (unsigned x = 0; x < w; x++)
+   {
+      const unsigned u = (unsigned)((uint64_t)x * across * 256u / w);
+      cell[x] = (uint16_t)(u >> 8);
+      part[x] = (uint16_t)eased(u & 255);
+   }
+
+   for (unsigned y = 0; y < h; y++)
+   {
+      const unsigned v = (unsigned)((uint64_t)y * down * 256u / h);
+      const unsigned cy = v >> 8, ny = (cy + 1) % down, fy = eased(v & 255);
+      uint8_t *out = t->shades + (size_t)y * w;
+      for (unsigned c = 0; c <= across; c++)
+         line[c] = (uint16_t)((chance_at(c % across, cy, seed) * (256 - fy)
+               + chance_at(c % across, ny, seed) * fy) >> 8);
+      for (unsigned x = 0; x < w; x++)
+         out[x] = (uint8_t)((line[cell[x]] * (256u - part[x]) + line[cell[x] + 1] * part[x]) >> 8);
+   }
+   free(cell);
+}
+
+void px_kit_shades(uint32_t colors[256], uint32_t dark, uint32_t mid, uint32_t light)
+{
+   for (unsigned i = 0; i < 256; i++)
+      colors[i] = i < 128 ? px_rgb_mix(dark, mid, i * 2) : px_rgb_mix(mid, light, (i - 128) * 256 / 127);
 }
 
 /* ---------------------------------------------------------------------------

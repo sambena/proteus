@@ -119,6 +119,8 @@ would need too adds it there.
 | Objects | `px_scene_tint`, `px_scene_energy`, `px_kit_fill_holes`, `px_kit_is_player` |
 | What happens | `px_scene_burst`, `px_scene_flash`, `px_sound_rumble` |
 | A backdrop | `px_scene.backdrop`, `px_kit_canvas` for the part of it that stands still |
+| A backdrop that moves | `px_kit_scroll` for how far the game has scrolled, `px_kit_canvas_roll` for a canvas that goes round, `px_kit_texture`: `noise`, `show`, `roll`, with `px_kit_shades`, for one in colours the game has at hand |
+| Objects of a colour a row | `px_kit_repaint` |
 | The game's voices | `px_kit_tia`: `hear`, `began`, `louder`; `px_kit_tia_hz`, and `px_kit_tune` for the note a pitch is nearest to |
 | Sounds of Proteus's own | `px_tone`, `px_kit_play`, `px_kit_pan`, `px_synth_play`, `px_synth_move`, `px_synth_stop` |
 
@@ -132,13 +134,22 @@ done.
 | Shows several things with one object, in turns (flicker) | Nothing, where they are far enough apart to be told by where they are: they are drawn in every frame as for any game. Where they are not, the module says who each is (`px_game.who`), from its colour or from memory, and they are followed by that. | Pac-Man: the ghosts |
 | Draws rows of copies of one object, set again for every row | Tags each with the row it began in, since rows move. | Space Invaders: the invaders |
 | Draws its score on every other line, or with the playfield | Fills the lines between; recolours the rows of the score. | Space Invaders |
-| Draws a maze or scenery with the playfield | Recolours it, and gives it light so that it glows. Tells what is wall from what is to be eaten by its shape. | Pac-Man |
+| Draws a maze or scenery with the playfield | Recolours it, and gives it light so that it glows. Tells what is wall from what is to be eaten by its shape, and draws that as dots (`px_kit_dots`). | Pac-Man, Ms. Pac-Man |
+| Is silent by a pitch too high to hear, its volume left on | Takes a voice for silent by that pitch. | Ms. Pac-Man |
+| Makes a sound for one thing and none for another like it | One hook tells the other: the picture sees the power pill eaten, the sound hears her caught. | Ms. Pac-Man |
 | Has a black background | Paints a backdrop, which shows where the background is dark. | Space Invaders: the night sky |
+| Scrolls, and counts in memory how far | Follows the counter, paints canvases that go round, and rolls them into the backdrop by how far the scenery has moved. Where the scenery is the game's playfield or a background that is not dark, it makes the game's pixels dark background, which is where a backdrop shows. | River Raid: the water and the banks |
+| Gives its objects a colour a row | Gives every row the colour a table has for its own. | River Raid: helicopters, ships, jets |
 | Counts lives, enemies, dots in memory | Compares with the frame before: sparks, a flash, the controller shakes. | both |
 | Has one voice for two sounds | Plays each with voices of its own, so that neither cuts the other off. | Space Invaders: the step and the hit |
 | Has silence where the arcade had a sound | Adds one that follows the game: a hum, a siren. It has an option of its own. | both |
 | Gives its things holes for eyes | Fills what an object encloses with a colour. | Pac-Man: the ghosts |
 | Plays a tune | Plays its notes with other voices. | Pac-Man: the four notes at the start |
+
+**Games of one family share a file.** What two games have in common and no third would
+need (the colours of the arcade's ghosts, the sound of eating) is neither in the kit nor in
+both modules: it is in a header next to them, `src/games/pac_family.h` for Pac-Man and
+Ms. Pac-Man. Each module still tells by itself what happens in its game.
 
 What no module has had to do yet, and the games that will ask for it, is in
 `docs/TOP_GAMES.md`.
