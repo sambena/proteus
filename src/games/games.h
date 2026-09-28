@@ -10,6 +10,8 @@
    X(pac_man) \
    X(combat) \
    X(warlords) \
+   X(missile_command) \
+   X(yars_revenge) \
    X(river_raid)
 
 #endif
