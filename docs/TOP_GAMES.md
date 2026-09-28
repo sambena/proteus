@@ -30,12 +30,12 @@ What this cannot tell:
 | 1 | Pitfall! | Activision | 1982 | 18 | 4.0 m | |
 | 2 | Space Invaders | Atari | 1980 | 15 | 6.3 m | **done** |
 | 3 | Adventure | Atari | 1980 | 14 | 1.0 m | |
-| 4 | Combat | Atari | 1977 | 14 | pack-in | |
+| 4 | Combat | Atari | 1977 | 14 | pack-in | **done** |
 | 5 | River Raid | Activision | 1982 | 13 | 1.0 m | |
 | 6 | Asteroids | Atari | 1981 | 13 | 3.8 m | |
 | 7 | Missile Command | Atari | 1981 | 10 | | **done** |
 | 8 | Yars' Revenge | Atari | 1982 | 10 | 1.0 m | |
-| 9 | Warlords | Atari | 1981 | 10 | 1.8 m | paddles |
+| 9 | Warlords | Atari | 1981 | 10 | 1.8 m | **done** |
 | 10 | Ms. Pac-Man | Atari | 1983 | 9 | 2.3 m | |
 | 11 | Frogger | Parker Brothers | 1982 | 8 | | |
 | 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | its music is not the TIA's |
