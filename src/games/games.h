@@ -11,6 +11,7 @@
    X(combat) \
    X(warlords) \
    X(missile_command) \
-   X(yars_revenge)
+   X(yars_revenge) \
+   X(pitfall)
 
 #endif
