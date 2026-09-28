@@ -419,10 +419,10 @@ static void play_launch(game *g, px_sound *s)
 static void play_kill(game *g, px_sound *s)
 {
    static const px_tone p[4] = {
-      { PX_WAVE_NOISE, 8000, 600, 0.45f, 0,      0.03f, 0.80f, 0.55f, 6000, 300, 0, 0 },
-      { PX_WAVE_SINE,   110,  38, 0.35f, 0.001f, 0.04f, 0.60f, 0.80f, 0, 0, 0, 0 },
-      { PX_WAVE_SQUARE, 620,  90, 0.30f, 0.001f, 0.01f, 0.30f, 0.14f, 3000, 400, 0, 0 },
-      { PX_WAVE_NOISE, 3000, 200, 1.20f, 0.05f,  0.10f, 1.40f, 0.22f, 1400, 120, 0, 0 }
+      { PX_WAVE_NOISE, 8000, 600, 0.45f, 0,      0.03f, 0.80f, 0.40f, 6000, 300, 0, 0 },
+      { PX_WAVE_SINE,   110,  38, 0.35f, 0.001f, 0.04f, 0.60f, 0.55f, 0, 0, 0, 0 },
+      { PX_WAVE_SQUARE, 620,  90, 0.30f, 0.001f, 0.01f, 0.30f, 0.12f, 3000, 400, 0, 0 },
+      { PX_WAVE_NOISE, 3000, 200, 1.20f, 0.05f,  0.10f, 1.40f, 0.16f, 1400, 120, 0, 0 }
    };
    px_kit_play(s, p, 4, px_kit_pan(g->blast_at));
    px_sound_rumble(s, 26000, 34000, 10);
@@ -431,10 +431,10 @@ static void play_kill(game *g, px_sound *s)
 static void play_impact(game *g, px_sound *s)
 {
    static const px_tone p[4] = {
-      { PX_WAVE_NOISE, 5000, 200, 1.40f, 0,      0.20f, 1.80f, 0.70f, 4000, 100, 0, 0 },
-      { PX_WAVE_SINE,    62,  24, 1.20f, 0.002f, 0.15f, 1.60f, 0.95f, 0, 0, 0, 0 },
-      { PX_WAVE_SAW,    300,  35, 1.00f, 0.002f, 0.05f, 1.10f, 0.26f, 2200, 150, 9.0f, 0.05f },
-      { PX_WAVE_NOISE, 1200,  80, 2.00f, 0.10f,  0.30f, 2.40f, 0.30f, 700, 60, 0, 0 }
+      { PX_WAVE_NOISE, 5000, 200, 1.40f, 0,      0.20f, 1.80f, 0.32f, 4000, 100, 0, 0 },
+      { PX_WAVE_SINE,    62,  24, 1.20f, 0.002f, 0.15f, 1.60f, 0.40f, 0, 0, 0, 0 },
+      { PX_WAVE_SAW,    300,  35, 1.00f, 0.002f, 0.05f, 1.10f, 0.14f, 2200, 150, 9.0f, 0.05f },
+      { PX_WAVE_NOISE, 1200,  80, 2.00f, 0.10f,  0.30f, 2.40f, 0.15f, 700, 60, 0, 0 }
    };
    px_kit_play(s, p, 4, px_kit_pan(g->blast_at));
    px_sound_rumble(s, 65535, 45000, 40);
@@ -572,5 +572,5 @@ static void configure(void *state, const char *(*get)(const char *key))
 }
 
 const px_game px_game_missile_command = {
-   "Missile Command", md5, fx, options, create, destroy, reset, configure, frame, sound
+   "Missile Command", md5, fx, options, create, destroy, reset, configure, frame, sound, NULL
 };

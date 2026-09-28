@@ -139,6 +139,16 @@ static inline bool px_kit_is_player(const px_instance *in)
 void px_kit_playfield(px_scene *s, unsigned from, unsigned to, uint32_t rgb);
 /* The background's colour in rows `from` up to `to`. */
 void px_kit_background(px_scene *s, unsigned from, unsigned to, uint32_t rgb);
+/* Marks in `small` (an entry a captured pixel, PXC_W a row) what of the playfield in rows
+ * `from` up to `to` is no higher than `rows`: dots to eat, among walls. What is on top of
+ * the playfield does not hide it. Returns how many pixels it marked. */
+unsigned px_kit_small_playfield(const px_scene *s, unsigned from, unsigned to, unsigned rows,
+      uint8_t *small);
+/* Draws the playfield in rows `from` up to `to` as outlines: `edge` where it ends,
+ * `inside` within, and `light` (0: none) glowing from its edges. What `skip` marks (may be
+ * NULL) is no part of it. */
+void px_kit_outline(px_scene *s, unsigned from, unsigned to, uint32_t edge, uint32_t inside,
+      uint32_t light, const uint8_t *skip);
 /* Gives what an object encloses and does not cover (a ghost's eyes) a colour, as a part of
  * the object. What is open to the outside (a mouth) stays as it is. */
 void px_kit_fill_holes(px_scene *s, const px_instance *in, uint32_t rgb);
@@ -185,6 +195,9 @@ static inline bool px_kit_tia_began(const px_kit_tia *t, unsigned voice)
 
 /* The pitch in Hz of a waveform that is a tone, on a console of 60 Hz; 0 for noise. */
 float px_kit_tia_hz(unsigned wave, unsigned pitch);
+
+/* The note of the scale that a pitch is nearest to: the TIA's are between them. */
+float px_kit_tune(float hz);
 
 /* Where a column of the picture is between left and right; the middle for -1. */
 float px_kit_pan(int column);

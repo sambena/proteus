@@ -55,6 +55,11 @@ Every module has these parts, in this order, under these headings.
 | The sounds | A comment that lists the game's sounds as register values, then `sound()` and the sounds Proteus plays instead. |
 | The module | `reset`, `create`, `destroy`, `configure`, and the `px_game` itself, last. |
 
+A module has up to three hooks. `frame` gets every picture between the finding of its
+objects and its drawing. `sound` gets every frame before its sound is mixed. `who` is for
+games whose things are too near each other to be told apart by where they are: it is asked
+who an object is before the object is matched to those of the frames before.
+
 ## The rules
 
 **The game's own is always to be had.** Every change of colour and every sound of Proteus's
@@ -110,11 +115,11 @@ would need too adds it there.
 | Options | `px_kit_on`, `px_kit_pick`, `px_kit_toggle`, `px_kit_sounds` |
 | Memory | `px_kit_ram` |
 | What is known of an object | `px_kit_tags`: `begin`, `find`, `keep`, `gone`, `end` |
-| The playfield and the background | `px_kit_playfield`, `px_kit_background`, and `px_scene.light` for scenery that glows |
+| The playfield and the background | `px_kit_playfield`, `px_kit_background`, `px_kit_outline` for walls drawn as outlines, `px_kit_small_playfield` for what is to be eaten among them, and `px_scene.light` for scenery that glows |
 | Objects | `px_scene_tint`, `px_scene_energy`, `px_kit_fill_holes`, `px_kit_is_player` |
 | What happens | `px_scene_burst`, `px_scene_flash`, `px_sound_rumble` |
 | A backdrop | `px_scene.backdrop`, `px_kit_canvas` for the part of it that stands still |
-| The game's voices | `px_kit_tia`: `hear`, `began`, `louder`; `px_kit_tia_hz` |
+| The game's voices | `px_kit_tia`: `hear`, `began`, `louder`; `px_kit_tia_hz`, and `px_kit_tune` for the note a pitch is nearest to |
 | Sounds of Proteus's own | `px_tone`, `px_kit_play`, `px_kit_pan`, `px_synth_play`, `px_synth_move`, `px_synth_stop` |
 
 ## What games have in common
@@ -124,15 +129,16 @@ done.
 
 | What the game does | What the module does | Where |
 |---|---|---|
-| Shows several things with one object, in turns (flicker) | Nothing for the picture: they are drawn in every frame as for any game. It tags each track with which of them it is, from its colour or from memory. | to come with Pac-Man |
+| Shows several things with one object, in turns (flicker) | Nothing, where they are far enough apart to be told by where they are: they are drawn in every frame as for any game. Where they are not, the module says who each is (`px_game.who`), from its colour or from memory, and they are followed by that. | Pac-Man: the ghosts |
 | Draws rows of copies of one object, set again for every row | Tags each with the row it began in, since rows move. | Space Invaders: the invaders |
 | Draws its score on every other line, or with the playfield | Fills the lines between; recolours the rows of the score. | Space Invaders |
-| Draws a maze or scenery with the playfield | Recolours it, and gives it light so that it glows. Tells what is wall from what is to be eaten by its shape. | to come with Pac-Man |
+| Draws a maze or scenery with the playfield | Recolours it, and gives it light so that it glows. Tells what is wall from what is to be eaten by its shape. | Pac-Man |
 | Has a black background | Paints a backdrop, which shows where the background is dark. | Space Invaders: the night sky |
-| Counts lives, enemies, dots in memory | Compares with the frame before: sparks, a flash, the controller shakes. | Space Invaders |
+| Counts lives, enemies, dots in memory | Compares with the frame before: sparks, a flash, the controller shakes. | both |
 | Has one voice for two sounds | Plays each with voices of its own, so that neither cuts the other off. | Space Invaders: the step and the hit |
-| Has silence where the arcade had a sound | Adds one that follows the game: a hum, a siren. It has an option of its own. | Space Invaders: the hum |
-| Plays a tune | Plays its notes with other voices. | to come with Pac-Man |
+| Has silence where the arcade had a sound | Adds one that follows the game: a hum, a siren. It has an option of its own. | both |
+| Gives its things holes for eyes | Fills what an object encloses with a colour. | Pac-Man: the ghosts |
+| Plays a tune | Plays its notes with other voices. | Pac-Man: the four notes at the start |
 
 What no module has had to do yet, and the games that will ask for it, is in
 `docs/TOP_GAMES.md`.
