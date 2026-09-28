@@ -22,6 +22,7 @@
    X(pole_position) \
    X(berzerk) \
    X(dig_dug) \
-   X(solaris)
+   X(solaris) \
+   X(hero)
 
 #endif
