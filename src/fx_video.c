@@ -59,6 +59,7 @@ struct px_fx_video
    uint32_t *bk;         /* the background's colour there */
    uint32_t *sprite;     /* an object's colour there, 0xFF000000 set; 0 where there is none */
    uint8_t  *energy;     /* a missile or the ball is there */
+   uint8_t  *crisp;      /* no light from what is there */
    uint32_t *light;      /* scenery that glows: its light, 0 where there is none */
    bool lit;             /* a game module put light there in this frame */
 
@@ -194,6 +195,7 @@ px_fx_video *px_fx_video_new(void)
    v->bk       = (uint32_t*)calloc(n, sizeof(uint32_t));
    v->sprite   = (uint32_t*)calloc(n, sizeof(uint32_t));
    v->energy   = (uint8_t*)calloc(n, 1);
+   v->crisp    = (uint8_t*)calloc(n, 1);
    v->light    = (uint32_t*)calloc(n, sizeof(uint32_t));
    v->glow     = (uint16_t*)calloc(g, sizeof(uint16_t));
    v->glow_tmp = (uint16_t*)calloc(g, sizeof(uint16_t));
@@ -202,7 +204,7 @@ px_fx_video *px_fx_video_new(void)
    v->pool     = px_pool_new();
    v->row_sprite = (uint8_t*)calloc(PXC_MAX_H, 1);
    v->row_glow   = (uint8_t*)calloc(PXC_MAX_H, 1);
-   if (!v->top || !v->bk || !v->sprite || !v->energy || !v->light || !v->glow || !v->glow_tmp || !v->trail
+   if (!v->top || !v->bk || !v->sprite || !v->energy || !v->crisp || !v->light || !v->glow || !v->glow_tmp || !v->trail
          || !v->glow_row || !v->row_sprite || !v->row_glow)
    {
       px_fx_video_free(v);
@@ -222,6 +224,7 @@ void px_fx_video_free(px_fx_video *v)
    free(v->bk);
    free(v->sprite);
    free(v->energy);
+   free(v->crisp);
    free(v->light);
    free(v->glow);
    free(v->glow_tmp);
@@ -294,6 +297,24 @@ void px_scene_energy(px_scene *s, const px_instance *in, bool on)
          int x = in->x + (int)b;
          if (((bits >> b) & 1) && x >= 0 && x < PXC_W)
             s->energy[(size_t)y * PXC_W + (size_t)x] = on;
+      }
+   }
+}
+
+void px_scene_crisp(px_scene *s, const px_instance *in, bool on)
+{
+   const px_objects *o = s->objects;
+   for (unsigned r = 0; r < in->h; r++)
+   {
+      int y = in->y + (int)r;
+      uint32_t bits = o->bits[in->rows + r];
+      if (y < 0 || y >= (int)s->frame->height)
+         continue;
+      for (unsigned b = 0; b < 32 && bits >> b; b++)
+      {
+         int x = in->x + (int)b;
+         if (((bits >> b) & 1) && x >= 0 && x < PXC_W)
+            s->crisp[(size_t)y * PXC_W + (size_t)x] = on;
       }
    }
 }
@@ -453,6 +474,7 @@ static void classify(px_fx_video *v, const struct pxc_frame *f)
 
       v->sprite[i] = 0;
       v->energy[i] = 0;
+      v->crisp[i]  = 0;
       if (tags & PXC_BLANK)
       {
          v->top[i] = KEY(CLS_BLANK, f->palette[f->winner[i]]);
@@ -610,6 +632,9 @@ static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_con
          uint16_t *g = v->glow + ((size_t)y * GLOW_W + x * 2) * 3;
          /* An object's light, or the scenery's where a game module lit it. */
          uint32_t s = v->sprite[i] ? v->sprite[i] : v->lit ? v->light[i] : 0;
+         /* Lines and digits stay crisp, unless the module lit them itself. */
+         if (v->crisp[i] && v->sprite[i])
+            s = 0;
          unsigned weight = v->energy[i] ? 448 : 256;
          unsigned rgb[3];
 
@@ -1232,6 +1257,7 @@ static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_conf
    s.bk       = v->bk;
    s.sprite   = v->sprite;
    s.energy   = v->energy;
+   s.crisp    = v->crisp;
    s.light    = v->light;
    s.backdrop = v->backdrop;
    s.video    = v;
@@ -1239,6 +1265,10 @@ static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_conf
    memset(v->light, 0, (size_t)PXC_W * f->height * sizeof(uint32_t));
    v->lit = true;
    extra->game->frame(extra->game_state, &s);
+   /* The score and what else is read and not played with. */
+   for (unsigned i = 0; i < v->objects.count; i++)
+      if (v->objects.inst[i].role == PX_ROLE_HUD)
+         px_scene_crisp(&s, &v->objects.inst[i], true);
    v->backdrop_on = s.backdrop_on;
 }
 

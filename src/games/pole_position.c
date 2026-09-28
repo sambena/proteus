@@ -598,6 +598,7 @@ static void paint_kerbs(pp *g, px_scene *s)
          s->top[i]    = PX_KEY(PX_CLS_SPRITE, rgb);
          s->sprite[i] = 0xFF000000u | rgb;
          s->energy[i] = 0;
+         s->crisp[i]  = 1;
       }
 }
 

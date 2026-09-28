@@ -101,6 +101,11 @@ when the frame ended, and what was there the frame before.
 gets the objects of the picture before with their roles, to play a sound where the thing is
 that made it.
 
+**Lines and digits stay crisp.** Light is for what gives light: shots, missiles, explosions,
+lamps. The score and what else has the role `PX_ROLE_HUD` gives off no glow, which the
+engine sees to. Lines a game draws with objects (the kerbs of a road, markings) are marked
+with `px_scene_crisp` or in `px_scene.crisp`.
+
 **Music.** A tune a game plays is the game's: Proteus may play its notes with better
 voices, lower or with more of them. It does not put another tune in its place.
 
@@ -116,7 +121,7 @@ would need too adds it there.
 | Memory | `px_kit_ram` |
 | What is known of an object | `px_kit_tags`: `begin`, `find`, `keep`, `gone`, `end` |
 | The playfield and the background | `px_kit_playfield`, `px_kit_background`, `px_kit_outline` for walls drawn as outlines, `px_kit_small_playfield` for what is to be eaten among them, and `px_scene.light` for scenery that glows |
-| Objects | `px_scene_tint`, `px_scene_energy`, `px_kit_fill_holes`, `px_kit_is_player` |
+| Objects | `px_scene_tint`, `px_scene_energy`, `px_scene_crisp`, `px_kit_fill_holes`, `px_kit_is_player` |
 | What happens | `px_scene_burst`, `px_scene_flash`, `px_sound_rumble` |
 | A backdrop | `px_scene.backdrop`, `px_kit_canvas` for the part of it that stands still |
 | A backdrop that moves | `px_kit_scroll` for how far the game has scrolled, `px_kit_canvas_roll` for a canvas that goes round, `px_kit_texture`: `noise`, `show`, `roll`, with `px_kit_shades`, for one in colours the game has at hand |
