@@ -1297,5 +1297,5 @@ static void configure(void *state, const char *(*get)(const char *key))
 }
 
 const px_game px_game_asteroids = {
-   "Asteroids", md5, fx, options, create, destroy, reset, configure, frame, sound
+   "Asteroids", md5, fx, options, create, destroy, reset, configure, frame, sound, NULL
 };
