@@ -20,6 +20,8 @@
    X(kaboom) \
    X(frogger) \
    X(pole_position) \
+   X(berzerk) \
+   X(dig_dug) \
    X(solaris)
 
 #endif
