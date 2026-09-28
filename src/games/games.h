@@ -7,7 +7,9 @@
 
 #define PX_GAMES(X) \
    X(space_invaders) \
-   X(yars_revenge) \
-   X(pac_man)
+   X(pac_man) \
+   X(combat) \
+   X(warlords) \
+   X(yars_revenge)
 
 #endif

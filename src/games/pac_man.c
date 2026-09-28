@@ -520,22 +520,24 @@ static void play_note(px_sound *s, unsigned voice, float hz)
    }
 }
 
-/* Eating: up and down in turns. */
+/* Eating: up and down in turns, over a low note that goes the same way and carries it. */
 static void play_wafer(pm *g, px_sound *s)
 {
-   static const px_tone up[2] = {
-      { PX_WAVE_SQUARE,   300, 640, 0.07f, 0.002f, 0.03f, 0.08f, 0.26f, 2400, 1200, 0, 0 },
-      { PX_WAVE_TRIANGLE, 150, 320, 0.07f, 0.002f, 0.03f, 0.08f, 0.40f, 0, 0, 0, 0 }
+   static const px_tone up[3] = {
+      /* wave            freq  to   glide  attack  hold   decay  gain   cutoff to */
+      { PX_WAVE_SQUARE,   300, 640, 0.07f, 0.002f, 0.03f, 0.08f, 0.22f, 2400, 1200, 0, 0 },
+      { PX_WAVE_TRIANGLE, 150, 320, 0.07f, 0.002f, 0.03f, 0.09f, 0.46f, 0, 0, 0, 0 },
+      { PX_WAVE_SINE,      62, 124, 0.07f, 0.003f, 0.04f, 0.13f, 0.76f, 0, 0, 0, 0 }
    };
-   static const px_tone down[2] = {
-      { PX_WAVE_SQUARE,   640, 300, 0.07f, 0.002f, 0.03f, 0.08f, 0.26f, 2400, 1200, 0, 0 },
-      { PX_WAVE_TRIANGLE, 320, 150, 0.07f, 0.002f, 0.03f, 0.08f, 0.40f, 0, 0, 0, 0 }
+   static const px_tone down[3] = {
+      { PX_WAVE_SQUARE,   640, 300, 0.07f, 0.002f, 0.03f, 0.08f, 0.22f, 2400, 1200, 0, 0 },
+      { PX_WAVE_TRIANGLE, 320, 150, 0.07f, 0.002f, 0.03f, 0.09f, 0.46f, 0, 0, 0, 0 },
+      { PX_WAVE_SINE,     124,  62, 0.07f, 0.003f, 0.04f, 0.13f, 0.76f, 0, 0, 0, 0 }
    };
-   px_kit_play(s, g->waka ? down : up, 2, px_kit_pan(g->pac_at));
+   px_kit_play(s, g->waka ? down : up, 3, px_kit_pan(g->pac_at));
    g->waka = !g->waka;
-   px_sound_rumble(s, 0, 7000, 2);
+   px_sound_rumble(s, 9000, 7000, 3);
 }
-
 static void play_pill(pm *g, px_sound *s)
 {
    static const px_tone p[3] = {
