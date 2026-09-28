@@ -2,12 +2,29 @@
 /* The games Proteus knows in particular, found by the MD5 of their ROMs, which is what the
  * Atari 2600's games go by (Stella's properties do the same). */
 #include "fx.h"
+#include "games/games.h"
 
 #include <string.h>
 
+#define X(name) extern const px_game px_game_##name;
+PX_GAMES(X)
+#undef X
+
 static const px_game *const games[] = {
-   &px_game_space_invaders,
+#define X(name) &px_game_##name,
+   PX_GAMES(X)
+#undef X
 };
+
+unsigned px_game_count(void)
+{
+   return (unsigned)(sizeof(games) / sizeof(games[0]));
+}
+
+const px_game *px_game_at(unsigned index)
+{
+   return index < px_game_count() ? games[index] : NULL;
+}
 
 const px_game *px_game_find(const char *md5)
 {

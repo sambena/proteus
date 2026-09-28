@@ -59,6 +59,8 @@ struct px_fx_video
    uint32_t *bk;         /* the background's colour there */
    uint32_t *sprite;     /* an object's colour there, 0xFF000000 set; 0 where there is none */
    uint8_t  *energy;     /* a missile or the ball is there */
+   uint32_t *light;      /* scenery that glows: its light, 0 where there is none */
+   bool lit;             /* a game module put light there in this frame */
 
    /* GLOW_W by height, three channels. */
    uint16_t *glow;
@@ -189,6 +191,7 @@ px_fx_video *px_fx_video_new(void)
    v->bk       = (uint32_t*)calloc(n, sizeof(uint32_t));
    v->sprite   = (uint32_t*)calloc(n, sizeof(uint32_t));
    v->energy   = (uint8_t*)calloc(n, 1);
+   v->light    = (uint32_t*)calloc(n, sizeof(uint32_t));
    v->glow     = (uint16_t*)calloc(g, sizeof(uint16_t));
    v->glow_tmp = (uint16_t*)calloc(g, sizeof(uint16_t));
    v->trail    = (uint16_t*)calloc(g, sizeof(uint16_t));
@@ -196,7 +199,7 @@ px_fx_video *px_fx_video_new(void)
    v->pool     = px_pool_new();
    v->row_sprite = (uint8_t*)calloc(PXC_MAX_H, 1);
    v->row_glow   = (uint8_t*)calloc(PXC_MAX_H, 1);
-   if (!v->top || !v->bk || !v->sprite || !v->energy || !v->glow || !v->glow_tmp || !v->trail
+   if (!v->top || !v->bk || !v->sprite || !v->energy || !v->light || !v->glow || !v->glow_tmp || !v->trail
          || !v->glow_row || !v->row_sprite || !v->row_glow)
    {
       px_fx_video_free(v);
@@ -216,6 +219,7 @@ void px_fx_video_free(px_fx_video *v)
    free(v->bk);
    free(v->sprite);
    free(v->energy);
+   free(v->light);
    free(v->glow);
    free(v->glow_tmp);
    free(v->trail);
@@ -594,7 +598,8 @@ static void make_glow(px_fx_video *v, const struct pxc_frame *f, const px_fx_con
       {
          size_t i = (size_t)y * PXC_W + x;
          uint16_t *g = v->glow + ((size_t)y * GLOW_W + x * 2) * 3;
-         uint32_t s = v->sprite[i];
+         /* An object's light, or the scenery's where a game module lit it. */
+         uint32_t s = v->sprite[i] ? v->sprite[i] : v->lit ? v->light[i] : 0;
          unsigned weight = v->energy[i] ? 448 : 256;
          unsigned rgb[3];
 
@@ -1212,9 +1217,12 @@ static void run_game(px_fx_video *v, const struct pxc_frame *f, const px_fx_conf
    s.bk       = v->bk;
    s.sprite   = v->sprite;
    s.energy   = v->energy;
+   s.light    = v->light;
    s.backdrop = v->backdrop;
    s.video    = v;
 
+   memset(v->light, 0, (size_t)PXC_W * f->height * sizeof(uint32_t));
+   v->lit = true;
    extra->game->frame(extra->game_state, &s);
    v->backdrop_on = s.backdrop_on;
 }
@@ -1280,6 +1288,7 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
       if (advance)
          move_sparks(v, f->height);
       v->backdrop_on = false;
+      v->lit = false;
       if (game)
          run_game(v, f, c, extra, *w, *h, advance);
       else

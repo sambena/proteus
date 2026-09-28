@@ -186,6 +186,10 @@ typedef struct
    uint32_t *bk;              /* the background's colour */
    uint32_t *sprite;          /* an object's colour with 0xFF000000 set, or 0 */
    uint8_t  *energy;          /* the object there glows brighter and leaves a trail */
+   /* Scenery that glows (neon walls, lava): the colour of its light with 0xFF000000 set,
+    * 0 where there is none, which it is everywhere when the module gets the frame. It is
+    * drawn as the scenery it is, and the glow is what is added. */
+   uint32_t *light;
 
    /* A picture of w by h to show where the background is, if the module sets backdrop_on.
     * backdrop_stale is set when it has to be painted anew (the size changed). */
@@ -298,12 +302,13 @@ typedef struct
 
 /* The module for a ROM, or NULL. */
 const px_game *px_game_find(const char *md5);
+/* The modules there are: src/games/games.h lists them. */
+unsigned px_game_count(void);
+const px_game *px_game_at(unsigned index);
 /* A module's default for an option of fx.h ("glow"), or NULL. */
 const char *px_game_fx(const px_game *g, const char *key);
 /* The MD5 of `size` bytes as 32 lower case digits and a zero. */
 void px_md5(const void *data, size_t size, char out[33]);
-
-extern const px_game px_game_space_invaders;
 
 /* ---------------------------------------------------------------------------
  * The panel: the options on the picture
