@@ -181,6 +181,7 @@ typedef struct
    uint32_t water_rgb;
    bool flashing;                  /* the game flashes the mine's background */
    unsigned flash_gap;             /* frames since it last began to */
+   unsigned flash_prev;            /* and as it was before the frame at hand */
    int screen;                     /* memory's screen; -1: not known */
 
    /* What is in the mine. */
@@ -1138,7 +1139,7 @@ static void events(hr *g, px_scene *s, bool flash_began)
    {
       if (dying || g->seen0 == V0_DEATH)
          add_flare(g, hx, hy, 150, 180, 200, 0xFF3A20);
-      else if (g->flash_gap > 16)
+      else if (g->flash_prev > 16)
       {
          /* A blast: where the dynamite was. */
          const bool seen = g->frame - g->dynamite_at < 90;
@@ -1279,6 +1280,7 @@ static void frame(void *state, px_scene *s)
          g->dim = g->dim > FADE ? g->dim - FADE : 0;
       else
          g->dim = g->dim + FADE < 256 ? g->dim + FADE : 256;
+      g->flash_prev = g->flash_gap;
       g->flash_gap = flash_began ? 0 : g->flash_gap < 1000 ? g->flash_gap + 1 : g->flash_gap;
    }
 
@@ -1312,7 +1314,7 @@ static void frame(void *state, px_scene *s)
       /* The game's flash, with light of Proteus's in its place: the border and the display
        * are blank, which it does not fall on. */
       if (g->sparks && flash_began && s->advance)
-         px_scene_flash(s, g->seen0 == V0_DEATH ? 0xFF3A20 : 0xFFE0A8, g->flash_gap > 16 ? 150 : 90);
+         px_scene_flash(s, g->seen0 == V0_DEATH ? 0xFF3A20 : 0xFFE0A8, g->flash_prev > 16 ? 150 : 90);
       if (g->sparks && g->flashing)
          for (unsigned y = ROW_CEILING; y < ROW_PANEL; y++)
             for (unsigned x = 0; x < PXC_W; x++)
@@ -1625,7 +1627,7 @@ static void reset(void *state)
    memset(g->flares, 0, sizeof(g->flares));
    g->water_top = 0;
    g->flashing = false;
-   g->flash_gap = 1000;
+   g->flash_gap = g->flash_prev = 1000;
    g->screen = -1;
    g->hero_x = g->laser_x = -1;
    g->hero_y = 90;
