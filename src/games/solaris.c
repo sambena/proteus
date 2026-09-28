@@ -44,6 +44,10 @@
  * none of these (it has not been seen to happen) is taken for the kind of the frames
  * before it for a while, so that the backdrop does not come and go.
  *
+ * The cockpit and the score are the game's display and stay its own to the pixel: they are
+ * made blank for the effects, which draw blank as it is, with no objects fused from the
+ * frames before, no glow, shade, light or sparks.
+ *
  * Solaris does not play the same way twice: what it does depends on how long frames take
  * to emulate, as Pitfall II's does. A run from a saved state stays the same for a while.
  *
@@ -705,6 +709,48 @@ static void show_backdrop(const sl *g, px_scene *s, const view *v)
    }
 }
 
+/* The cockpit and the score are the game's display: they are drawn as the game drew them,
+ * to the pixel. Blank, as the effects take it, is drawn as it is: no objects fused from
+ * the frames before, no glow, shade, light or sparks. */
+static void keep_display(px_scene *s)
+{
+   const struct pxc_frame *f = s->frame;
+   const uint32_t *palette = f->palette;
+
+   for (unsigned y = TOP; y < f->height; y++)
+   {
+      const bool cockpit = y >= PANEL;
+      if (!cockpit && y >= SCORE_END)
+      {
+         y = PANEL - 1;
+         continue;
+      }
+      for (unsigned x = 0; x < PXC_W; x++)
+      {
+         const size_t i = (size_t)y * PXC_W + x;
+         const uint8_t tags = f->tags[i];
+         const uint32_t rgb = palette[f->winner[i]] & 0xFFFFFFu;
+         if (cockpit || (tags & PXC_SPRITES))
+         {
+            /* The score's digits, and all of the cockpit. */
+            s->top[i] = PX_KEY(PX_CLS_BLANK, rgb);
+            s->bk[i]  = 0;
+         }
+         else if (PX_KEY_CLS(s->top[i]) == PX_CLS_SPRITE)
+         {
+            /* An object drawn from its track where the game has none: the background. */
+            s->top[i] = PX_KEY(PX_CLS_BK, palette[f->color[PXC_L_BK][i]]);
+            s->bk[i]  = palette[f->color[PXC_L_BK][i]] & 0xFFFFFFu;
+         }
+         else
+            continue;
+         s->sprite[i] = 0;
+         s->energy[i] = 0;
+         s->light[i]  = 0;
+      }
+   }
+}
+
 /* Light where the game's scenery is to glow: the gate's ceiling and floor, the map's grid. */
 static void light_scenery(const sl *g, px_scene *s, const view *v)
 {
@@ -900,6 +946,7 @@ static void frame(void *state, px_scene *s)
       px_kit_tia_hear(&g->seen, s->frame);
    }
 
+   keep_display(s);
    look(g, s, &v);
    if (v.kind == SCREEN_NONE && g->was.kind != SCREEN_NONE && g->held < HOLD && v.bottom == g->was.bottom)
    {
