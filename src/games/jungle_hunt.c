@@ -57,8 +57,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h> /*JHLOG*/
-#define JH_LOG(n) do { if (getenv("JH_LOG")) fprintf(stderr, "play %s\n", n); } while (0) /*JHLOG*/
 
 #define OPT_COLORS   "proteus_jh_colors"
 #define OPT_BACKDROP "proteus_jh_backdrop"
@@ -214,6 +212,7 @@ typedef struct
    bool hero_under;
    int s_lives, s_score, s_air;  /* memory as the sound saw it */
    unsigned s_scene, s_since_tally, s_since_drown, s_air_wait, strokes;
+   uint32_t beat;                /* counts the frames that are heard */
    uint32_t chance;
    unsigned wait_bird, wait_cricket, wait_drip;
    unsigned call, call_left, call_wait;
@@ -397,7 +396,7 @@ static void paint_jungle(jh *g, const px_scene *s)
       {
          const unsigned into = (Y - top) * 256u / (s->sy * 8u);
          const unsigned frond = noise(x * 2, (int)(Y * 256u / s->sy) / 3, 32, PXC_W * 2);
-         blend(p + (size_t)Y * w + X, frond > 128 ? 0x2A5A28 : 0x1C4020, into > 150 ? 150 : into + 40);
+         blend(p + (size_t)Y * w + X, frond > 128 ? 0x2A5A28 : 0x1C4020, into > 90 ? 110 : into + 20);
       }
    }
 
@@ -673,7 +672,7 @@ static uint32_t leaves_at(int x, unsigned y, bool edge)
 {
    const unsigned down = y < ROW_TOP ? 0 : (y - ROW_TOP) * 256u / (ROW_VINES - ROW_TOP);
    const unsigned clump = noise(wrap(x) * 256 / 8, (int)y * 256 / 4, 5, PXC_W / 8);
-   const unsigned much = y < ROW_HUD ? 30 : 80;
+   const unsigned much = y < ROW_HUD ? 48 : 80;
    uint32_t rgb = px_rgb_scale(px_rgb_mix(0x0E2C10, 0x2E7424, down > 256 ? 256 : down), 176 + (clump * much >> 8));
    if (edge)
       rgb = px_rgb_add(rgb, 0x1E3A0C);
@@ -693,13 +692,15 @@ static uint32_t earth_at(int x, unsigned y)
    return px_rgb_scale(px_rgb_mix(0x7A5230, 0x46301A, y > 190 ? (y - 190) * 16 : 0), 190 + (grain * 66 >> 8));
 }
 
-/* The river bed: stones and sand, blue with the water above them. */
-static uint32_t bed_at(int x, unsigned y, unsigned bed)
+/* The river bed: stones and sand, blue with the water above them, the tops of the stones lit. */
+static uint32_t bed_at(int x, unsigned y, unsigned bed, bool edge)
 {
    const unsigned stone = noise(wrap(x) * 256 / 4, (int)y * 256 / 3, 72, PXC_W / 4);
    const unsigned deep = y > bed ? (y - bed) * 10 : 0;
    uint32_t rgb = px_rgb_mix(0xB88E5E, 0x6A4C34, stone);
-   rgb = px_rgb_mix(rgb, 0x163A48, 50 + (deep > 110 ? 110 : deep));
+   rgb = px_rgb_mix(rgb, 0x163A48, 36 + (deep > 90 ? 90 : deep));
+   if (edge)
+      rgb = px_rgb_add(rgb, 0x302818);   /* lit from above */
    return px_rgb_scale(rgb, 216 + (hash(wrap(x), (int)y, 73) * 40 >> 8));
 }
 
@@ -739,7 +740,8 @@ static void paint_scenery(jh *g, px_scene *s)
                s->light[i] = 0xFF000000u | 0x0E2C34;
             }
             else if (pf && y >= g->at.bed)
-               top[x] = PX_KEY(PX_CLS_PF, bed_at((int)x - g->shown / 16, y, g->at.bed));
+               top[x] = PX_KEY(PX_CLS_PF, bed_at((int)x - g->shown / 16, y, g->at.bed,
+                     !(s->frame->tags[i - PXC_W] & PXC_PF)));
             continue;
          }
          if (pf && y < ROW_VINES)
@@ -1261,7 +1263,11 @@ static void frame(void *state, px_scene *s)
          g->captive_y = in->y + (int)in->h / 2;
       }
    }
-   g->under = g->scene == SCENE_RIVER && g->hero_y > (int)g->at.water + 2;
+   /* Under water once the head is well below the surface, above it once it is up again. */
+   if (g->scene != SCENE_RIVER)
+      g->under = false;
+   else if (g->hero_x >= 0)
+      g->under = g->hero_y > (int)g->at.water + (g->under ? -2 : 5);
 
    if (s->advance)
    {
@@ -1347,7 +1353,6 @@ static float pan_of(const jh *g)
 
 static void play_catch(jh *g, px_sound *s)
 {
-   JH_LOG("catch"); /*JHLOG*/
    static const px_tone p[4] = {
       /* wave             freq  to    glide  attack  hold   decay  gain   cutoff to */
       { PX_WAVE_SAW,      190,  140,  0.25f, 0.005f, 0.04f, 0.30f, 0.20f, 900, 400, 7.0f, 0.03f },
@@ -1361,7 +1366,6 @@ static void play_catch(jh *g, px_sound *s)
 
 static void play_jump(jh *g, px_sound *s)
 {
-   JH_LOG("jump"); /*JHLOG*/
    /* Off a vine it is a long swing through the air; on the ground a hop. */
    static const px_tone swing[3] = {
       { PX_WAVE_NOISE,    900,  0,    0.30f, 0.08f,  0.10f, 0.30f, 0.30f, 500, 2600, 0, 0 },
@@ -1379,7 +1383,6 @@ static void play_jump(jh *g, px_sound *s)
 
 static void play_stroke(jh *g, px_sound *s, bool under)
 {
-   JH_LOG("stroke"); /*JHLOG*/
    static const px_tone splash[2] = {
       { PX_WAVE_NOISE, 4000, 0,   0.10f, 0.005f, 0.01f, 0.12f, 0.10f, 2600, 700, 0, 0 },
       { PX_WAVE_SINE,  380,  620, 0.05f, 0.002f, 0,     0.06f, 0.05f, 0, 0, 0, 0 }
@@ -1394,7 +1397,6 @@ static void play_stroke(jh *g, px_sound *s, bool under)
 
 static void play_stab(jh *g, px_sound *s)
 {
-   JH_LOG("stab"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_NOISE,  8000, 0,    0.10f, 0.003f, 0.02f, 0.12f, 0.30f, 6500, 1500, 0, 0 },
       { PX_WAVE_SINE,   2600, 2300, 0.15f, 0.001f, 0.01f, 0.22f, 0.10f, 0, 0, 6.0f, 0.01f },
@@ -1406,7 +1408,6 @@ static void play_stab(jh *g, px_sound *s)
 
 static void play_croc(jh *g, px_sound *s)
 {
-   JH_LOG("croc"); /*JHLOG*/
    static const px_tone p[4] = {
       { PX_WAVE_NOISE, 3500, 500, 0.40f, 0.002f, 0.05f, 0.45f, 0.40f, 3000, 400, 0, 0 },
       { PX_WAVE_SINE,  120,  40,  0.20f, 0.001f, 0.03f, 0.30f, 0.70f, 0, 0, 0, 0 },
@@ -1419,7 +1420,6 @@ static void play_croc(jh *g, px_sound *s)
 
 static void play_splash(jh *g, px_sound *s, bool in)
 {
-   JH_LOG("splash"); /*JHLOG*/
    static const px_tone dive[3] = {
       { PX_WAVE_NOISE, 6000, 700, 0.30f, 0.002f, 0.04f, 0.35f, 0.40f, 5000, 600, 0, 0 },
       { PX_WAVE_SINE,  160,  70,  0.12f, 0.001f, 0.02f, 0.18f, 0.40f, 0, 0, 0, 0 },
@@ -1438,7 +1438,6 @@ static void play_splash(jh *g, px_sound *s, bool in)
 
 static void play_drown(jh *g, px_sound *s)
 {
-   JH_LOG("drown"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_SINE,     620, 140, 1.10f, 0.01f, 0.60f, 0.50f, 0.34f, 0, 0, 7.0f, 0.03f },
       { PX_WAVE_TRIANGLE, 310, 70,  1.10f, 0.01f, 0.60f, 0.50f, 0.20f, 0, 0, 7.0f, 0.03f },
@@ -1450,7 +1449,6 @@ static void play_drown(jh *g, px_sound *s)
 
 static void play_bounce(jh *g, px_sound *s)
 {
-   JH_LOG("bounce"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_SINE,  78,   38,  0.18f, 0.001f, 0.02f, 0.40f, 0.90f, 0, 0, 0, 0 },
       { PX_WAVE_NOISE, 1200, 200, 0.20f, 0.001f, 0.02f, 0.30f, 0.40f, 900, 150, 0, 0 },
@@ -1462,7 +1460,6 @@ static void play_bounce(jh *g, px_sound *s)
 
 static void play_lost(jh *g, px_sound *s)
 {
-   JH_LOG("lost"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_NOISE, 4500, 400, 0.30f, 0,      0.04f, 0.45f, 0.36f, 3000, 260, 0, 0 },
       { PX_WAVE_SINE,  170,  45,  0.35f, 0.002f, 0.04f, 0.55f, 0.66f, 0, 0, 0, 0 },
@@ -1474,7 +1471,6 @@ static void play_lost(jh *g, px_sound *s)
 
 static void play_tally(jh *g, px_sound *s)
 {
-   JH_LOG("tally"); /*JHLOG*/
    static const px_tone p[2] = {
       { PX_WAVE_SINE, 1760, 0, 0, 0.001f, 0.01f, 0.14f, 0.16f, 0, 0, 0, 0 },
       { PX_WAVE_SINE, 2637, 0, 0, 0.001f, 0,     0.10f, 0.08f, 0, 0, 0, 0 }
@@ -1485,7 +1481,6 @@ static void play_tally(jh *g, px_sound *s)
 /* The rescue: a chord of bells, struck once. */
 static void play_rescue(jh *g, px_sound *s)
 {
-   JH_LOG("rescue"); /*JHLOG*/
    static const float chord[4] = { 523.25f, 659.26f, 783.99f, 1046.5f };
    for (unsigned n = 0; n < 4; n++)
    {
@@ -1500,7 +1495,6 @@ static void play_rescue(jh *g, px_sound *s)
 /* The air running low: a soft beat that comes faster as there is less of it. */
 static void play_air(jh *g, px_sound *s)
 {
-   JH_LOG("air"); /*JHLOG*/
    static const px_tone p[2] = {
       { PX_WAVE_SINE, 70, 50, 0.08f, 0.004f, 0.02f, 0.16f, 0.50f, 0, 0, 0, 0 },
       { PX_WAVE_SINE, 440, 330, 0.10f, 0.004f, 0.02f, 0.10f, 0.05f, 0, 0, 0, 0 }
@@ -1512,7 +1506,6 @@ static void play_air(jh *g, px_sound *s)
 /* The tune a scene begins with: the note voice 0 has, an octave lower on a wooden flute. */
 static void play_note(jh *g, px_sound *s, bool begins)
 {
-   JH_LOG("note"); /*JHLOG*/
    static const px_tone low  = { PX_WAVE_TRIANGLE, 1, 0, 0, 0.02f, 0, 0, 0.34f, 0, 0, 5.0f, 0.006f };
    static const px_tone high = { PX_WAVE_SINE,     1, 0, 0, 0.03f, 0, 0, 0.14f, 0, 0, 5.0f, 0.006f };
    const float hz = px_kit_tune(px_kit_tia_hz(g->tia.wave[0], g->tia.pitch[0])) * 0.5f;
@@ -1546,7 +1539,6 @@ static void stop_tune(jh *g, px_sound *s)
 /* The cannibals' tune: every note of it struck on a log drum. */
 static void play_drum(jh *g, px_sound *s)
 {
-   JH_LOG("drum"); /*JHLOG*/
    const float hz = px_kit_tune(px_kit_tia_hz(g->tia.wave[0], g->tia.pitch[0])) * 2.0f;
    px_tone p[3] = {
       { PX_WAVE_SINE,     0, 0, 0.12f, 0.001f, 0.01f, 0.32f, 0.50f, 0, 0, 0, 0 },
@@ -1680,19 +1672,21 @@ static void sound(void *state, px_sound *s)
    /* Where things are, from the picture before. */
    if (s->objects)
    {
-      int water = 1 << 20;
-      g->hero_at = g->boulder_at = g->croc_at = -1;
-      under = false;
+      /* Where the explorer is not seen (the crocodiles' turn to be drawn), he is where he
+       * was. Under water once his head is well below the surface, above it once it is up. */
+      int hero = -1;
+      g->boulder_at = g->croc_at = -1;
       for (unsigned i = 0; i < s->objects->count; i++)
       {
          const px_instance *in = &s->objects->inst[i];
-         if ((in->group == KIND_EXPLORER || in->group == KIND_SWIMMER_HEAD) && (g->hero_at < 0 || !in->ghost))
+         if ((in->group == KIND_EXPLORER || in->group == KIND_SWIMMER_HEAD) && (hero < 0 || !in->ghost))
          {
-            g->hero_at = in->x + 4;
-            under = in->group == KIND_SWIMMER_HEAD && in->y > 106;
-            water = in->y;
+            hero  = in->x + 4;
+            under = in->group == KIND_SWIMMER_HEAD && in->y > (g->hero_under ? 101 : 108);
          }
       }
+      if (hero >= 0)
+         g->hero_at = hero;
       for (unsigned i = 0; i < s->objects->count; i++)
       {
          const px_instance *in = &s->objects->inst[i];
@@ -1702,7 +1696,6 @@ static void sound(void *state, px_sound *s)
                && (g->croc_at < 0 || abs(in->x + 4 - g->hero_at) < abs(g->croc_at - g->hero_at)))
             g->croc_at = in->x + 4;
       }
-      (void)water;
       if (g->s_scene != SCENE_RIVER)
          under = false;
    }
@@ -1720,11 +1713,10 @@ static void sound(void *state, px_sound *s)
             play_note(g, s, heard != g->heard0);
          break;
       case HEARD_DRUM:
-         if (g->tia.volume[0] && (px_kit_tia_louder(&g->tia, 0) || g->tia.pitch[0] != g->tia.was_pitch[0]))
-         {
-            if (g->own_sound)
-               play_drum(g, s);
-         }
+         /* A note begins after a rest, or goes straight on to another pitch. It shakes
+          * nothing: the tune goes on for the whole scene. */
+         if (g->own_sound && (px_kit_tia_louder(&g->tia, 0) || g->tia.pitch[0] != g->tia.was_pitch[0]))
+            play_drum(g, s);
          break;
       case HEARD_CATCH:
          if (heard != g->heard0)
@@ -1829,6 +1821,7 @@ static void sound(void *state, px_sound *s)
    if (g->own_sound && heard != HEARD_OTHER)
       s->voice[0] = 0.0f;
    play_ambience(g, s);
+   g->beat++;
 }
 
 /* ---------------------------------------------------------------------------

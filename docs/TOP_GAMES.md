@@ -48,7 +48,7 @@ What this cannot tell:
 | 19 | H.E.R.O. | Activision | 1984 | 5 | | |
 | 20 | Star Wars: The Empire Strikes Back | Parker Brothers | 1982 | 5 | | |
 | 21 | Stargate (Defender II) | Atari | 1984 | 5 | | two joysticks |
-| 22 | Jungle Hunt | Atari | 1983 | 5 | | |
+| 22 | Jungle Hunt | Atari | 1983 | 5 | | **done** |
 | 23 | Demon Attack | Imagic | 1982 | 4 | 2.0 m | |
 | 24 | Donkey Kong | Coleco | 1982 | 4 | 4.0 m | |
 | 25 | Breakout and Super Breakout | Atari | 1978, 1981 | 4 | 1.7 m | paddles |
