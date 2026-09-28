@@ -602,6 +602,17 @@ above, options of its own, a function that is given every frame between the find
 its objects and its drawing, with the console's memory, and one that hears every frame
 before its sound is mixed.
 
+Every game is made the same way, from the same parts:
+
+| | |
+| --- | --- |
+| [docs/GAME_MODULES.md](docs/GAME_MODULES.md) | the standard: how a game is added, the parts of its file, the rules it keeps, and what games have in common |
+| [docs/TOP_GAMES.md](docs/TOP_GAMES.md) | the games that get a module, from nineteen lists of the console's best, and what each will need |
+| `src/kit.h` | what modules share: colours, options, memory, what is known of an object, the game's voices |
+| `src/games/_template.c` | a module to begin from |
+| `tools/2600/` | for studying a game: what it draws with what, what its voices play, what its memory holds |
+| `make lint-games` | holds every module to the standard, without a game |
+
 `make test2600` checks all of it against Stella with a test program that `test/rom2600.c`
 writes, laid out like an early shooter. `STELLA` and `STELLAPX` name the two cores: Stella
 as its authors build it, and the fork's build. `test/games2600.sh` runs the same checks on
@@ -618,7 +629,9 @@ games of your own.
 | `src/fx_synth.c` | Atari 2600: sounds of Proteus's own, of 32 voices |
 | `src/fx_pool.c` | Atari 2600: the threads a picture is drawn by |
 | `src/fx_panel.c` | Atari 2600: the options drawn on the picture |
-| `src/fx_game.c`, `src/games/` | Atari 2600: the games Proteus knows in particular, found by MD5 |
+| `src/fx_game.c`, `src/games/` | Atari 2600: the games Proteus knows in particular, found by MD5; `games.h` lists them |
+| `src/kit.h`, `src/kit.c` | Atari 2600: what game modules have in common |
+| `docs/` | the standard for game modules, and the games that get one |
 | `src/engine.c` | song detection, choosing what plays, mixing, save state data (shared) |
 | `src/proteus.c` | the wrapper core: libretro API passthrough, option overrides, save states |
 | `src/dsp.c` | the DSP plugin: finds the running core and game inside RetroArch |
@@ -647,6 +660,8 @@ games of your own.
 | `deps/imgui/` | Dear ImGui bundled library |
 | `test/` | a fake game core and a headless frontend that checks the mixed audio and the options |
 | `test/rom2600.c`, `test/harness2600.c`, `test/run2600.sh` | an Atari 2600 test program, a headless frontend that hashes frames and checks the capture, and the checks of `make test2600` |
+| `test/lint_games.c` | the checks of `make lint-games` |
+| `tools/2600/` | records a game's objects, sounds and memory, and finds what is what in them |
 | `tools/install-core.ps1` | installs the plugin and wrapper cores into a RetroArch folder |
 
 ## License

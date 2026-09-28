@@ -47,9 +47,13 @@ endif
 
 CORE     := $(BUILD)/proteus_libretro.$(EXT)
 DSP      := $(BUILD)/proteus_dsp.$(EXT)
+# Atari 2600: the effects, the kit for game modules, and every game module there is. A file
+# whose name begins with an underscore is not a game (src/games/_template.c).
+FX_SRC   := src/fx_video.c src/fx_track.c src/fx_audio.c src/fx_pool.c src/fx_panel.c src/fx_synth.c \
+            src/fx_game.c src/kit.c
+GAME_SRC := $(sort $(filter-out src/games/_%,$(wildcard src/games/*.c)))
 SOURCES  := src/proteus.c src/engine.c src/profile.c src/music.c src/decoders.c src/usf_play.c src/options.c src/util.c src/game_options.c \
-            src/fx_video.c src/fx_track.c src/fx_audio.c src/fx_pool.c src/fx_panel.c src/fx_synth.c \
-            src/fx_game.c src/games/space_invaders.c
+            $(FX_SRC) $(GAME_SRC)
 DSP_SRC  := src/dsp.c src/engine.c src/profile.c src/music.c src/decoders.c src/usf_play.c src/util.c src/game_options.c
 GME_SRC  := $(wildcard deps/gme/*.cpp)
 GME_OBJ  := $(GME_SRC:%.cpp=$(OBJ)/%.o) $(OBJ)/deps/gme/ext/emu2413.o
@@ -66,7 +70,7 @@ USF_SRC  := ai/ai_controller.c api/callbacks.c debugger/dbg_decoder.c main/main.
 USF_OBJ  := $(USF_SRC:%.c=$(OBJ)/deps/lazyusf2/%.o) $(OBJ)/deps/psflib/psflib.o
 OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
 DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
-HEADERS  := $(wildcard src/*.h)
+HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
 
@@ -201,10 +205,18 @@ $(TEST2600)/pxtest.a26: $(TEST2600)/rom2600$(EXE)
 	$(TEST2600)/rom2600$(EXE) $@
 	$(TEST2600)/rom2600$(EXE) $(TEST2600)/pxtest_pal.a26 pal
 
-test2600: $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a26
+# The game modules, held to what docs/GAME_MODULES.md asks of them; and the template, which
+# is to compile though it is no game.
+$(TEST2600)/lint_games$(EXE): test/lint_games.c $(FX_SRC) $(GAME_SRC) src/games/_template.c $(HEADERS) | $(TEST2600)
+	$(CC) $(CFLAGS) -o $@ test/lint_games.c $(FX_SRC) $(GAME_SRC) src/games/_template.c $(LDLIBS)
+
+lint-games: $(TEST2600)/lint_games$(EXE)
+	$(TEST2600)/lint_games$(EXE)
+
+test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a26
 	sh test/run2600.sh $(abspath $(TEST2600)) $(abspath $(STELLA)) $(abspath $(STELLAPX)) $(abspath $(CORE))
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 clean studio cli
+.PHONY: all test test2600 lint-games clean studio cli

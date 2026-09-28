@@ -16,7 +16,7 @@
  *
  * Of its memory ($80 is 0): 17 has the invaders that are left, 73 the cannons.
  */
-#include "../fx.h"
+#include "../kit.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -31,14 +31,57 @@
 #define RAM_INVADERS 17
 #define RAM_CANNONS  73
 
+/* ---------------------------------------------------------------------------
+ * What the game is like
+ * ------------------------------------------------------------------------- */
+
 #define ROW_FIRST  42     /* the top row of invaders before they step down */
 #define ROW_PITCH  18
 #define ROWS       6
 #define GROUND     206
 
 #define STARS   260
-#define ENEMIES 48
 
+/* ---------------------------------------------------------------------------
+ * The ROMs, the defaults and the options
+ * ------------------------------------------------------------------------- */
+
+static const char *const md5[] = {
+   "72ffbef6504b75e69ee1045af9075f66",   /* Space Invaders (USA) */
+   NULL
+};
+
+static const char *const fx[] = {
+   "glow", "high",
+   "width", "50",
+   "reverb", "room",
+   NULL
+};
+
+static const char *const colors[] = { "rows", "A colour a row", "arcade", "The arcade's gels",
+   "original", "The game's own", NULL };
+static const char *const backdrop[] = { "stars", "Night sky", "off", "Off", NULL };
+
+static const px_game_option options[] = {
+   { OPT_COLORS, "Invader colours",
+     "A colour for every row of invaders, the white, red and green of the arcade cabinet's gels, or the game's own colours.",
+     "rows", colors },
+   { OPT_BACKDROP, "Backdrop",
+     "What is behind the game where its background is black.", "stars", backdrop },
+   { OPT_SCORE, "Solid score",
+     "The game draws its score on every other line. Fill the lines between.", "enabled", px_kit_toggle },
+   { OPT_SPARKS, "Explosions",
+     "Sparks where an invader or the cannon is hit.", "enabled", px_kit_toggle },
+   { OPT_SOUND, "Sounds",
+     "Sounds of Proteus's own for the invaders' step, the shot and the hits, each where it happens between left and right, and the march in four notes as the arcade had it. Needs the enhanced sound.",
+     "proteus", px_kit_sounds },
+   { OPT_DRONE, "Hum",
+     "A low hum that rises as the invaders get fewer and nearer. Needs the sounds to be Proteus's.",
+     "enabled", px_kit_toggle },
+   { NULL, NULL, NULL, NULL, NULL }
+};
+
+/* In the order of the option's values. */
 enum { COLORS_ROWS = 0, COLORS_ARCADE, COLORS_ORIGINAL };
 
 typedef struct
@@ -52,20 +95,11 @@ typedef struct
 
 typedef struct
 {
-   uint32_t id;         /* of its track; 0: none */
-   int16_t x, y;
-   uint8_t group;
-   uint8_t kept;        /* seen in the frame at hand */
-} enemy;
-
-typedef struct
-{
    unsigned colors;
    bool backdrop, score, sparks;
    bool own_sound, drone;
 
-   /* The audio registers as the game left them: AUDC0 AUDC1 AUDF0 AUDF1 AUDV0 AUDV1. */
-   uint8_t reg[6];
+   px_kit_tia tia;                 /* the game's two voices */
    unsigned heard0;                /* what voice 0 played in the frame before: SOUND_* */
    unsigned step;                  /* which of the march's four notes is next */
    unsigned drone_low, drone_high; /* the drone's two voices at the synth */
@@ -73,10 +107,9 @@ typedef struct
 
    uint32_t frame;
    int invaders, cannons;          /* as memory had them; -1 before the first frame */
-   enemy enemies[ENEMIES];
+   px_kit_tags enemies;            /* tagged with the row each began in */
 
-   uint32_t *base;                 /* the backdrop without its stars */
-   unsigned base_w, base_h;
+   px_kit_canvas sky;              /* the backdrop without its stars */
    star stars[STARS];
    uint32_t seed;
 } si;
@@ -89,39 +122,14 @@ static const uint32_t row_colors[ROWS] = {
  * The backdrop
  * ------------------------------------------------------------------------- */
 
-static uint32_t chance(si *g)
-{
-   g->seed = g->seed * 1664525u + 1013904223u;
-   return g->seed >> 8;
-}
-
-static uint32_t add(uint32_t a, uint32_t b)
-{
-   unsigned r = ((a >> 16) & 0xFF) + ((b >> 16) & 0xFF);
-   unsigned gr = ((a >> 8) & 0xFF) + ((b >> 8) & 0xFF);
-   unsigned bl = (a & 0xFF) + (b & 0xFF);
-   return ((r > 255 ? 255 : r) << 16) | ((gr > 255 ? 255 : gr) << 8) | (bl > 255 ? 255 : bl);
-}
-
-static uint32_t scale(uint32_t rgb, unsigned f256)
-{
-   return ((((rgb >> 16) & 0xFF) * f256 >> 8) << 16) | ((((rgb >> 8) & 0xFF) * f256 >> 8) << 8)
-         | ((rgb & 0xFF) * f256 >> 8);
-}
-
 /* A night sky: darker at the top, two faint clouds, and light above the ground. */
-static bool paint_base(si *g, unsigned w, unsigned h, unsigned sy)
+static void paint_base(si *g, unsigned sy)
 {
    static const struct { int x, y, r; uint32_t rgb; } clouds[3] = {
       { 27, 30, 42, 0x180830 }, { 78, 58, 38, 0x061A28 }, { 55, 12, 30, 0x100818 }
    };
-   const unsigned ground = GROUND * sy;
-   uint32_t *base = (uint32_t*)realloc(g->base, (size_t)w * h * sizeof(uint32_t));
-   if (!base)
-      return false;
-   g->base   = base;
-   g->base_w = w;
-   g->base_h = h;
+   const unsigned w = g->sky.w, h = g->sky.h, ground = GROUND * sy;
+   uint32_t *base = g->sky.pixels;
 
    for (unsigned y = 0; y < h; y++)
    {
@@ -143,9 +151,9 @@ static bool paint_base(si *g, unsigned w, unsigned h, unsigned sy)
             int cx = (int)(x * 100 / w) - clouds[k].x, cy = ((int)(y * 100 / h) - clouds[k].y) * 3 / 4;
             int d2 = cx * cx + cy * cy, r2 = clouds[k].r * clouds[k].r;
             if (d2 < r2)
-               rgb = add(rgb, scale(clouds[k].rgb, (unsigned)((r2 - d2) * 256 / r2)));
+               rgb = px_rgb_add(rgb, px_rgb_scale(clouds[k].rgb, (unsigned)((r2 - d2) * 256 / r2)));
          }
-         base[(size_t)y * w + x] = scale(rgb, dim);
+         base[(size_t)y * w + x] = px_rgb_scale(rgb, dim);
       }
    }
 
@@ -153,14 +161,14 @@ static bool paint_base(si *g, unsigned w, unsigned h, unsigned sy)
    for (unsigned i = 0; i < STARS; i++)
    {
       star *s = &g->stars[i];
-      unsigned kind = chance(g) % 16;
+      unsigned kind = px_kit_chance(&g->seed) % 16;
       s->layer = kind < 9 ? 0 : kind < 14 ? 1 : 2;
       s->size  = (uint8_t)((s->layer == 2 ? 3 : s->layer == 1 ? 2 : 1) * (w >= 1200 ? 1 : 1));
-      s->x     = (uint16_t)(chance(g) % (w * 16u));
-      s->y     = (uint16_t)(chance(g) % (ground > 8 ? ground - 8 : 1));
-      s->phase = (uint8_t)chance(g);
-      s->pace  = (uint8_t)(1 + chance(g) % 5);
-      switch (chance(g) % 6)
+      s->x     = (uint16_t)(px_kit_chance(&g->seed) % (w * 16u));
+      s->y     = (uint16_t)(px_kit_chance(&g->seed) % (ground > 8 ? ground - 8 : 1));
+      s->phase = (uint8_t)px_kit_chance(&g->seed);
+      s->pace  = (uint8_t)(1 + px_kit_chance(&g->seed) % 5);
+      switch (px_kit_chance(&g->seed) % 6)
       {
          case 0:  s->rgb = 0xFFD8B0; break;
          case 1:  s->rgb = 0xB0D0FF; break;
@@ -168,7 +176,6 @@ static bool paint_base(si *g, unsigned w, unsigned h, unsigned sy)
       }
       s->drawn = false;
    }
-   return true;
 }
 
 static void put_star(const si *g, uint32_t *out, const star *s, unsigned x, uint32_t rgb)
@@ -177,22 +184,23 @@ static void put_star(const si *g, uint32_t *out, const star *s, unsigned x, uint
       for (unsigned u = 0; u < s->size; u++)
       {
          unsigned X = x + u, Y = s->y + t;
-         if (X < g->base_w && Y < g->base_h)
+         if (X < g->sky.w && Y < g->sky.h)
          {
-            size_t i = (size_t)Y * g->base_w + X;
-            out[i] = rgb ? add(g->base[i], rgb) : g->base[i];
+            size_t i = (size_t)Y * g->sky.w + X;
+            out[i] = rgb ? px_rgb_add(g->sky.pixels[i], rgb) : g->sky.pixels[i];
          }
       }
 }
 
 static void paint_backdrop(si *g, px_scene *s)
 {
-   if (s->backdrop_stale || !g->base || g->base_w != s->w || g->base_h != s->h)
+   if (px_kit_canvas_fit(&g->sky, s))
    {
-      if (!paint_base(g, s->w, s->h, s->sy))
-         return;
-      memcpy(s->backdrop, g->base, (size_t)s->w * s->h * sizeof(uint32_t));
+      paint_base(g, s->sy);
+      memcpy(s->backdrop, g->sky.pixels, (size_t)s->w * s->h * sizeof(uint32_t));
    }
+   else if (!g->sky.pixels)
+      return;
    else if (!s->advance)
    {
       s->backdrop_on = true;
@@ -203,8 +211,7 @@ static void paint_backdrop(si *g, px_scene *s)
    {
       star *st = &g->stars[i];
       /* A triangle wave: stars near by twinkle more than those far off. */
-      unsigned t = (uint8_t)(st->phase + g->frame * st->pace);
-      unsigned wave = t < 128 ? t * 2 : (255 - t) * 2;
+      unsigned wave = px_kit_wave(st->phase + g->frame * st->pace);
       unsigned bright = st->layer == 2 ? 150 + (wave * 105 >> 8)
             : st->layer == 1 ? 90 + (wave * 90 >> 8) : 50 + (wave * 50 >> 8);
       unsigned x;
@@ -214,7 +221,7 @@ static void paint_backdrop(si *g, px_scene *s)
       /* They drift to the left, the near ones faster. */
       st->x = (uint16_t)((st->x + s->w * 16u - (st->layer + 1u)) % (s->w * 16u));
       x = st->x / 16u;
-      put_star(g, s->backdrop, st, x, scale(st->rgb, bright));
+      put_star(g, s->backdrop, st, x, px_rgb_scale(st->rgb, bright));
       st->drawn_x = (uint16_t)x;
       st->drawn   = true;
    }
@@ -225,11 +232,6 @@ static void paint_backdrop(si *g, px_scene *s)
  * The objects
  * ------------------------------------------------------------------------- */
 
-static bool is_player(const px_instance *in)
-{
-   return in->cls == PXC_L_P0 || in->cls == PXC_L_P1;
-}
-
 /* The rows of invaders: a track keeps the row it had when it was first seen, and rows of
  * tracks not seen before are told from how far those seen before have stepped down. */
 static void find_rows(si *g, px_scene *s)
@@ -237,23 +239,21 @@ static void find_rows(si *g, px_scene *s)
    px_objects *o = s->objects;
    int known = 0, stepped = 0, top = 1 << 20;
 
-   for (unsigned e = 0; e < ENEMIES; e++)
-      g->enemies[e].kept = 0;
+   px_kit_tags_begin(&g->enemies);
 
    for (unsigned i = 0; i < o->count; i++)
    {
       px_instance *in = &o->inst[i];
+      const px_kit_tagged *seen;
       if (in->role != PX_ROLE_ENEMY)
          continue;
       if (in->y < top)
          top = in->y;
-      for (unsigned e = 0; e < ENEMIES; e++)
-         if (g->enemies[e].id == in->track)
-         {
-            stepped += in->y - (ROW_FIRST + ROW_PITCH * g->enemies[e].group);
-            known++;
-            break;
-         }
+      if ((seen = px_kit_tags_find(&g->enemies, in)) != NULL)
+      {
+         stepped += in->y - (ROW_FIRST + ROW_PITCH * seen->tag);
+         known++;
+      }
    }
    /* Nothing to go by: the top row is there when a wave begins. */
    stepped = known ? (stepped + known / 2) / known : top - ROW_FIRST;
@@ -261,28 +261,14 @@ static void find_rows(si *g, px_scene *s)
    for (unsigned i = 0; i < o->count; i++)
    {
       px_instance *in = &o->inst[i];
-      enemy *slot = NULL, *spare = NULL;
+      const px_kit_tagged *slot;
+      int row;
       if (in->role != PX_ROLE_ENEMY)
          continue;
-      for (unsigned e = 0; e < ENEMIES; e++)
-      {
-         if (g->enemies[e].id == in->track)
-            slot = &g->enemies[e];
-         else if (!g->enemies[e].id && !spare)
-            spare = &g->enemies[e];
-      }
-      if (!slot)
-      {
-         int row = (in->y - ROW_FIRST - stepped + ROW_PITCH / 2) / ROW_PITCH;
-         if (!(slot = spare))
-            continue;
-         slot->id    = in->track;
-         slot->group = (uint8_t)(row < 0 ? 0 : row >= ROWS ? ROWS - 1 : row);
-      }
-      slot->x    = in->x;
-      slot->y    = in->y;
-      slot->kept = 1;
-      in->group  = slot->group;
+      row  = (in->y - ROW_FIRST - stepped + ROW_PITCH / 2) / ROW_PITCH;
+      slot = px_kit_tags_keep(&g->enemies, in, row < 0 ? 0 : row >= ROWS ? ROWS - 1 : row);
+      if (slot)
+         in->group = slot->tag;
    }
 }
 
@@ -324,7 +310,7 @@ static void frame(void *state, px_scene *s)
    {
       px_instance *in = &o->inst[i];
       in->role = PX_ROLE_NONE;
-      if (is_player(in))
+      if (px_kit_is_player(in))
       {
          if (in->y >= GROUND)
             in->role = PX_ROLE_HUD;
@@ -359,8 +345,8 @@ static void frame(void *state, px_scene *s)
          case PX_ROLE_BONUS:
          {
             /* The saucer beats. */
-            unsigned t = (g->frame * 12) & 255, wave = t < 128 ? t * 2 : (255 - t) * 2;
-            px_scene_tint(s, in, add(0xE02030, scale(0x603020, wave)));
+            unsigned wave = px_kit_wave(g->frame * 12);
+            px_scene_tint(s, in, px_rgb_add(0xE02030, px_rgb_scale(0x603020, wave)));
             px_scene_energy(s, in, true);
             break;
          }
@@ -388,32 +374,23 @@ static void frame(void *state, px_scene *s)
    if (g->score)
       fill_score(s);
    if (g->colors == COLORS_ARCADE)
-      for (size_t i = 0; i < (size_t)40 * PXC_W; i++)
-         if (PX_KEY_CLS(s->top[i]) == PX_CLS_PF)
-            s->top[i] = PX_KEY(PX_CLS_PF, 0xF4F4F4);
+      px_kit_playfield(s, 0, 40, 0xF4F4F4);
 
-   if (s->ram && s->ram_size > RAM_CANNONS)
-   {
-      invaders = s->ram[RAM_INVADERS];
-      cannons  = s->ram[RAM_CANNONS];
-   }
+   invaders = px_kit_ram(s->ram, s->ram_size, RAM_INVADERS);
+   cannons  = px_kit_ram(s->ram, s->ram_size, RAM_CANNONS);
 
    if (s->advance && g->sparks)
    {
       /* An invader that was there and is not was hit, if it is one or two of them; more
        * are a wave that ended or a game that began. */
-      unsigned gone = 0;
-      for (unsigned e = 0; e < ENEMIES; e++)
-         if (g->enemies[e].id && !g->enemies[e].kept)
-            gone++;
-      for (unsigned e = 0; e < ENEMIES; e++)
+      const unsigned gone = px_kit_tags_gone(&g->enemies);
+      for (unsigned e = 0; e < PX_KIT_TAGS; e++)
       {
-         enemy *en = &g->enemies[e];
+         const px_kit_tagged *en = &g->enemies.slot[e];
          if (!en->id || en->kept)
             continue;
          if (gone <= 2 && (invaders < 0 || g->invaders < 0 || invaders <= g->invaders))
-            px_scene_burst(s, en->x + 4, en->y + 5, enemy_color(g, en->group, 0xD0D040), 18, 300);
-         en->id = 0;
+            px_scene_burst(s, en->x + 4, en->y + 5, enemy_color(g, en->tag, 0xD0D040), 18, 300);
       }
       if (cannons >= 0 && g->cannons >= 0 && cannons < g->cannons && cannon_x >= 0)
       {
@@ -421,13 +398,10 @@ static void frame(void *state, px_scene *s)
          px_scene_flash(s, 0xFF3020, 110);
       }
    }
-   else if (s->advance)
-      for (unsigned e = 0; e < ENEMIES; e++)
-         if (!g->enemies[e].kept)
-            g->enemies[e].id = 0;
 
    if (s->advance)
    {
+      px_kit_tags_end(&g->enemies);
       g->invaders = invaders;
       g->cannons  = cannons;
    }
@@ -483,17 +457,6 @@ static bool voice1_shoots(unsigned wave, unsigned pitch)
    return wave == 8 && (pitch == 24 || pitch == 25 || pitch == 28 || pitch == 30);
 }
 
-static float where(int column)
-{
-   return column < 0 ? 0.0f : ((float)column - 80.0f) / 80.0f * 0.85f;
-}
-
-static void play(px_sound *s, const px_tone *patches, unsigned count, float pan)
-{
-   for (unsigned i = 0; i < count; i++)
-      px_synth_play(s->synth, &patches[i], pan, 1.0f);
-}
-
 /* The arcade's march: four notes going down, one a step. */
 static void play_step(si *g, px_sound *s)
 {
@@ -507,7 +470,7 @@ static void play_step(si *g, px_sound *s)
    };
    p[1].glide = 0.12f;
    p[2].glide = 0.03f;
-   play(s, p, 3, 0.0f);
+   px_kit_play(s, p, 3, 0.0f);
    px_sound_rumble(s, 9000, 0, 3);
 }
 
@@ -518,7 +481,7 @@ static void play_shot(si *g, px_sound *s)
       { PX_WAVE_SQUARE,  950, 130, 0.16f, 0.001f, 0.01f, 0.16f, 0.18f, 3000, 700, 0, 0 },
       { PX_WAVE_NOISE,  9000,   0, 0.07f, 0,      0,     0.07f, 0.16f, 6000, 1500, 0, 0 }
    };
-   play(s, p, 3, where(g->cannon_at));
+   px_kit_play(s, p, 3, px_kit_pan(g->cannon_at));
    px_sound_rumble(s, 0, 14000, 4);
 }
 
@@ -529,7 +492,7 @@ static void play_hit(si *g, px_sound *s)
       { PX_WAVE_SQUARE,  880, 110, 0.22f, 0.001f, 0.01f, 0.25f, 0.26f, 4000, 600, 0, 0 },
       { PX_WAVE_SINE,    140,  45, 0.12f, 0.001f, 0.02f, 0.25f, 0.70f, 0, 0, 0, 0 }
    };
-   play(s, p, 3, where(g->shot_at >= 0 ? g->shot_at : g->cannon_at));
+   px_kit_play(s, p, 3, px_kit_pan(g->shot_at >= 0 ? g->shot_at : g->cannon_at));
    px_sound_rumble(s, 22000, 30000, 8);
 }
 
@@ -540,7 +503,7 @@ static void play_lost(si *g, px_sound *s)
       { PX_WAVE_SINE,    75,  28, 0.9f, 0.002f, 0.10f, 1.2f, 0.85f, 0, 0, 0, 0 },
       { PX_WAVE_SAW,    420,  40, 0.8f, 0.002f, 0.05f, 0.9f, 0.30f, 2500, 200, 11.0f, 0.04f }
    };
-   play(s, p, 3, where(g->cannon_at));
+   px_kit_play(s, p, 3, px_kit_pan(g->cannon_at));
    px_sound_rumble(s, 65535, 40000, 45);
 }
 
@@ -577,7 +540,6 @@ static void play_drone(si *g, px_sound *s, int invaders, int lowest)
 static void sound(void *state, px_sound *s)
 {
    si *g = (si*)state;
-   const unsigned loud_before = g->reg[5];
    unsigned heard;
    int lowest = -1, invaders = -1;
 
@@ -593,19 +555,10 @@ static void sound(void *state, px_sound *s)
       else if (in->role == PX_ROLE_ENEMY && in->y > lowest)
          lowest = in->y;
    }
-   if (s->ram && s->ram_size > RAM_INVADERS)
-      invaders = s->ram[RAM_INVADERS];
+   invaders = px_kit_ram(s->ram, s->ram_size, RAM_INVADERS);
 
-   for (uint32_t i = 0; s->frame && i < s->frame->write_count; i++)
-   {
-      const struct pxc_regwrite *w = &s->frame->writes[i];
-      if (w->reg >= 0x15 && w->reg <= 0x1A)
-         g->reg[w->reg - 0x15] = w->value & (w->reg == 0x17 || w->reg == 0x18 ? 0x1F : 0x0F);
-   }
-
-   /* What the voices play at the end of the frame: between the writes of one frame a
-    * voice has the waveform of one sound and the pitch of another. */
-   heard = voice0_plays(g->reg[0], g->reg[2], g->reg[4]);
+   px_kit_tia_hear(&g->tia, s->frame);
+   heard = voice0_plays(g->tia.wave[0], g->tia.pitch[0], g->tia.volume[0]);
    if (heard != g->heard0)
    {
       if (heard == SOUND_STEP)
@@ -626,7 +579,8 @@ static void sound(void *state, px_sound *s)
    }
    g->heard0 = heard;
 
-   if (voice1_shoots(g->reg[1], g->reg[3]) && g->reg[5] > loud_before && g->reg[5] >= 6)
+   if (voice1_shoots(g->tia.wave[1], g->tia.pitch[1]) && px_kit_tia_louder(&g->tia, 1)
+         && g->tia.volume[1] >= 6)
    {
       if (g->own_sound) play_shot(g, s);
       else              px_sound_rumble(s, 0, 14000, 4);
@@ -636,7 +590,7 @@ static void sound(void *state, px_sound *s)
    {
       if (heard != SOUND_OTHER)
          s->voice[0] = 0.0f;
-      if (!g->reg[5] || voice1_shoots(g->reg[1], g->reg[3]))
+      if (!g->tia.volume[1] || voice1_shoots(g->tia.wave[1], g->tia.pitch[1]))
          s->voice[1] = 0.0f;
    }
    play_drone(g, s, invaders, lowest);
@@ -650,8 +604,8 @@ static void reset(void *state)
 {
    si *g = (si*)state;
    g->invaders = g->cannons = -1;
-   memset(g->enemies, 0, sizeof(g->enemies));
-   memset(g->reg, 0, sizeof(g->reg));
+   px_kit_tags_reset(&g->enemies);
+   px_kit_tia_reset(&g->tia);
    g->heard0 = SOUND_NONE;
    g->step   = 0;
    g->drone_low = g->drone_high = 0;
@@ -673,65 +627,20 @@ static void destroy(void *state)
 {
    si *g = (si*)state;
    if (g)
-      free(g->base);
+      px_kit_canvas_free(&g->sky);
    free(g);
 }
 
 static void configure(void *state, const char *(*get)(const char *key))
 {
    si *g = (si*)state;
-   const char *v;
-   v = get(OPT_COLORS);
-   g->colors = v && !strcmp(v, "arcade") ? COLORS_ARCADE
-         : v && !strcmp(v, "original") ? COLORS_ORIGINAL : COLORS_ROWS;
-   v = get(OPT_BACKDROP);
-   g->backdrop = !v || strcmp(v, "off");
-   v = get(OPT_SCORE);
-   g->score = !v || strcmp(v, "disabled");
-   v = get(OPT_SPARKS);
-   g->sparks = !v || strcmp(v, "disabled");
-   v = get(OPT_SOUND);
-   g->own_sound = !v || strcmp(v, "original");
-   v = get(OPT_DRONE);
-   g->drone = !v || strcmp(v, "disabled");
+   g->colors    = px_kit_pick(get, OPT_COLORS, colors);
+   g->backdrop  = px_kit_on(get, OPT_BACKDROP);
+   g->score     = px_kit_on(get, OPT_SCORE);
+   g->sparks    = px_kit_on(get, OPT_SPARKS);
+   g->own_sound = px_kit_on(get, OPT_SOUND);
+   g->drone     = px_kit_on(get, OPT_DRONE);
 }
-
-static const char *const md5[] = {
-   "72ffbef6504b75e69ee1045af9075f66",   /* Space Invaders (USA) */
-   NULL
-};
-
-static const char *const fx[] = {
-   "glow", "high",
-   "width", "50",
-   "reverb", "room",
-   NULL
-};
-
-static const char *const colors[] = { "rows", "A colour a row", "arcade", "The arcade's gels",
-   "original", "The game's own", NULL };
-static const char *const backdrop[] = { "stars", "Night sky", "off", "Off", NULL };
-static const char *const sounds[] = { "proteus", "Proteus's", "original", "The game's own", NULL };
-static const char *const toggle[] = { "enabled", "Enabled", "disabled", "Disabled", NULL };
-
-static const px_game_option options[] = {
-   { OPT_COLORS, "Invader colours",
-     "A colour for every row of invaders, the white, red and green of the arcade cabinet's gels, or the game's own colours.",
-     "rows", colors },
-   { OPT_BACKDROP, "Backdrop",
-     "What is behind the game where its background is black.", "stars", backdrop },
-   { OPT_SCORE, "Solid score",
-     "The game draws its score on every other line. Fill the lines between.", "enabled", toggle },
-   { OPT_SPARKS, "Explosions",
-     "Sparks where an invader or the cannon is hit.", "enabled", toggle },
-   { OPT_SOUND, "Sounds",
-     "Sounds of Proteus's own for the invaders' step, the shot and the hits, each where it happens between left and right, and the march in four notes as the arcade had it. Needs the enhanced sound.",
-     "proteus", sounds },
-   { OPT_DRONE, "Hum",
-     "A low hum that rises as the invaders get fewer and nearer. Needs the sounds to be Proteus's.",
-     "enabled", toggle },
-   { NULL, NULL, NULL, NULL, NULL }
-};
 
 const px_game px_game_space_invaders = {
    "Space Invaders", md5, fx, options, create, destroy, reset, configure, frame, sound
