@@ -21,6 +21,7 @@
    X(frogger) \
    X(pole_position) \
    X(berzerk) \
-   X(dig_dug)
+   X(dig_dug) \
+   X(pitfall_2)
 
 #endif
