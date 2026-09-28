@@ -121,6 +121,7 @@ would need too adds it there.
 | A backdrop | `px_scene.backdrop`, `px_kit_canvas` for the part of it that stands still |
 | A backdrop that moves | `px_kit_scroll` for how far the game has scrolled, `px_kit_canvas_roll` for a canvas that goes round, `px_kit_texture`: `noise`, `show`, `roll`, with `px_kit_shades`, for one in colours the game has at hand |
 | Objects of a colour a row | `px_kit_repaint` |
+| A road into the distance | `px_kit_horizon_find` for the sky, a band of hills at the horizon and the ground; `px_kit_sky_shades` for a sky at any time of day from the game's colour of it; `px_kit_road_find` for the road's two edges on every row, and the colour of their stripes |
 | The game's voices | `px_kit_tia`: `hear`, `began`, `louder`; `px_kit_tia_hz`, and `px_kit_tune` for the note a pitch is nearest to |
 | Sounds of Proteus's own | `px_tone`, `px_kit_play`, `px_kit_pan`, `px_synth_play`, `px_synth_move`, `px_synth_stop` |
 
@@ -140,6 +141,7 @@ done.
 | Has a black background | Paints a backdrop, which shows where the background is dark. | Space Invaders: the night sky |
 | Scrolls, and counts in memory how far | Follows the counter, paints canvases that go round, and rolls them into the backdrop by how far the scenery has moved. Where the scenery is the game's playfield or a background that is not dark, it makes the game's pixels dark background, which is where a backdrop shows. | River Raid: the water and the banks |
 | Gives its objects a colour a row | Gives every row the colour a table has for its own. | River Raid: helicopters, ships, jets |
+| Draws a road into the distance: a sky of one background colour, ground of another, the road's edges with objects set again on every row | Finds the horizon and the edges afresh in every frame, from the picture, and paints from them: a sky made from the game's colour of it (the time of day), mountains on a canvas that goes round as the game says the view has turned, the game's own hills where it draws them, grass and asphalt either side of the edges in stripes taken from the kerbs'. A screen without a horizon (a title) keeps its colours. | Pole Position |
 | Flashes the screen by flipping bits of the colours it keeps in memory | Tells the flip from a colour whose own it knows, undoes it before looking colours up, and lights the picture with a flash of its own instead. | Kaboom!: a bucket lost |
 | Counts lives, enemies, dots in memory | Compares with the frame before: sparks, a flash, the controller shakes. | both |
 | Has one voice for two sounds | Plays each with voices of its own, so that neither cuts the other off. | Space Invaders: the step and the hit |
