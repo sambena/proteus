@@ -26,8 +26,10 @@
  *                  background, and do not show. What shows them is a square of orange
  *                  (colour 28), a player object of 32 by 64 around the ball, which the
  *                  playfield is drawn over. It takes one of the two player objects, so
- *                  the dark mazes flicker sooner. The dot is of the background's colour
- *                  too: it shows over the orange and over walls.
+ *                  the dark mazes flicker sooner. It follows the ball in every third frame,
+ *                  so that the ball is 10 to 34 rows below its top while it moves. The dot
+ *                  is of the background's colour too: it shows over the orange and over
+ *                  walls.
  *
  * Every effect that treats the background and not the playfield shows the walls of the
  * dark mazes, which the game hides. The rooms painted here hide them again.
@@ -86,6 +88,9 @@
  * ------------------------------------------------------------------------- */
 
 #define ROOM_TOP     13     /* the first row of a room */
+#define ROOM_ROWS    192
+#define SQUARE_W     32     /* the orange square */
+#define SQUARE_H     64
 #define COLOR_GREY   0x08   /* the background, the dot, and the walls of the dark mazes */
 #define COLOR_ORANGE 0x28   /* the square that shows them */
 #define DRAGON_HEAD  14     /* rows of a dragon that are its head */
@@ -603,6 +608,26 @@ static void hide(px_scene *s, const px_instance *in, bool (*keep)(const px_scene
    }
 }
 
+/* In the dark mazes the walls are drawn over the objects: what is given an object there
+ * (an eye, a colour where it is drawn from memory) is taken from it where a wall is. */
+static void behind_walls(px_scene *s, const av *g, const px_instance *in)
+{
+   for (unsigned r = 0; r < in->h; r++)
+      for (unsigned b = 0; b < in->w; b++)
+      {
+         const int x = in->x + (int)b, y = in->y + (int)r;
+         size_t i;
+         if (x < 0 || x >= PXC_W || y < 0 || y >= (int)s->frame->height)
+            continue;
+         i = (size_t)y * PXC_W + (size_t)x;
+         if (!g->wall[i] || PX_KEY_CLS(s->top[i]) == PX_CLS_BLANK)
+            continue;
+         s->top[i]    = PX_KEY(PX_CLS_BK, 0);
+         s->sprite[i] = 0;
+         s->energy[i] = 0;
+      }
+}
+
 /* The dot has the colour of the game's floor. It shows where the game shows it: over a
  * wall, and in the light of the lantern. */
 static bool dot_shows(const px_scene *s, const av *g, size_t i)
@@ -692,11 +717,12 @@ static void remember(av *g, const px_scene *s, const px_instance *in, unsigned w
    memcpy(k->colors, o->colors + in->rows, in->h);
 }
 
+static void show(px_scene *s, const px_instance *in);
+
 /* Adds what is missing of `what` to the frame's objects and to the picture. */
 static void recall(av *g, px_scene *s, unsigned what, const px_instance *ball, bool with_ball)
 {
    const shape *k = &g->shapes[what];
-   const struct pxc_frame *f = s->frame;
    px_objects *o = s->objects;
    px_instance *in;
 
@@ -717,12 +743,20 @@ static void recall(av *g, px_scene *s, unsigned what, const px_instance *ball, b
    memcpy(o->bits + o->pool_used, k->bits, in->h * sizeof(uint32_t));
    memcpy(o->colors + o->pool_used, k->colors, in->h);
    o->pool_used += in->h;
+   show(s, in);
+}
+
+/* Draws an object that is not in the frame where no other is. */
+static void show(px_scene *s, const px_instance *in)
+{
+   const struct pxc_frame *f = s->frame;
+   const px_objects *o = s->objects;
 
    for (unsigned r = 0; r < in->h; r++)
    {
       const int y = in->y + (int)r;
-      const uint32_t bits = k->bits[r];
-      const uint32_t rgb  = f->palette[k->colors[r]] & 0xFFFFFFu;
+      const uint32_t bits = o->bits[in->rows + r];
+      const uint32_t rgb  = f->palette[o->colors[in->rows + r]] & 0xFFFFFFu;
       if (y < 0 || y >= (int)f->height)
          continue;
       for (unsigned b = 0; b < 32 && bits >> b; b++)
@@ -919,11 +953,28 @@ static void frame(void *state, px_scene *s)
       memset(&now, 0, sizeof(now));
       if (square)
       {
+         /* The square follows the ball in every third frame. The lantern is where the
+          * ball is, and as large as the square. */
+         int x = square->x, y = square->y, across = square->w, down = square->h;
+         if (ball)
+         {
+            x = ball->x + 2 - SQUARE_W / 2;
+            y = ball->y + 4 - SQUARE_H / 2;
+            across = SQUARE_W;
+            down   = SQUARE_H;
+         }
+         if (y < ROOM_TOP)
+         {
+            down -= ROOM_TOP - y;
+            y     = ROOM_TOP;
+         }
+         if (y + down > ROOM_TOP + ROOM_ROWS)
+            down = ROOM_TOP + ROOM_ROWS - y;
          now.on = true;
-         now.x0 = square->x * (int)s->sx;
-         now.y0 = square->y * (int)s->sy;
-         now.x1 = (square->x + (int)square->w) * (int)s->sx;
-         now.y1 = (square->y + (int)square->h) * (int)s->sy;
+         now.x0 = x * (int)s->sx;
+         now.y0 = y * (int)s->sy;
+         now.x1 = (x + across) * (int)s->sx;
+         now.y1 = (y + down) * (int)s->sy;
          if (ball)
          {
             now.cx = (ball->x + 2) * (int)s->sx;
@@ -942,11 +993,14 @@ static void frame(void *state, px_scene *s)
       if (square)
       {
          hide(s, square, NULL, g, 0);
+         /* What is drawn from its track was not drawn where the square was. */
+         for (unsigned i = 0; i < o->count; i++)
+            if (o->inst[i].ghost && &o->inst[i] != square)
+               show(s, &o->inst[i]);
          /* Its light on what is in it. */
-         for (unsigned r = 0; r < square->h; r++)
-            for (unsigned b = 0; b < square->w; b++)
+         for (int y = g->lamp.y0 / (int)s->sy; g->lamp.on && y < g->lamp.y1 / (int)s->sy; y++)
+            for (int x = g->lamp.x0 / (int)s->sx; x < g->lamp.x1 / (int)s->sx; x++)
             {
-               const int x = square->x + (int)b, y = square->y + (int)r;
                const unsigned light = lamp_light(&g->lamp, x * (int)s->sx, y * (int)s->sy);
                if (light > 40 && x >= 0 && x < PXC_W && y >= 0 && y < (int)f->height
                      && PX_KEY_CLS(s->top[(size_t)y * PXC_W + x]) == PX_CLS_BK)
@@ -1015,6 +1069,10 @@ static void frame(void *state, px_scene *s)
             break;
       }
    }
+   if (room && g->painted_dark)
+      for (unsigned i = 0; i < o->count; i++)
+         if (px_kit_is_player(&o->inst[i]) && o->inst[i].group != OBJ_SQUARE)
+            behind_walls(s, g, &o->inst[i]);
 
    /* What happens. */
    if (s->advance && g->sparks)
