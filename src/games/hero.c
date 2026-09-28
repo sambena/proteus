@@ -50,6 +50,9 @@
  * The game has five games to choose from with SELECT, which begin at levels 1, 5, 9, 13 and
  * 17. When the game is not played it shows levels 1 to 4 played by itself, without a sound.
  *
+ * What the game does depends a little on how long frames take to emulate: the power bar may
+ * lose a pixel a frame sooner in one run than in another, Stella's own frames included.
+ *
  * The power bar and all below it are the game's display and stay its own to the pixel: they
  * are made blank for the effects, which draw blank as it is. The black above the mine is
  * blank too, so that no light of Proteus's falls on it.
@@ -380,6 +383,8 @@ static void look(hr *g, px_scene *s)
       const int c = pf_colour(f, y);
       if (c > 0 && !g->lava[y] && (!g->dark || y < ROW_BODY || y >= ROW_BOTTOM))
          g->row_rgb[y] = palette[c] & 0xFFFFFFu;
+      else if (c == 0 && !g->dark)
+         g->row_rgb[y] = 0x000001u;     /* black while lit: a dark row between bands */
       else if (!g->row_rgb[y])
          g->row_rgb[y] = band_colour(s, y);
    }
@@ -406,7 +411,9 @@ static void keep_display(px_scene *s)
          const uint8_t tags = f->tags[i];
          if (!panel && !(tags & PXC_BLANK) && !(border && !(tags & PXC_SPRITES)))
             continue;
-         s->top[i]    = PX_KEY(PX_CLS_BLANK, palette[f->winner[i]]);
+         /* Above the mine the game flashes its background with the mine's: it stays black,
+          * and the flash is Proteus's. */
+         s->top[i]    = PX_KEY(PX_CLS_BLANK, panel ? palette[f->winner[i]] : 0);
          s->bk[i]     = 0;
          s->sprite[i] = 0;
          s->energy[i] = 0;
@@ -859,7 +866,8 @@ static void paint_walls(hr *g, px_scene *s)
                L2 = g->light[2][y - ROW_TOP][x];
          uint32_t rgb;
          int shade;
-         if ((tags & (PXC_P0 | PXC_P1 | PXC_M0 | PXC_M1)) || !is_wall(g, s, x, y))
+         if (((tags & (PXC_P0 | PXC_P1 | PXC_M0 | PXC_M1)) && PX_KEY_CLS(s->top[i]) == PX_CLS_SPRITE)
+               || !is_wall(g, s, x, y))
             continue;
 
          if (lava)
@@ -1140,9 +1148,9 @@ static void events(hr *g, px_scene *s, bool flash_began)
          if (g->sparks)
          {
             const uint32_t rock = g->row_rgb[y > ROW_BODY && y < ROW_PANEL ? y : 90];
-            px_scene_burst(s, x, y, 0xFFFFFF, 20, 420);
-            px_scene_burst(s, x, y, 0xFFB040, 44, 380);
-            px_scene_burst(s, x, y, px_rgb_add(rock, 0x202020), 40, 300);
+            px_scene_burst(s, x, y, 0xFFFFFF, 28, 460);
+            px_scene_burst(s, x, y, 0xFFB040, 60, 400);
+            px_scene_burst(s, x, y, px_rgb_add(rock, 0x202020), 50, 320);
             px_scene_burst(s, x, y, 0x806850, 24, 140);
          }
       }
@@ -1186,19 +1194,41 @@ static void events(hr *g, px_scene *s, bool flash_began)
       }
    }
 
-   /* The miner is reached. */
+   /* The miner is reached: a golden burst, then fireworks in the open above the two. */
    if (rescued > 0 && g->rescued == 0)
-      g->party = 150;
-   if (g->party)
    {
       const int mx = g->frame - g->miner_at < 30 ? g->miner_x : hx, my = g->frame - g->miner_at < 30 ? g->miner_y : hy;
-      if (g->sparks && g->party % 10 == 0)
+      g->party = 180;
+      add_flare(g, mx, my, 90, 420, 236, 0xFFD860);
+      if (g->sparks)
+      {
+         px_scene_burst(s, mx, my, 0xFFE070, 50, 300);
+         px_scene_burst(s, mx, my, 0xFFFFFF, 16, 200);
+      }
+   }
+   if (g->party)
+   {
+      const bool miner = g->frame - g->miner_at < 30;
+      const int mx = miner && g->hero_x >= 0 ? (g->miner_x + hx) / 2 : miner ? g->miner_x : hx;
+      const int my = miner ? g->miner_y : hy;
+      if (g->sparks && g->party % 8 == 0)
       {
          static const uint32_t festive[6] = { 0xFFD840, 0x60E0FF, 0xFF60C0, 0x80FF70, 0xFFFFFF, 0xFF8040 };
-         const int x = mx + (int)(px_kit_chance(&g->seed) % 41) - 20;
-         const int y = my - 12 - (int)(px_kit_chance(&g->seed) % 30);
-         px_scene_burst(s, x, y > ROW_CEILING + 4 ? y : ROW_CEILING + 4, festive[(g->party / 10) % 6], 26, 260);
-         add_flare(g, x, y, 50, 160, 225, festive[(g->party / 10) % 6]);
+         const uint32_t rgb = festive[(g->party / 8) % 6];
+         int x = mx, y = my - 16;
+         /* Where there is no rock. */
+         for (unsigned tries = 0; tries < 6; tries++)
+         {
+            x = mx + (int)(px_kit_chance(&g->seed) % 61) - 30;
+            y = my - 8 - (int)(px_kit_chance(&g->seed) % 34);
+            if (y < ROW_CEILING + 4)
+               y = ROW_CEILING + 4;
+            if (x >= 8 && x < PXC_W && !is_wall(g, s, x, y))
+               break;
+         }
+         px_scene_burst(s, x, y, rgb, 36, 280);
+         px_scene_burst(s, x, y, 0xFFFFFF, 8, 160);
+         add_flare(g, x, y, 60, 220, 222, rgb);
       }
       g->party--;
    }
@@ -1210,6 +1240,10 @@ static void events(hr *g, px_scene *s, bool flash_began)
          if (g->known.slot[i].id && g->known.slot[i].tag == KIND_LANTERN)
             px_scene_burst(s, g->known.slot[i].x + 4, g->known.slot[i].y + 4, 0xFFF0B0, 18, 220);
    }
+
+   /* The power counted off: a glint for every beep. */
+   if (g->sparks && v0 == V0_BEEP && g->seen0 != V0_BEEP && g->hero_x >= 0)
+      px_scene_burst(s, hx, g->hero_y + 2, 0xFFE880, 7, 150);
 
    /* The fuse spits. */
    if (g->sparks && g->frame - g->dynamite_at < 2 && g->frame % 3 == 0)
@@ -1359,7 +1393,7 @@ static void hold(px_sound *s, unsigned *id, const px_tone *tone, float pan, floa
 /* The laser: a buzzing beam, a bright sizzle over it, and a hum. */
 static void play_laser(hr *g, px_sound *s, float pan)
 {
-   static const px_tone beam = { PX_WAVE_SAW, 660, 0, 0, 0.01f, 0, 0, 0.22f, 2600, 0, 15.0f, 0.03f };
+   static const px_tone beam = { PX_WAVE_SAW, 660, 0, 0, 0.01f, 0, 0, 0.40f, 2600, 0, 15.0f, 0.03f };
    hold(s, &g->laser, &beam, pan, 1.0f, 0);
    if (g->heard0 != V0_LASER)
    {
@@ -1502,8 +1536,8 @@ static void sound(void *state, px_sound *s)
       static const px_tone hum = { PX_WAVE_SAW, 58, 0, 0, 0.04f, 0, 0, 1.0f, 300, 0, 0, 0 };
       const float loud = (float)g->tia.volume[1] / 3.0f;
       const float chop = g->tia.pitch[1] == 16 ? 1.0f : g->tia.pitch[1] == 19 ? 0.55f : 0.25f;
-      hold(s, &g->whirr[0], &air, pan, 0.20f * loud * chop, 700.0f + 2400.0f / (float)(g->tia.pitch[1] + 1) * 8.0f);
-      hold(s, &g->whirr[1], &hum, pan, 0.16f * loud, 31440.0f / 32.0f / (float)(g->tia.pitch[1] + 1) * 1.1f);
+      hold(s, &g->whirr[0], &air, pan, 0.40f * loud * chop, 700.0f + 2400.0f / (float)(g->tia.pitch[1] + 1) * 8.0f);
+      hold(s, &g->whirr[1], &hum, pan, 0.30f * loud, 31440.0f / 32.0f / (float)(g->tia.pitch[1] + 1) * 1.1f);
    }
    else
    {
@@ -1538,8 +1572,8 @@ static void sound(void *state, px_sound *s)
       static const px_tone charge = { PX_WAVE_SAW, 110, 0, 0, 0.05f, 0, 0, 1.0f, 1800, 0, 6.0f, 0.01f };
       static const px_tone shine = { PX_WAVE_SINE, 440, 0, 0, 0.05f, 0, 0, 1.0f, 0, 0, 9.0f, 0.02f };
       const float f = 3520.0f / (float)(g->tia.pitch[1] + 1);
-      hold(s, &g->fill[0], &charge, 0.0f, 0.12f, f);
-      hold(s, &g->fill[1], &shine, 0.0f, 0.06f, f * 4.0f);
+      hold(s, &g->fill[0], &charge, 0.0f, 0.24f, f);
+      hold(s, &g->fill[1], &shine, 0.0f, 0.12f, f * 4.0f);
    }
    else
    {
