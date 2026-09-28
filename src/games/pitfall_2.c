@@ -172,6 +172,7 @@ typedef struct
    unsigned running_down;        /* frames the score has run down for */
    unsigned falling;             /* frames the floors have moved for */
    uint32_t checkpoint;          /* the cross touched last */
+   bool on_cross;                /* Harry is at one */
    unsigned water_seen;          /* frames since the river was on the screen */
    bool surface;                 /* the jungle is on the screen */
 
@@ -183,6 +184,7 @@ typedef struct
    int column;                   /* the screen's, for the textures */
    int river_from, river_to;     /* the rows the river is in; -1: none */
    bool river_painted;           /* the backdrop has it */
+   unsigned earth, painted_earth;   /* pixels of earth not dug, and in the backdrop */
    int tab_column;               /* what the tables below were made for */
    uint32_t floor_tab[BAND][PXC_W], earth_tab[BAND][PXC_W];
 
@@ -345,6 +347,7 @@ static void paint_scenery(p2 *g, px_scene *s)
    for (unsigned x = 0; x < PXC_W; x++)
       river_top[x] = -1;
    g->river_from = g->river_to = -1;
+   g->earth = 0;
    if (g->tab_column != g->column)
    {
       /* Floors and earth are the same in every band of a screen. */
@@ -416,7 +419,11 @@ static void paint_scenery(p2 *g, px_scene *s)
                s->light[i] = 0xFF000000u | 0x061C34;
          }
          else if (bk == BK_EARTH)
-            set_bk(s, i, px_rgb_mix(0x5A4630, 0x261A10, by * 5 > 256 ? 256 : by * 5));
+         {
+            /* Earth not dug: in the backdrop, where there is one. */
+            set_bk(s, i, g->backdrop ? 0 : px_rgb_mix(0x5A4630, 0x261A10, by * 5 > 256 ? 256 : by * 5));
+            g->earth++;
+         }
       }
    }
 
@@ -526,7 +533,7 @@ static void paint_backdrop(p2 *g, px_scene *s, int column)
       return;
    s->backdrop_on = true;
    if (!s->backdrop_stale && g->painted_floor == g->floor && g->painted_column == column
-         && (g->river_from >= 0 || !g->river_painted))
+         && g->painted_earth == g->earth && (g->river_from >= 0 || !g->river_painted))
    {
       paint_river(g, s);
       return;
@@ -544,8 +551,28 @@ static void paint_backdrop(p2 *g, px_scene *s, int column)
          memcpy(out, g->tile + (size_t)row * g->tile_w, (size_t)s->w * sizeof(uint32_t));
       }
    }
+   /* The earth that is not dug, where the game has its colour as the background. */
+   if (g->earth)
+      for (unsigned y = ROW_WORLD; y < ROW_BOTTOM; y++)
+      {
+         const unsigned by = band_row(g, (int)y);
+         for (unsigned x = 0; x < PXC_W; x++)
+         {
+            const size_t i = (size_t)y * PXC_W + x;
+            const unsigned n = x < 16 && (s->frame->tags[i] & PXC_BLANK) ? 16 : x;
+            uint32_t rgb;
+            if (s->frame->color[PXC_L_BK][(size_t)y * PXC_W + n] != BK_EARTH)
+               continue;
+            rgb = px_rgb_scale(g->earth_tab[by < LEDGE_ROWS ? LEDGE_ROWS : by][x],
+                  150 + (hash((int)x / 3, (int)y / 2, 16) * 30 >> 8));
+            for (unsigned Y = y * s->sy; Y < (y + 1) * s->sy && Y < s->h; Y++)
+               for (unsigned X = x * s->sx; X < (x + 1) * s->sx && X < s->w; X++)
+                  s->backdrop[(size_t)Y * s->w + X] = rgb;
+         }
+      }
    g->painted_floor = g->floor;
    g->painted_column = column;
+   g->painted_earth = g->earth;
    g->river_painted = false;
    paint_river(g, s);
 }
@@ -778,6 +805,8 @@ static void frame(void *state, px_scene *s)
       g->surface = g->surface || bk == BK_JUNGLE;
    }
 
+   g->earth = 0;
+   g->river_from = g->river_to = -1;
    if (g->colors != COLORS_ORIGINAL)
       paint_scenery(g, s);
 
@@ -839,22 +868,29 @@ static void frame(void *state, px_scene *s)
          }
       }
 
-      /* A cross Harry touches is where he comes back to. */
-      for (unsigned i = 0; i < o->count && g->harry_x >= 0; i++)
+      /* A cross Harry comes to is where he comes back to. The one he begins on is not
+       * come to. */
       {
-         const px_instance *in = &o->inst[i];
-         uint32_t key;
-         if (in->group != KIND_CROSS || in->ghost)
-            continue;
-         if (g->harry_x < in->x - 2 || g->harry_x > in->x + 10 || g->harry_y < in->y || g->harry_y > in->y + 26)
-            continue;
-         key = ((uint32_t)(column & 255) << 16) | ((uint32_t)(level & 255) << 8) | (uint32_t)(in->x & 255);
-         if (key != g->checkpoint)
+         bool on = false;
+         for (unsigned i = 0; i < o->count && g->harry_x >= 0; i++)
          {
-            px_scene_burst(s, in->x + 4, in->y + 3, 0xFF6040, 30, 260);
-            px_scene_burst(s, in->x + 4, in->y + 3, 0xFFF0E0, 10, 140);
+            const px_instance *in = &o->inst[i];
+            uint32_t key;
+            if (in->group != KIND_CROSS || in->ghost)
+               continue;
+            if (g->harry_x < in->x - 2 || g->harry_x > in->x + 10 || g->harry_y < in->y || g->harry_y > in->y + 26)
+               continue;
+            on = true;
+            key = ((uint32_t)(column & 255) << 16) | ((uint32_t)(level & 255) << 8) | (uint32_t)(in->x & 255);
+            if (key != g->checkpoint && !g->on_cross)
+            {
+               px_scene_burst(s, in->x + 4, in->y + 3, 0xFF6040, 30, 260);
+               px_scene_burst(s, in->x + 4, in->y + 3, 0xFFF0E0, 10, 140);
+            }
             g->checkpoint = key;
          }
+         if (g->harry_x >= 0)
+            g->on_cross = on;
       }
 
       /* Harry lands when the floors stop. */
@@ -1235,6 +1271,7 @@ static void reset(void *state)
    g->falling = g->heard_falling = 0;
    g->scroll = -1;
    g->checkpoint = 0xFFFFFFFFu;
+   g->on_cross = true;
    g->water_seen = 1000;
    g->painted_floor = g->painted_column = -1000;
    px_kit_tia_reset(&g->tia);
