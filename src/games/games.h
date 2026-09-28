@@ -6,6 +6,7 @@
 #define PROTEUS_GAMES_H
 
 #define PX_GAMES(X) \
-   X(space_invaders)
+   X(space_invaders) \
+   X(combat)
 
 #endif
