@@ -59,8 +59,7 @@
 #define FIRST_BUCKET 159
 #define BUCKETS     3
 
-#define WALL_COLOR  0x06    /* the colours of the wall and the field when memory is not had */
-#define FIELD_COLOR 0xD4
+#define WALL_COLOR  0x06    /* the wall's colour, when the game does not flash */
 
 #define BOMBS       16      /* at most on the screen, and more */
 #define STARS       48
@@ -150,6 +149,9 @@ typedef struct
    uint32_t strobed[256];
 
    px_kit_canvas city;     /* the backdrop without its stars */
+   unsigned glow;          /* light on the city, of 256, and its colour: the flashes */
+   uint32_t glow_rgb;
+   bool glow_shown;        /* the backdrop has light on it */
    star stars[STARS];
    uint32_t seed;
 
@@ -394,8 +396,21 @@ static void paint_backdrop(kb *g, px_scene *s)
    }
    else if (!g->city.pixels)
       return;
-   else if (s->backdrop_stale)
-      memcpy(s->backdrop, g->city.pixels, (size_t)s->w * s->h * sizeof(uint32_t));
+   else if (s->backdrop_stale || (s->advance && (g->glow || g->glow_shown)))
+   {
+      /* The city, and the light of a flash on it. The border stays black. */
+      const size_t n = (size_t)s->w * s->h;
+      const uint32_t add = px_rgb_scale(g->glow_rgb, g->glow);
+      for (size_t i = 0; i < n; i++)
+         s->backdrop[i] = g->city.pixels[i] && add ? px_rgb_add(g->city.pixels[i], add) : g->city.pixels[i];
+      g->glow_shown = add != 0;
+   }
+   if (s->advance)
+   {
+      g->glow = g->glow * 200 / 256;
+      if (g->glow < 6)
+         g->glow = 0;
+   }
 
    if (s->advance)
       for (unsigned i = 0; i < STARS; i++)
@@ -411,16 +426,37 @@ static void paint_backdrop(kb *g, px_scene *s)
    s->backdrop_on = true;
 }
 
+/* A flash: on the city where it is shown, which keeps the black around the game black;
+ * else on the whole picture. */
+static void light(kb *g, px_scene *s, uint32_t rgb, unsigned strength)
+{
+   if (!s->advance)
+      return;
+   if (g->backdrop && s->backdrop && g->city.pixels)
+   {
+      if (strength >= g->glow)
+      {
+         g->glow     = strength > 256 ? 256 : strength;
+         g->glow_rgb = rgb;
+      }
+   }
+   else
+      px_scene_flash(s, rgb, strength);
+}
+
 /* Where the game has its wall and its field, the background is made dark: the backdrop
- * shows there. */
-static void show_backdrop(px_scene *s, uint32_t wall, uint32_t field)
+ * shows there. Their colour is taken from the picture, a row at a time, and not from
+ * memory: while the game flashes, memory has the colours of the next frame. */
+static void show_backdrop(px_scene *s)
 {
    const unsigned h = s->frame->height < FIELD_END ? s->frame->height : FIELD_END;
    for (unsigned y = WALL_TOP; y < h; y++)
    {
       uint32_t *top = s->top + (size_t)y * PXC_W;
       uint32_t *bk  = s->bk + (size_t)y * PXC_W;
-      const uint32_t own = y < FIELD_TOP ? wall : field;
+      const uint32_t own = bk[(LEFT + RIGHT) / 2] & 0xFFFFFFu;
+      if (!own)
+         continue;
       for (unsigned x = 0; x < PXC_W; x++)
       {
          const unsigned cls = PX_KEY_CLS(top[x]);
@@ -481,9 +517,7 @@ static void frame(void *state, px_scene *s)
 {
    kb *g = (kb*)state;
    px_objects *o = s->objects;
-   const uint32_t *palette = s->frame->palette;
    const int wall_idx = px_kit_ram(s->ram, s->ram_size, 5);
-   const int field_idx = px_kit_ram(s->ram, s->ram_size, 6);
    /* What the flash flips of the colours in memory: 0 while the game does not flash. */
    const unsigned flip = wall_idx >= 0 ? ((unsigned)wall_idx ^ WALL_COLOR) & 0x1F : 0;
    const int flash = (int)flip;
@@ -529,7 +563,7 @@ static void frame(void *state, px_scene *s)
                   px_scene_burst(s, in->x + 4, in->y + in->h / 2, 0xFFB030, 34, 300);
                   px_scene_burst(s, in->x + 4, in->y + in->h / 2, 0xFF4A10, 18, 190);
                   px_scene_burst(s, in->x + 4, in->y + in->h / 2, 0xFFF4D0, 8, 420);
-                  px_scene_flash(s, 0xFF7A20, 34);
+                  light(g, s, 0xFF7A20, 34);
                }
             }
             if (!off && falling_count < BOMBS)
@@ -578,7 +612,7 @@ static void frame(void *state, px_scene *s)
       px_scene_burst(s, x, y, 0xFFC040, 60, 460);
       px_scene_burst(s, x, y, 0xFF3A10, 40, 320);
       px_scene_burst(s, x, y, 0x70D0FF, 24, 260);
-      px_scene_flash(s, 0xFFE8C0, 190);
+      light(g, s, 0xFFD8A8, 120);
    }
    if (s->advance && g->sparks && buckets >= 0 && g->buckets > buckets && buckets < BUCKETS)
    {
@@ -643,16 +677,12 @@ static void frame(void *state, px_scene *s)
 
    if (g->backdrop)
    {
-      const uint32_t wall  = palette[wall_idx >= 0 ? (unsigned)wall_idx : WALL_COLOR ^ flip] & 0xFFFFFFu;
-      const uint32_t field = palette[field_idx >= 0 ? (unsigned)field_idx : FIELD_COLOR ^ flip] & 0xFFFFFFu;
+      /* The game flashes its colours when a bucket is lost: the city flickers with the fire. */
+      if (flash > 0)
+         light(g, s, 0xFFA868, 10 + (unsigned)flash * 2 + ((flash & 2) ? 24u : 0u));
       paint_backdrop(g, s);
       if (s->backdrop_on)
-      {
-         show_backdrop(s, wall, field);
-         /* The game flashes its colours when a bucket is lost: the city flickers with the fire. */
-         if (flash > 0 && s->advance)
-            px_scene_flash(s, 0xFFA868, 10 + (unsigned)flash * 2 + ((flash & 2) ? 24u : 0u));
-      }
+         show_backdrop(s);
    }
 
    if (s->advance)
@@ -827,6 +857,8 @@ static void reset(void *state)
    g->score = -1;
    g->buckets = -1;
    g->flash = -1;
+   g->glow = 0;
+   g->glow_shown = true;   /* the backdrop is painted again without it */
    g->falling_count = 0;
    g->bucket_x = -1;
    g->splash = 0;
