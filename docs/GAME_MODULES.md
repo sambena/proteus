@@ -140,6 +140,7 @@ done.
 | Has a black background | Paints a backdrop, which shows where the background is dark. | Space Invaders: the night sky |
 | Scrolls, and counts in memory how far | Follows the counter, paints canvases that go round, and rolls them into the backdrop by how far the scenery has moved. Where the scenery is the game's playfield or a background that is not dark, it makes the game's pixels dark background, which is where a backdrop shows. | River Raid: the water and the banks |
 | Gives its objects a colour a row | Gives every row the colour a table has for its own. | River Raid: helicopters, ships, jets |
+| Flashes the screen by flipping bits of the colours it keeps in memory | Tells the flip from a colour whose own it knows, undoes it before looking colours up, and lights the picture with a flash of its own instead. | Kaboom!: a bucket lost |
 | Counts lives, enemies, dots in memory | Compares with the frame before: sparks, a flash, the controller shakes. | both |
 | Has one voice for two sounds | Plays each with voices of its own, so that neither cuts the other off. | Space Invaders: the step and the hit |
 | Has silence where the arcade had a sound | Adds one that follows the game: a hum, a siren. It has an option of its own. | both |

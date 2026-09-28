@@ -612,7 +612,7 @@ static void frame(void *state, px_scene *s)
             if (shines)
                for (unsigned k = 0; k < 256; k++)
                   if (map[k] == 0x38C4FF)
-                     map[k] = px_rgb_mix(0x38C4FF, 0xE8FAFF, (unsigned)g->splash * 20);
+                     map[k] = px_rgb_mix(0x38C4FF, 0xE8FAFF, (unsigned)g->splash * 12);
             px_kit_repaint(s, in, map);
             if (shines)
                px_scene_energy(s, in, true);

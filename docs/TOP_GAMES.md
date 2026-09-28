@@ -41,7 +41,7 @@ What this cannot tell:
 | 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | its music is not the TIA's |
 | 13 | Pac-Man | Atari | 1982 | 7 | 8.1 m | **done** |
 | 14 | Berzerk | Atari | 1982 | 7 | 1.9 m | |
-| 15 | Kaboom! | Activision | 1981 | 6 | 1.0 m | paddles |
+| 15 | Kaboom! | Activision | 1981 | 6 | 1.0 m | **done** |
 | 16 | Dig Dug | Atari | 1983 | 6 | | |
 | 17 | Pole Position | Atari | 1983 | 6 | | |
 | 18 | Solaris | Atari | 1986 | 5 | | |
@@ -106,7 +106,7 @@ need, the first twenty fall into few kinds, and most of what a kind needs is mad
 | Land that scrolls | River Raid, Stargate, Defender, The Empire Strikes Back, Jungle Hunt, Moon Patrol | a backdrop that moves with the land, in layers | yes: River Raid |
 | A road into the distance | Pole Position, Enduro | the horizon and the time of day from the game's colours | no |
 | Rocks and ships in space | Asteroids, Yars' Revenge, Solaris, Gravitar, Cosmic Ark | many things shown in turns, trails, a backdrop | mostly: Space Invaders |
-| A field and a bat | Warlords, Kaboom!, Breakout, Video Olympics | what is hit bursts; little else | mostly |
+| A field and a bat | Warlords, Kaboom!, Breakout, Video Olympics | what is hit bursts; little else | yes: Warlords and Kaboom! |
 | Two players against each other | Combat, Joust | sounds placed by who makes them | mostly |
 
 Two things no module has needed yet will be needed soon:
