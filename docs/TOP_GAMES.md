@@ -27,7 +27,7 @@ What this cannot tell:
 
 | # | Game | Publisher | Year | Lists of 19 | Sold | Module |
 |---|---|---|---|---|---|---|
-| 1 | Pitfall! | Activision | 1982 | 18 | 4.0 m | |
+| 1 | Pitfall! | Activision | 1982 | 18 | 4.0 m | **done** |
 | 2 | Space Invaders | Atari | 1980 | 15 | 6.3 m | **done** |
 | 3 | Adventure | Atari | 1980 | 14 | 1.0 m | **done** |
 | 4 | Combat | Atari | 1977 | 14 | pack-in | **done** |
