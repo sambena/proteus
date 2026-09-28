@@ -34,7 +34,7 @@ What this cannot tell:
 | 5 | River Raid | Activision | 1982 | 13 | 1.0 m | |
 | 6 | Asteroids | Atari | 1981 | 13 | 3.8 m | |
 | 7 | Missile Command | Atari | 1981 | 10 | | **done** |
-| 8 | Yars' Revenge | Atari | 1982 | 10 | 1.0 m | |
+| 8 | Yars' Revenge | Atari | 1982 | 10 | 1.0 m | **done** |
 | 9 | Warlords | Atari | 1981 | 10 | 1.8 m | **done** |
 | 10 | Ms. Pac-Man | Atari | 1983 | 9 | 2.3 m | |
 | 11 | Frogger | Parker Brothers | 1982 | 8 | | |
