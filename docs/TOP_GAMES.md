@@ -42,7 +42,7 @@ What this cannot tell:
 | 13 | Pac-Man | Atari | 1982 | 7 | 8.1 m | **done** |
 | 14 | Berzerk | Atari | 1982 | 7 | 1.9 m | **done** |
 | 15 | Kaboom! | Activision | 1981 | 6 | 1.0 m | **done** |
-| 16 | Dig Dug | Atari | 1983 | 6 | | |
+| 16 | Dig Dug | Atari | 1983 | 6 | | **done** |
 | 17 | Pole Position | Atari | 1983 | 6 | | **done** |
 | 18 | Solaris | Atari | 1986 | 5 | | |
 | 19 | H.E.R.O. | Activision | 1984 | 5 | | |
