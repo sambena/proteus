@@ -27,6 +27,11 @@ Proteus comes in two forms that share profiles and music files:
 When the wrapper core is running, the plugin stands aside. Games without a profile
 play exactly as they would without Proteus.
 
+For the Atari 2600 the wrapper core also draws the picture anew and gives the games new
+sounds: see [Atari 2600: picture and sound](#atari-2600-picture-and-sound).
+
+![Pitfall! with the effects off and with Proteus](docs/screenshots/pitfall.png)
+
 ## Download
 
 Windows builds are on the [Releases page](https://github.com/sambena/proteus/releases). Unzip,
@@ -504,11 +509,22 @@ lose some effects; mute fewer channels for those games.
 ## Atari 2600: picture and sound
 
 Around Stella, the wrapper core draws the picture again from the objects the TIA made it of,
-and processes the TIA's two voices apart. None of it needs to know the game.
+and processes the TIA's two voices apart. None of it needs to know the game. Twenty games
+it does know get more: see [Games Proteus knows](#games-proteus-knows).
+
+| | |
+| --- | --- |
+| ![Space Invaders](docs/screenshots/space-invaders.png) | ![Pac-Man](docs/screenshots/pac-man.png) |
+| ![River Raid](docs/screenshots/river-raid.png) | ![Missile Command](docs/screenshots/missile-command.png) |
+| ![Pole Position](docs/screenshots/pole-position.png) | ![Kaboom!](docs/screenshots/kaboom.png) |
+| ![Adventure](docs/screenshots/adventure.png) | ![Pitfall!](docs/screenshots/pitfall.png) |
+
+In each pair the left is the game with the effects off and the right is what Proteus draws.
+No games or ROMs are included.
 
 | Effect | What it does |
 | --- | --- |
-| Glow | players, missiles and the ball glow in their own colour |
+| Glow | players, missiles and the ball glow in their own colour; in the games Proteus knows the score and lines such as a road's kerbs give off none and stay crisp |
 | Shot trails | missiles and the ball leave a fading trail |
 | Shadows | objects throw a shadow on the playfield and the background |
 | Smooth objects | the stair steps of objects are cut; the playfield stays blocky |
