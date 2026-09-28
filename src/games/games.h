@@ -13,6 +13,7 @@
    X(missile_command) \
    X(yars_revenge) \
    X(pitfall) \
-   X(ms_pac_man)
+   X(ms_pac_man) \
+   X(adventure)
 
 #endif
