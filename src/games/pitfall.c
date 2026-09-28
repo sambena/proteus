@@ -41,7 +41,8 @@
  *             and 7 water that open and close; 6 has a vine
  *   85..87    the score, in decimal digits (BCD); 88..90 minutes, seconds and frames left
  *   97        Harry's column
- *  105        Harry's row: 32 on the path, more in the tunnel; his sprite begins 84 rows on
+ *  105        Harry's row: 32 on the path, less in a jump, 64 to 85 on the ladder, 86 on the
+ *             tunnel's floor; his sprite begins 83 or 84 rows on
  *
  * What surprised:
  *
@@ -353,6 +354,25 @@ static void paint_jungle(pf *g, const px_scene *s, unsigned screen)
    }
 }
 
+/* The tunnel is a cave: rock hangs from its roof and lies on its floor, which goes on from
+ * screen to screen as the jungle does. */
+static void paint_cave(pf *g, const px_scene *s, unsigned screen)
+{
+   const unsigned w = g->still.w, roof = ROW_TUNNEL * s->sy, floor = ROW_FLOOR * s->sy;
+
+   for (unsigned X = 0; X < w; X++)
+   {
+      const int x = (int)(X * 256u / s->sx) + (int)(screen * PXC_W) * 256;
+      const unsigned hangs = (noise(x / 9, 0, 20) * 11u + noise(x / 3, 0, 21) * 5u) * s->sy >> 8;
+      const unsigned lies  = (noise(x / 13, 1, 20) * 6u + noise(x / 4, 1, 21) * 3u) * s->sy >> 8;
+
+      for (unsigned Y = roof; Y < roof + hangs && Y < floor && Y < g->still.h; Y++)
+         blend(g->still.pixels + (size_t)Y * w + X, 0x4A4038, 150 - (Y - roof) * 90 / (hangs + 1));
+      for (unsigned Y = floor > lies ? floor - lies : 0; Y < floor && Y < g->still.h; Y++)
+         blend(g->still.pixels + (size_t)Y * w + X, 0x3E3A3A, 70 + (Y + lies - floor) * 80 / (lies + 1));
+   }
+}
+
 /* The shafts below the holes of a row of the picture: where each begins and ends. */
 static unsigned find_shafts(const px_scene *s, unsigned from[SHAFTS], unsigned to[SHAFTS])
 {
@@ -464,6 +484,7 @@ static void paint_backdrop(pf *g, px_scene *s, unsigned pit, unsigned left, unsi
    {
       memcpy(g->still.pixels, g->base.pixels, (size_t)s->w * s->h * sizeof(uint32_t));
       paint_jungle(g, s, screen);
+      paint_cave(g, s, screen);
       paint_shafts(g, s);
       memcpy(s->backdrop, g->still.pixels, (size_t)s->w * s->h * sizeof(uint32_t));
       g->painted_screen = screen;
@@ -519,6 +540,20 @@ static uint32_t leaves_at(unsigned x, unsigned y)
          184 + (clump * much >> 8));
 }
 
+/* The ground's colour at a pixel: the sand of the path, the earth below it, the tunnel's
+ * floor. */
+static uint32_t ground_at(unsigned x, unsigned y)
+{
+   if (y < ROW_EARTH)
+      return px_rgb_scale(px_rgb_mix(0xD8C46C, 0xB89C48, (y - ROW_PATH) * 16),
+            236 + (hash((int)x / 2, (int)y, 11) * 20 >> 8));
+   if (y < ROW_TUNNEL)
+      return px_rgb_scale(px_rgb_mix(0x86642C, 0x4A3416, (y - ROW_EARTH) * 17),
+            216 + (noise((int)x * 256 / 6, (int)y * 256 / 2, 12) * 40 >> 8));
+   return px_rgb_scale(px_rgb_mix(0x8A7448, 0x4E3E24, (y - ROW_FLOOR) * 42),
+         226 + (hash((int)x / 2, (int)y, 13) * 30 >> 8));
+}
+
 /* Shades for the scenery, the playfield's pixel by pixel. */
 static void paint_scenery(px_scene *s)
 {
@@ -528,7 +563,7 @@ static void paint_scenery(px_scene *s)
       for (unsigned x = 0; x < PXC_W; x++)
       {
          uint32_t rgb;
-         if (PX_KEY_CLS(top[x]) != PX_CLS_PF)
+         if (PX_KEY_CLS(top[x]) != PX_CLS_PF || (y >= ROW_TUNNEL && y < ROW_FLOOR))
             continue;
          if (y < ROW_TRUNKS)
             rgb = leaves_at(x, y);
@@ -540,17 +575,8 @@ static void paint_scenery(px_scene *s)
             rgb = px_rgb_scale(first ? 0x3A2612 : last ? 0x7A5630 : 0x5A3C1E,
                   216 + (hash((int)x, (int)y / 3, 6) * 40 >> 8));
          }
-         else if (y < ROW_EARTH)
-            rgb = px_rgb_scale(px_rgb_mix(0xD8C46C, 0xB89C48, (y - ROW_PATH) * 16),
-                  236 + (hash((int)x / 2, (int)y, 11) * 20 >> 8));
-         else if (y < ROW_TUNNEL)
-            rgb = px_rgb_scale(px_rgb_mix(0x86642C, 0x4A3416, (y - ROW_EARTH) * 17),
-                  216 + (noise((int)x * 256 / 6, (int)y * 256 / 2, 12) * 40 >> 8));
-         else if (y < ROW_FLOOR)
-            continue;
          else
-            rgb = px_rgb_scale(px_rgb_mix(0x8A7448, 0x4E3E24, (y - ROW_FLOOR) * 42),
-                  226 + (hash((int)x / 2, (int)y, 13) * 30 >> 8));
+            rgb = ground_at(x, y);
          top[x] = PX_KEY(PX_CLS_PF, rgb);
       }
    }
@@ -723,7 +749,10 @@ static void paint_object(const pf *g, px_scene *s, const px_instance *in)
          if (!((bits >> b) & 1) || x < 0 || x >= PXC_W)
             continue;
          i = (size_t)y * PXC_W + (size_t)x;
-         if (scenery && !(s->frame->tags[i] & (PXC_P0 | PXC_P1)))
+         /* What is behind the playfield (Harry's legs in the tar are behind the earth) is
+          * not seen, and has no light or shadow either. */
+         if ((scenery && !(s->frame->tags[i] & (PXC_P0 | PXC_P1)))
+               || (PX_KEY_CLS(s->top[i]) == PX_CLS_PF && (s->frame->tags[i] & PXC_PF)))
          {
             s->sprite[i] = 0;
             s->energy[i] = 0;
@@ -962,9 +991,9 @@ static void play_landing(pf *g, px_sound *s)
 static void play_lost(pf *g, px_sound *s)
 {
    static const px_tone p[3] = {
-      { PX_WAVE_NOISE, 5000, 400, 0.30f, 0,      0.04f, 0.50f, 0.50f, 3000, 260, 0, 0 },
-      { PX_WAVE_SINE,   150,  38, 0.30f, 0.002f, 0.04f, 0.60f, 0.85f, 0, 0, 0, 0 },
-      { PX_WAVE_SAW,    300,  60, 0.40f, 0.002f, 0.04f, 0.40f, 0.22f, 1800, 240, 0, 0 }
+      { PX_WAVE_NOISE, 5000, 400, 0.30f, 0,      0.04f, 0.50f, 0.38f, 3000, 260, 0, 0 },
+      { PX_WAVE_SINE,   150,  38, 0.30f, 0.002f, 0.04f, 0.60f, 0.66f, 0, 0, 0, 0 },
+      { PX_WAVE_SAW,    300,  60, 0.40f, 0.002f, 0.04f, 0.40f, 0.18f, 1800, 240, 0, 0 }
    };
    px_kit_play(s, p, 3, pan_of(g));
    px_sound_rumble(s, 65535, 36000, 40);
@@ -978,15 +1007,14 @@ static void play_roll(pf *g, px_sound *s, bool rolls)
       { PX_WAVE_SINE,   210,  96, 0.05f, 0.001f, 0.01f, 0.09f, 0.60f, 0, 0, 0, 0 },
       { PX_WAVE_SQUARE, 420, 190, 0.04f, 0.001f, 0,     0.05f, 0.16f, 1600, 500, 0, 0 }
    };
-   if (!rolls)
+   if (rolls)
+      px_sound_rumble(s, 12000, 20000, 3);
+   if (!rolls || !g->own_sound)
    {
       px_synth_stop(s->synth, g->roll, 0.12f);
       g->roll = 0;
       return;
    }
-   px_sound_rumble(s, 12000, 20000, 3);
-   if (!g->own_sound)
-      return;
    if (!px_synth_move(s->synth, g->roll, pan_of(g), 1.0f, 0))
       g->roll = px_synth_play(s->synth, &rumble, pan_of(g), 1.0f);
    /* Wood on bone. */
@@ -1054,7 +1082,7 @@ static unsigned wait_for(pf *g, unsigned least, unsigned most)
 /* One note of a bird's call. */
 static void play_bird(pf *g, px_sound *s)
 {
-   px_tone p = { PX_WAVE_SINE, 0, 0, 0, 0.004f, 0.02f, 0.10f, 0.085f, 0, 0, 0, 0 };
+   px_tone p = { PX_WAVE_SINE, 0, 0, 0, 0.004f, 0.02f, 0.10f, 0.060f, 0, 0, 0, 0 };
    const float f = g->call_pitch;
 
    switch (g->call)
@@ -1073,7 +1101,7 @@ static void play_bird(pf *g, px_sound *s)
          break;
       default:   /* a dove, low */
          p.freq = f * 0.22f; p.freq_end = f * 0.19f; p.glide = 0.20f; p.attack = 0.03f;
-         p.hold = 0.12f; p.decay = 0.22f; p.gain = 0.11f;
+         p.hold = 0.12f; p.decay = 0.22f; p.gain = 0.09f;
          g->call_wait = 24;
          break;
    }
@@ -1084,7 +1112,7 @@ static void play_bird(pf *g, px_sound *s)
 static void play_ambience(pf *g, px_sound *s)
 {
    static const px_tone wind  = { PX_WAVE_NOISE, 2600, 0, 0, 1.5f, 0, 0, 0.050f, 520, 0, 0.11f, 0.30f };
-   static const px_tone deep  = { PX_WAVE_SAW, 41.2f, 0, 0, 1.2f, 0, 0, 0.16f, 130, 0, 0.13f, 0.006f };
+   static const px_tone deep  = { PX_WAVE_SAW, 41.2f, 0, 0, 1.2f, 0, 0, 0.09f, 130, 0, 0.13f, 0.006f };
    static const px_tone chirp = { PX_WAVE_SINE, 4300, 4500, 0.02f, 0.003f, 0.012f, 0.03f, 0.030f, 0, 0, 0, 0 };
    static const px_tone drop[2] = {
       { PX_WAVE_SINE, 1500, 760, 0.05f, 0.001f, 0.004f, 0.28f, 0.13f, 0, 0, 0, 0 },
