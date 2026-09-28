@@ -197,6 +197,7 @@ typedef struct
    uint32_t *bk;              /* the background's colour */
    uint32_t *sprite;          /* an object's colour with 0xFF000000 set, or 0 */
    uint8_t  *energy;          /* the object there glows brighter and leaves a trail */
+   uint8_t  *crisp;           /* what is there gives off no light: lines, digits */
    /* Scenery that glows (neon walls, lava): the colour of its light with 0xFF000000 set,
     * 0 where there is none, which it is everywhere when the module gets the frame. It is
     * drawn as the scenery it is, and the glow is what is added. */
@@ -219,6 +220,9 @@ enum { PX_CLS_BK = 0, PX_CLS_PF, PX_CLS_SPRITE, PX_CLS_BLANK };
 void px_scene_tint(px_scene *s, const px_instance *in, uint32_t rgb);
 /* Marks an object's pixels as glowing brighter and leaving a trail, or not. */
 void px_scene_energy(px_scene *s, const px_instance *in, bool on);
+/* Marks an object's pixels as giving off no light, or not: for what is to stay crisp, as
+ * lines and digits are. What a module gives the role PX_ROLE_HUD is marked so for it. */
+void px_scene_crisp(px_scene *s, const px_instance *in, bool on);
 /* Sparks from a captured pixel outwards. */
 void px_scene_burst(px_scene *s, int x, int y, uint32_t rgb, unsigned count, unsigned speed);
 /* Lights the whole picture up for a moment; strength of 256. */
