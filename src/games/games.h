@@ -23,6 +23,7 @@
    X(berzerk) \
    X(dig_dug) \
    X(solaris) \
-   X(pitfall_2)
+   X(pitfall_2) \
+   X(hero)
 
 #endif
