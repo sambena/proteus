@@ -6,6 +6,8 @@
  *   harness2600 <core> <rom> <frames> [options]
  *     --opt key=value     force a core option
  *     --input             press joypad buttons following a fixed script
+ *     --paddles           turn the four paddles to and fro, each at a pace of its own,
+ *                         and press their buttons now and then (Warlords, Kaboom!)
  *     --press <frame>:<button>[:<frames>]
  *                         hold x, up, down, left, right, b, a, start or select from a frame on
  *     --press2 <frame>:<button>[:<frames>]
@@ -121,6 +123,7 @@ static const char *system_dir = ".";
 static bool quiet;
 static bool scripted_input;
 static bool roaming;         /* --roam: the stick in all four directions, for mazes */
+static bool paddles;         /* --paddles: four paddles on the analog sticks of ports 0..3 */
 static unsigned roam_seed;   /* --seed: another way through them */
 static unsigned frame_no;
 
@@ -565,6 +568,17 @@ static int16_t RETRO_CALLCONV input_cb(unsigned port, unsigned device, unsigned 
 {
    uint32_t r;
    (void)index;
+   if (paddles && port < 4)
+   {
+      /* --paddles: the left stick across, as Stella reads a paddle, swinging slowly from
+       * one end to the other at a pace of its own for every port; the button in bursts. */
+      if (device == RETRO_DEVICE_ANALOG && index == RETRO_DEVICE_INDEX_ANALOG_LEFT
+            && id == RETRO_DEVICE_ID_ANALOG_X)
+         return (int16_t)(32000.0 * sin(frame_no * (0.021 + 0.007 * port) + port * 1.7));
+      if (device == RETRO_DEVICE_JOYPAD && id == RETRO_DEVICE_ID_JOYPAD_B
+            && ((frame_no + port * 37) / 45) % 3 == 0)
+         return 1;
+   }
    if (port < 2 && device == RETRO_DEVICE_JOYPAD)
       for (unsigned i = 0; i < press_count; i++)
          if (presses[i].port == port && presses[i].id == id && frame_no >= presses[i].frame
@@ -948,6 +962,7 @@ int main(int argc, char **argv)
       }
       else if (!strcmp(argv[i], "--input"))   scripted_input = true;
       else if (!strcmp(argv[i], "--roam"))    roaming = true;
+      else if (!strcmp(argv[i], "--paddles")) paddles = true;
       else if (!strcmp(argv[i], "--poke") && i + 1 < argc)
       {
          if (!add_poke(argv[++i]))
