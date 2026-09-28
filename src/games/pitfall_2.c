@@ -14,16 +14,18 @@
  *                  Above ground the band has the sky's last rows in playfield stripes $88 to
  *                  $28, the canopy as background $D4 with its edge as playfield $D4, and the
  *                  jungle as background $C6 with the trunks as playfield $12.
- *                  The underground river is background $84, the rock over it playfield $00.
+ *                  The underground river is background $84, the rock over it playfield $00;
+ *                  a ledge by it is player 1 stretched wide, $18 over $12. Earth that is
+ *                  not dug is background $12.
  *   rows 195..     the publisher's name: both players and the ball in colours
  *   Harry          player 0, 16 to 21 rows: hair $12, face $4A, shirt $C8, trousers $D2
  *   the rest       player 1, set again for every band: a frog ($26 $28 $14 $2A), a
  *                  scorpion ($0E, 11 rows), an electric eel ($0E, 3 rows, in the river), a
  *                  bat ($04), the condor ($0A), a checkpoint's cross ($32), a gold bar
  *                  ($1E, with glitter above it), the ring of the treasure ($0E over $1E),
- *                  Quickclaw the cat ($18). Rhonda, the rat, the balloon and the diamond
- *                  were not seen in the runs this module was made from; they keep their
- *                  colours.
+ *                  Quickclaw the cat ($18). Something white of eight rows that flies was
+ *                  seen but not told; Rhonda, the rat, the balloon and the diamond were not
+ *                  seen in the runs this module was made from. They keep their colours.
  *   ladders        the ball, four pixels wide, two rows of every four, colour $12
  *
  * Of its memory ($80 is 0):
