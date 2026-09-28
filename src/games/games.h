@@ -18,6 +18,7 @@
    X(river_raid) \
    X(asteroids) \
    X(kaboom) \
-   X(frogger)
+   X(frogger) \
+   X(berzerk)
 
 #endif
