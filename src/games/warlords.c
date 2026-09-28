@@ -27,9 +27,9 @@
  *                  it until the button is let go
  *
  * The warlords' colours: top left $28 (orange), top right $A4 (blue), bottom left $D4
- * (green), bottom right $62 (purple). A warlord who falls, his shield and his score are
- * drawn black ($00) until the next round. Before the game begins the missiles are $20 and
- * $A4, and no shields are drawn.
+ * (green), bottom right $62 (purple). A warlord who falls and his shield are drawn black
+ * ($00) until the next round; his score keeps its colour. Before the game begins the
+ * missiles are $20 and $A4, and no shields are drawn.
  *
  * Of its memory ($80 is 0): the walls are bytes 15..78, four blocks of 16, whose bits are
  * bricks: a brick broken clears four bits of one block. Which block is which castle was
@@ -371,9 +371,9 @@ static void find_broken(wl *g, px_scene *s)
          if (count[k] && count[k] <= 96)
          {
             px_scene_burst(s, (int)(sum_x[k] / count[k]), (int)(sum_y[k] / count[k]),
-                  shade[k], 14 + count[k] / 4, 260);
+                  shade[k], 22 + count[k] / 3, 300);
             px_scene_burst(s, (int)(sum_x[k] / count[k]), (int)(sum_y[k] / count[k]),
-                  0xFFC060, 6, 180);
+                  0xFFC060, 10, 200);
          }
    g->walls_known = true;
 }
