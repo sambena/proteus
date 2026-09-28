@@ -19,6 +19,7 @@
    X(asteroids) \
    X(kaboom) \
    X(frogger) \
-   X(pole_position)
+   X(pole_position) \
+   X(berzerk)
 
 #endif
