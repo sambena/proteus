@@ -40,7 +40,7 @@ What this cannot tell:
 | 11 | Frogger | Parker Brothers | 1982 | 8 | | **done** |
 | 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | its music is not the TIA's |
 | 13 | Pac-Man | Atari | 1982 | 7 | 8.1 m | **done** |
-| 14 | Berzerk | Atari | 1982 | 7 | 1.9 m | |
+| 14 | Berzerk | Atari | 1982 | 7 | 1.9 m | **done** |
 | 15 | Kaboom! | Activision | 1981 | 6 | 1.0 m | **done** |
 | 16 | Dig Dug | Atari | 1983 | 6 | | |
 | 17 | Pole Position | Atari | 1983 | 6 | | |

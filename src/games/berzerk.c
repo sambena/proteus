@@ -38,6 +38,10 @@
  * its sounds, after playing it from near the top: what the voice sounded is read from the
  * loudest it was during the frame, not from where the frame left it.
  *
+ * Found with the tools of tools/2600 from runs of the game from a state saved at frame 30,
+ * the stick in four directions and the button pressed now and then; Evil Otto in game 10
+ * (Select nine times, then Reset), with the humanoid standing near the way he came in.
+ *
  * Its sounds are listed where they are told apart, below.
  */
 #include "../kit.h"
