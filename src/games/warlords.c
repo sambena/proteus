@@ -661,5 +661,5 @@ static void configure(void *state, const char *(*get)(const char *key))
 }
 
 const px_game px_game_warlords = {
-   "Warlords", md5, fx, options, create, destroy, reset, configure, frame, sound
+   "Warlords", md5, fx, options, create, destroy, reset, configure, frame, sound, NULL
 };

@@ -643,5 +643,5 @@ static void configure(void *state, const char *(*get)(const char *key))
 }
 
 const px_game px_game_space_invaders = {
-   "Space Invaders", md5, fx, options, create, destroy, reset, configure, frame, sound
+   "Space Invaders", md5, fx, options, create, destroy, reset, configure, frame, sound, NULL
 };
