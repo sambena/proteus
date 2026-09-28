@@ -57,6 +57,8 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h> /*JHLOG*/
+#define JH_LOG(n) do { if (getenv("JH_LOG")) fprintf(stderr, "play %s\n", n); } while (0) /*JHLOG*/
 
 #define OPT_COLORS   "proteus_jh_colors"
 #define OPT_BACKDROP "proteus_jh_backdrop"
@@ -193,6 +195,7 @@ typedef struct
    int hero_x, hero_y, hero_h;   /* the explorer or the swimmer; -1: not seen */
    bool under;                   /* the swimmer is under water */
    unsigned since_tally;         /* frames since the time was counted into the score */
+   unsigned since_drown;         /* and since the air ran out */
    int captive_x, captive_y;
 
    px_kit_canvas jungle, ground, bank, water;
@@ -210,7 +213,7 @@ typedef struct
    int boulder_at, croc_at;
    bool hero_under;
    int s_lives, s_score, s_air;  /* memory as the sound saw it */
-   unsigned s_scene, s_since_tally, s_air_wait, strokes;
+   unsigned s_scene, s_since_tally, s_since_drown, s_air_wait, strokes;
    uint32_t chance;
    unsigned wait_bird, wait_cricket, wait_drip;
    unsigned call, call_left, call_wait;
@@ -345,7 +348,7 @@ static void paint_jungle(jh *g, const px_scene *s)
       {
          const int x = (int)(X * 256u / s->sx);
          const unsigned leaves = noise(x / 20, y / 12, 1, 8);
-         p[(size_t)Y * w + X] = px_rgb_scale(haze, 176 + (leaves * 80 >> 8));
+         p[(size_t)Y * w + X] = px_rgb_scale(haze, 204 + (leaves * 52 >> 8));
       }
    }
 
@@ -370,7 +373,7 @@ static void paint_jungle(jh *g, const px_scene *s)
          const int from = (cell * depth[d].cell + (int)(hash(cell % cells, (int)d, 7)
                % (unsigned)(depth[d].cell - depth[d].wide))) * 256;
          const int in = x - from, wide = depth[d].wide * 256;
-         const unsigned foot = (depth[d].foot * 256u - noise(x / 7, (int)d, 8, PXC_W / 7 + 1) * 6u) * s->sy >> 8;
+         const unsigned foot = (depth[d].foot * 256u - noise(x / 8, (int)d, 8, PXC_W / 8) * 6u) * s->sy >> 8;
          if (in < 0 || in >= wide || !(hash(cell % cells, (int)d, 10) % 4))
             continue;
          {
@@ -384,17 +387,17 @@ static void paint_jungle(jh *g, const px_scene *s)
       }
    }
 
-   /* The brush at the foot of the trees, darker than the haze. */
-   for (unsigned Y = 118 * s->sy; Y < h; Y++)
+   /* Ferns at the foot of the trees: fronds that rise from the ground, darker than the haze. */
+   for (unsigned X = 0; X < w; X++)
    {
-      const int y = (int)(Y * 256u / s->sy);
-      for (unsigned X = 0; X < w; X++)
+      const int x = (int)(X * 256u / s->sx);
+      const unsigned tall = noise(x / 5, 0, 30, PXC_W / 5) * 18u + noise(x, 0, 31, PXC_W) * 6u;
+      const unsigned top = (ROW_SKY_FAR * 256u - tall) * s->sy >> 8;
+      for (unsigned Y = top; Y < h; Y++)
       {
-         const int x = (int)(X * 256u / s->sx);
-         const unsigned bush = noise(x / 9, y / 7, 30, PXC_W / 9 + 1) / 2 + noise(x / 3, y / 3, 31, PXC_W / 3 + 1) / 4;
-         const int top = 140 - (int)(((unsigned)(y >> 8) - 118) * 3);
-         if ((int)bush > top)
-            blend(p + (size_t)Y * w + X, bush > 150 ? 0x2E5E2A : 0x1A3A1C, 150);
+         const unsigned into = (Y - top) * 256u / (s->sy * 8u);
+         const unsigned frond = noise(x * 2, (int)(Y * 256u / s->sy) / 3, 32, PXC_W * 2);
+         blend(p + (size_t)Y * w + X, frond > 128 ? 0x2A5A28 : 0x1C4020, into > 150 ? 150 : into + 40);
       }
    }
 
@@ -409,7 +412,7 @@ static void paint_jungle(jh *g, const px_scene *s)
          const unsigned beam = noise((x + y * 5 / 8) / 10, 0, 2, 16);
          if (beam > 150)
             p[(size_t)Y * w + X] = px_rgb_add(p[(size_t)Y * w + X],
-                  px_rgb_scale(0x5A5024, (beam - 150) * 2 * fade >> 8));
+                  px_rgb_scale(0x4C4620, (beam - 150) * 2 * fade >> 8));
       }
    }
 }
@@ -428,7 +431,7 @@ static void paint_ground(jh *g, const px_scene *s)
       for (unsigned X = 0; X < w; X++)
       {
          const int x = (int)(X * 256u / s->sx);
-         const int tuft = (int)(noise(x / 3, 0, 20, PXC_W / 3 + 1) * 5u) - 256 + (int)(hash((int)X, 0, 21) % 3) * 64;
+         const int tuft = (int)(noise(x / 4, 0, 20, PXC_W / 4) * 5u) - 256 + (int)(hash((int)X, 0, 21) % 3) * 64;
          uint32_t rgb;
          if (d < 4 * 256 + tuft)
          {
@@ -439,16 +442,20 @@ static void paint_ground(jh *g, const px_scene *s)
          else
          {
             const unsigned deep = d > 56 * 256 ? 256 : (unsigned)d / 56;
-            const unsigned layers = noise(x / 24, y / 3, 23, PXC_W / 24 + 1);
+            const unsigned layers = noise(x / 20, y / 3, 23, PXC_W / 20);
             const unsigned grain = hash((int)X / 2, (int)Y / 2, 24);
-            const unsigned stone = noise(x / 5, y / 4, 25, PXC_W / 5);
+            /* Game pixels are twice as wide as high: cells of 2 by 4 rows are round. */
+            const unsigned stone = noise(x / 2, y / 4, 25, PXC_W / 2);
             rgb = px_rgb_scale(px_rgb_mix(0x8A6036, 0x3A2412, deep), 180 + (layers * 60 >> 8) + (grain * 20 >> 8));
-            if (stone > 196)
+            if (stone > 200)
             {
-               /* A stone, lit from above. */
-               const unsigned above = noise(x / 5, (y - 256) / 4, 25, PXC_W / 5);
-               rgb = px_rgb_mix(rgb, above > stone ? 0x6C6258 : 0xA89E8E, (stone - 196) * 5);
+               /* A stone, lit from above, its foot in shadow. */
+               const unsigned above = noise(x / 2, (y - 128) / 4, 25, PXC_W / 2);
+               const uint32_t face = above + 4 < stone ? 0x9A8C78 : above > stone + 4 ? 0x4E4438 : 0x76695A;
+               rgb = px_rgb_mix(rgb, face, (stone - 200) * 6 > 230 ? 230 : (stone - 200) * 6);
             }
+            else if (stone > 186)
+               rgb = px_rgb_scale(rgb, 200);
          }
          p[(size_t)Y * w + X] = rgb;
       }
@@ -469,9 +476,9 @@ static void paint_bank(jh *g, const px_scene *s)
       for (unsigned X = 0; X < w; X++)
       {
          const int x = (int)(X * 256u / s->sx);
-         const unsigned cloud = noise(x / 14, y / 6, 60, PXC_W / 14 + 1);
-         const int crest = (70 * 256 + (int)noise(x / 12, 0, 61, PXC_W / 12 + 1) * 14 * 1
-               + (int)noise(x / 3, 0, 62, PXC_W / 3 + 1) * 4) ;
+         const unsigned cloud = noise(x / 16, y / 6, 60, PXC_W / 16);
+         const int crest = (70 * 256 + (int)noise(x / 10, 0, 61, PXC_W / 10) * 14
+               + (int)noise(x / 4, 0, 62, PXC_W / 4) * 4);
          uint32_t rgb = sky;
          if (cloud > 170 && row < 60)
             rgb = px_rgb_mix(rgb, 0xEEF2F4, (cloud - 170) * 2 * (unsigned)(60 - row) / 60);
@@ -503,12 +510,12 @@ static void paint_water(jh *g, const px_scene *s)
       for (unsigned X = 0; X < w; X++)
       {
          const int x = (int)(X * 256u / s->sx);
-         const unsigned a = noise(x / 9, y / 5, 50, PXC_W / 9 + 1), b = noise(x / 13, y / 7, 51, PXC_W / 13 + 1);
+         const unsigned a = noise(x / 8, y / 5, 50, PXC_W / 8), b = noise(x / 16, y / 7, 51, PXC_W / 16);
          const unsigned ridge = a > b ? 255 - (a - b) * 4 : 255 - (b - a) * 4;
-         const unsigned beam = noise((x - (y - (int)top * 256) * 3 / 8) / 12, 0, 52, PXC_W / 12 + 1);
+         const unsigned beam = noise((x - (y - (int)top * 256) * 3 / 8) / 10, 0, 52, PXC_W / 10);
          uint32_t rgb = base;
          if (ridge < 256 && ridge > 196)
-            rgb = px_rgb_add(rgb, px_rgb_scale(0x3C7474, (ridge - 196) * 4 * (256 - deep) >> 8));
+            rgb = px_rgb_add(rgb, px_rgb_scale(0x2C5E60, (ridge - 196) * 3 * (256 - deep) >> 8));
          if (beam > 140)
             rgb = px_rgb_add(rgb, px_rgb_scale(0x183640, (beam - 140) * 2 * (256 - deep) >> 8));
          p[(size_t)Y * w + X] = rgb;
@@ -607,26 +614,31 @@ static void paint_backdrop(jh *g, px_scene *s)
    const unsigned w = s->w, sy = s->sy;
    const int32_t near = g->scroll * (int32_t)s->sx, far = near / 3;
 
+   /* All four are painted at once, when the picture gets its size: a scene that begins is
+    * not held up. */
+   if (!fit(&g->jungle, &g->painted_jungle, s) || !fit(&g->ground, &g->painted_ground, s)
+         || !fit(&g->bank, &g->painted_bank, s) || !fit(&g->water, &g->painted_water, s))
+      return;
+   if (!g->painted_jungle)
+      paint_jungle(g, s);
+   if (!g->painted_ground)
+      paint_ground(g, s);
+   if (!g->painted_bank)
+      paint_bank(g, s);
+   if (!g->painted_water)
+      paint_water(g, s);
+   g->painted_jungle = g->painted_ground = g->painted_bank = g->painted_water = true;
+
    if (g->at.river)
    {
       int32_t water;
-      if (!fit(&g->bank, &g->painted_bank, s) || !fit(&g->water, &g->painted_water, s))
-         return;
-      if (!g->painted_bank)
-      {
-         paint_bank(g, s);
-         g->painted_bank = true;
-      }
-      if (!g->painted_water)
-      {
-         paint_water(g, s);
-         g->painted_water = true;
-      }
       /* The water drifts with the river as well as moving with the bed. */
       water = g->shown * (int32_t)s->sx / 16 + (int32_t)(g->frame * s->sx / 5);
       for (unsigned Y = 0; Y < s->h; Y++)
       {
-         if (Y < g->at.water * sy)
+         if (Y < ROW_TOP * sy || Y >= ROWS * sy)
+            memset(s->backdrop + (size_t)Y * w, 0, w * sizeof(uint32_t));
+         else if (Y < g->at.water * sy)
             px_kit_canvas_roll(&g->bank, s->backdrop + (size_t)Y * w, Y, 0, w, g->shown * (int32_t)s->sx / 64, 0);
          else
             px_kit_canvas_roll(&g->water, s->backdrop + (size_t)Y * w, Y, 0, w, water, 0);
@@ -634,23 +646,13 @@ static void paint_backdrop(jh *g, px_scene *s)
    }
    else
    {
-      if (!fit(&g->jungle, &g->painted_jungle, s) || !fit(&g->ground, &g->painted_ground, s))
-         return;
-      if (!g->painted_jungle)
-      {
-         paint_jungle(g, s);
-         g->painted_jungle = true;
-      }
-      if (!g->painted_ground)
-      {
-         paint_ground(g, s);
-         g->painted_ground = true;
-      }
       for (unsigned Y = 0; Y < s->h; Y++)
       {
          /* The ground of the boulders and the cannibals begins at row ROW_SKY_FAR, as the
           * canvas does; that of the vines is the game's own. */
-         if (Y >= g->at.ground * sy && g->scene != SCENE_VINES)
+         if (Y < ROW_TOP * sy || Y >= ROWS * sy)
+            memset(s->backdrop + (size_t)Y * w, 0, w * sizeof(uint32_t));
+         else if (Y >= g->at.ground * sy && g->scene != SCENE_VINES)
             px_kit_canvas_roll(&g->ground, s->backdrop + (size_t)Y * w, Y + (ROW_SKY_FAR - g->at.ground) * sy,
                   0, w, near, 0);
          else
@@ -670,7 +672,7 @@ static void paint_backdrop(jh *g, px_scene *s)
 static uint32_t leaves_at(int x, unsigned y, bool edge)
 {
    const unsigned down = y < ROW_TOP ? 0 : (y - ROW_TOP) * 256u / (ROW_VINES - ROW_TOP);
-   const unsigned clump = noise(wrap(x) * 256 / 7, (int)y * 256 / 4, 5, PXC_W / 7 + 1);
+   const unsigned clump = noise(wrap(x) * 256 / 8, (int)y * 256 / 4, 5, PXC_W / 8);
    const unsigned much = y < ROW_HUD ? 30 : 80;
    uint32_t rgb = px_rgb_scale(px_rgb_mix(0x0E2C10, 0x2E7424, down > 256 ? 256 : down), 176 + (clump * much >> 8));
    if (edge)
@@ -687,7 +689,7 @@ static uint32_t grass_at(int x, unsigned y)
 
 static uint32_t earth_at(int x, unsigned y)
 {
-   const unsigned grain = noise(wrap(x) * 256 / 3, (int)y * 256 / 2, 71, PXC_W / 3 + 1);
+   const unsigned grain = noise(wrap(x) * 256 / 4, (int)y * 256 / 2, 71, PXC_W / 4);
    return px_rgb_scale(px_rgb_mix(0x7A5230, 0x46301A, y > 190 ? (y - 190) * 16 : 0), 190 + (grain * 66 >> 8));
 }
 
@@ -696,8 +698,8 @@ static uint32_t bed_at(int x, unsigned y, unsigned bed)
 {
    const unsigned stone = noise(wrap(x) * 256 / 4, (int)y * 256 / 3, 72, PXC_W / 4);
    const unsigned deep = y > bed ? (y - bed) * 10 : 0;
-   uint32_t rgb = px_rgb_mix(0x8C7050, 0x4A3A2E, stone);
-   rgb = px_rgb_mix(rgb, 0x10283A, 80 + (deep > 120 ? 120 : deep));
+   uint32_t rgb = px_rgb_mix(0xB88E5E, 0x6A4C34, stone);
+   rgb = px_rgb_mix(rgb, 0x163A48, 50 + (deep > 110 ? 110 : deep));
    return px_rgb_scale(rgb, 216 + (hash(wrap(x), (int)y, 73) * 40 >> 8));
 }
 
@@ -781,6 +783,30 @@ static void paint_background(jh *g, px_scene *s)
       else
          rgb = y < g->at.ground + 4 ? 0x4C9430 : px_rgb_mix(0x7A5230, 0x3A2412, (y - g->at.ground) * 256u / (h - g->at.ground + 1));
       px_kit_background(s, y, y + 1, rgb);
+   }
+}
+
+/* The bars HMOVE leaves at the left were given the game's colours of what is next to them
+ * before the module saw the frame; they get what it has made of that. */
+static void refill_bars(px_scene *s)
+{
+   const unsigned h = s->frame->height < ROWS ? s->frame->height : ROWS;
+   if (!s->cfg->bars)
+      return;
+   for (unsigned y = ROW_TOP; y < h; y++)
+   {
+      const uint8_t *tags = s->frame->tags + (size_t)y * PXC_W;
+      uint32_t *top = s->top + (size_t)y * PXC_W, *bk = s->bk + (size_t)y * PXC_W;
+      unsigned n = 0;
+      while (n < PXC_W && (tags[n] & PXC_BLANK))
+         n++;
+      if (!n || n > 16 || n >= PXC_W)
+         continue;
+      for (unsigned x = 0; x < n; x++)
+      {
+         top[x] = PX_KEY_CLS(top[n]) == PX_CLS_SPRITE ? PX_KEY(PX_CLS_BK, bk[n]) : top[n];
+         bk[x]  = bk[n];
+      }
    }
 }
 
@@ -917,7 +943,12 @@ static uint32_t color_of(const jh *g, const px_instance *in, unsigned r, unsigne
             default:   return original;
          }
       case KIND_BRANCH:
-         return px_rgb_mix(0x7A5230, 0x3E2614, (unsigned)(in->y + (int)r - ROW_BRANCHES) * 12);
+      {
+         /* Bark, lighter where it is higher, and moss on it here and there. */
+         const unsigned down_the_tree = (unsigned)(in->y + (int)r - ROW_BRANCHES) * 12;
+         const uint32_t bark = px_rgb_mix(0xB47E4A, 0x6A4424, down_the_tree > 256 ? 256 : down_the_tree);
+         return hash((in->x + (int)b) / 2, in->y + (int)r, 82) > 200 ? px_rgb_mix(bark, 0x78A840, 150) : bark;
+      }
       case KIND_VINE:
       {
          /* A vine that twists, with a leaf now and then. */
@@ -945,7 +976,9 @@ static uint32_t color_of(const jh *g, const px_instance *in, unsigned r, unsigne
 static void paint_object(const jh *g, px_scene *s, const px_instance *in)
 {
    const px_objects *o = s->objects;
-   for (unsigned r = 0; r < in->h && r < PX_OBJ_ROWS; r++)
+   /* An object drawn from its track has the rows the track keeps. */
+   const unsigned rows = in->ghost && in->h > PX_OBJ_ROWS ? PX_OBJ_ROWS : in->h;
+   for (unsigned r = 0; r < rows; r++)
    {
       const int y = in->y + (int)r;
       const uint32_t bits = o->bits[in->rows + r];
@@ -967,6 +1000,9 @@ static void paint_object(const jh *g, px_scene *s, const px_instance *in)
          s->top[i] = PX_KEY(PX_CLS_SPRITE, rgb);
          if (s->sprite[i])
             s->sprite[i] = 0xFF000000u | rgb;
+         /* A vine is a plant, not a beam: it does not glow as missiles do. */
+         if (in->group == KIND_VINE)
+            s->energy[i] = 0;
       }
    }
 }
@@ -1087,7 +1123,7 @@ static int score_of(const uint8_t *ram, size_t size)
    return ((hi >> 4) * 10 + (hi & 15)) * 100 + (lo >> 4) * 10 + (lo & 15);
 }
 
-static void events(jh *g, px_scene *s, int lives, int score, int air)
+static void events(jh *g, px_scene *s, int lives, int score)
 {
    const px_objects *o = s->objects;
    const unsigned heard = voice0_plays(&g->seen);
@@ -1165,10 +1201,13 @@ static void events(jh *g, px_scene *s, int lives, int score, int air)
       if (g->scene == SCENE_RIVER)
          add_bubbles(g, s, g->hero_x, g->hero_y, 10);
    }
-   /* Out of air: bubbles go up as it goes. */
-   if (heard == HEARD_DROWN && g->seen0 != HEARD_DROWN && g->hero_x >= 0)
+   /* Out of air: the last of it goes up. It is heard in steps with silence between. */
+   if (heard == HEARD_DROWN && g->since_drown > 40 && g->hero_x >= 0)
       add_bubbles(g, s, g->hero_x, g->hero_y, 12);
-   (void)air;
+   if (heard == HEARD_DROWN)
+      g->since_drown = 0;
+   else if (g->since_drown < 1000)
+      g->since_drown++;
 }
 
 static void frame(void *state, px_scene *s)
@@ -1271,12 +1310,14 @@ static void frame(void *state, px_scene *s)
          add_bubbles(g, s, g->hero_x - 4, g->hero_y, 1);
       paint_backdrop(g, s);
    }
+   if (g->backdrop || g->colors != COLORS_ORIGINAL)
+      refill_bars(s);
 
    if (!s->advance)
       return;
 
    px_kit_tia_hear(&g->seen, s->frame);
-   events(g, s, lives, score, air);
+   events(g, s, lives, score);
    /* Into the water, and out of it. */
    if (g->sparks && g->scene == SCENE_RIVER && g->hero_x >= 0 && g->under != was_under)
    {
@@ -1306,6 +1347,7 @@ static float pan_of(const jh *g)
 
 static void play_catch(jh *g, px_sound *s)
 {
+   JH_LOG("catch"); /*JHLOG*/
    static const px_tone p[4] = {
       /* wave             freq  to    glide  attack  hold   decay  gain   cutoff to */
       { PX_WAVE_SAW,      190,  140,  0.25f, 0.005f, 0.04f, 0.30f, 0.20f, 900, 400, 7.0f, 0.03f },
@@ -1319,6 +1361,7 @@ static void play_catch(jh *g, px_sound *s)
 
 static void play_jump(jh *g, px_sound *s)
 {
+   JH_LOG("jump"); /*JHLOG*/
    /* Off a vine it is a long swing through the air; on the ground a hop. */
    static const px_tone swing[3] = {
       { PX_WAVE_NOISE,    900,  0,    0.30f, 0.08f,  0.10f, 0.30f, 0.30f, 500, 2600, 0, 0 },
@@ -1336,6 +1379,7 @@ static void play_jump(jh *g, px_sound *s)
 
 static void play_stroke(jh *g, px_sound *s, bool under)
 {
+   JH_LOG("stroke"); /*JHLOG*/
    static const px_tone splash[2] = {
       { PX_WAVE_NOISE, 4000, 0,   0.10f, 0.005f, 0.01f, 0.12f, 0.10f, 2600, 700, 0, 0 },
       { PX_WAVE_SINE,  380,  620, 0.05f, 0.002f, 0,     0.06f, 0.05f, 0, 0, 0, 0 }
@@ -1350,6 +1394,7 @@ static void play_stroke(jh *g, px_sound *s, bool under)
 
 static void play_stab(jh *g, px_sound *s)
 {
+   JH_LOG("stab"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_NOISE,  8000, 0,    0.10f, 0.003f, 0.02f, 0.12f, 0.30f, 6500, 1500, 0, 0 },
       { PX_WAVE_SINE,   2600, 2300, 0.15f, 0.001f, 0.01f, 0.22f, 0.10f, 0, 0, 6.0f, 0.01f },
@@ -1361,6 +1406,7 @@ static void play_stab(jh *g, px_sound *s)
 
 static void play_croc(jh *g, px_sound *s)
 {
+   JH_LOG("croc"); /*JHLOG*/
    static const px_tone p[4] = {
       { PX_WAVE_NOISE, 3500, 500, 0.40f, 0.002f, 0.05f, 0.45f, 0.40f, 3000, 400, 0, 0 },
       { PX_WAVE_SINE,  120,  40,  0.20f, 0.001f, 0.03f, 0.30f, 0.70f, 0, 0, 0, 0 },
@@ -1373,6 +1419,7 @@ static void play_croc(jh *g, px_sound *s)
 
 static void play_splash(jh *g, px_sound *s, bool in)
 {
+   JH_LOG("splash"); /*JHLOG*/
    static const px_tone dive[3] = {
       { PX_WAVE_NOISE, 6000, 700, 0.30f, 0.002f, 0.04f, 0.35f, 0.40f, 5000, 600, 0, 0 },
       { PX_WAVE_SINE,  160,  70,  0.12f, 0.001f, 0.02f, 0.18f, 0.40f, 0, 0, 0, 0 },
@@ -1391,6 +1438,7 @@ static void play_splash(jh *g, px_sound *s, bool in)
 
 static void play_drown(jh *g, px_sound *s)
 {
+   JH_LOG("drown"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_SINE,     620, 140, 1.10f, 0.01f, 0.60f, 0.50f, 0.34f, 0, 0, 7.0f, 0.03f },
       { PX_WAVE_TRIANGLE, 310, 70,  1.10f, 0.01f, 0.60f, 0.50f, 0.20f, 0, 0, 7.0f, 0.03f },
@@ -1402,6 +1450,7 @@ static void play_drown(jh *g, px_sound *s)
 
 static void play_bounce(jh *g, px_sound *s)
 {
+   JH_LOG("bounce"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_SINE,  78,   38,  0.18f, 0.001f, 0.02f, 0.40f, 0.90f, 0, 0, 0, 0 },
       { PX_WAVE_NOISE, 1200, 200, 0.20f, 0.001f, 0.02f, 0.30f, 0.40f, 900, 150, 0, 0 },
@@ -1413,6 +1462,7 @@ static void play_bounce(jh *g, px_sound *s)
 
 static void play_lost(jh *g, px_sound *s)
 {
+   JH_LOG("lost"); /*JHLOG*/
    static const px_tone p[3] = {
       { PX_WAVE_NOISE, 4500, 400, 0.30f, 0,      0.04f, 0.45f, 0.36f, 3000, 260, 0, 0 },
       { PX_WAVE_SINE,  170,  45,  0.35f, 0.002f, 0.04f, 0.55f, 0.66f, 0, 0, 0, 0 },
@@ -1424,6 +1474,7 @@ static void play_lost(jh *g, px_sound *s)
 
 static void play_tally(jh *g, px_sound *s)
 {
+   JH_LOG("tally"); /*JHLOG*/
    static const px_tone p[2] = {
       { PX_WAVE_SINE, 1760, 0, 0, 0.001f, 0.01f, 0.14f, 0.16f, 0, 0, 0, 0 },
       { PX_WAVE_SINE, 2637, 0, 0, 0.001f, 0,     0.10f, 0.08f, 0, 0, 0, 0 }
@@ -1434,6 +1485,7 @@ static void play_tally(jh *g, px_sound *s)
 /* The rescue: a chord of bells, struck once. */
 static void play_rescue(jh *g, px_sound *s)
 {
+   JH_LOG("rescue"); /*JHLOG*/
    static const float chord[4] = { 523.25f, 659.26f, 783.99f, 1046.5f };
    for (unsigned n = 0; n < 4; n++)
    {
@@ -1448,6 +1500,7 @@ static void play_rescue(jh *g, px_sound *s)
 /* The air running low: a soft beat that comes faster as there is less of it. */
 static void play_air(jh *g, px_sound *s)
 {
+   JH_LOG("air"); /*JHLOG*/
    static const px_tone p[2] = {
       { PX_WAVE_SINE, 70, 50, 0.08f, 0.004f, 0.02f, 0.16f, 0.50f, 0, 0, 0, 0 },
       { PX_WAVE_SINE, 440, 330, 0.10f, 0.004f, 0.02f, 0.10f, 0.05f, 0, 0, 0, 0 }
@@ -1459,6 +1512,7 @@ static void play_air(jh *g, px_sound *s)
 /* The tune a scene begins with: the note voice 0 has, an octave lower on a wooden flute. */
 static void play_note(jh *g, px_sound *s, bool begins)
 {
+   JH_LOG("note"); /*JHLOG*/
    static const px_tone low  = { PX_WAVE_TRIANGLE, 1, 0, 0, 0.02f, 0, 0, 0.34f, 0, 0, 5.0f, 0.006f };
    static const px_tone high = { PX_WAVE_SINE,     1, 0, 0, 0.03f, 0, 0, 0.14f, 0, 0, 5.0f, 0.006f };
    const float hz = px_kit_tune(px_kit_tia_hz(g->tia.wave[0], g->tia.pitch[0])) * 0.5f;
@@ -1492,9 +1546,10 @@ static void stop_tune(jh *g, px_sound *s)
 /* The cannibals' tune: every note of it struck on a log drum. */
 static void play_drum(jh *g, px_sound *s)
 {
+   JH_LOG("drum"); /*JHLOG*/
    const float hz = px_kit_tune(px_kit_tia_hz(g->tia.wave[0], g->tia.pitch[0])) * 2.0f;
    px_tone p[3] = {
-      { PX_WAVE_SINE,     0, 0, 0.12f, 0.001f, 0.01f, 0.32f, 0.70f, 0, 0, 0, 0 },
+      { PX_WAVE_SINE,     0, 0, 0.12f, 0.001f, 0.01f, 0.32f, 0.50f, 0, 0, 0, 0 },
       { PX_WAVE_TRIANGLE, 0, 0, 0.10f, 0.001f, 0,     0.16f, 0.20f, 0, 0, 0, 0 },
       { PX_WAVE_NOISE, 2400, 0, 0,     0,      0,     0.03f, 0.10f, 1800, 600, 0, 0 }
    };
@@ -1503,7 +1558,6 @@ static void play_drum(jh *g, px_sound *s)
    p[0].freq = hz;        p[0].freq_end = hz * 0.82f;
    p[1].freq = hz * 2.7f; p[1].freq_end = hz * 2.4f;
    px_kit_play(s, p, 3, 0.25f);
-   px_sound_rumble(s, 6000, 0, 2);
 }
 
 /* A number of frames between two, by chance. */
@@ -1668,8 +1722,8 @@ static void sound(void *state, px_sound *s)
       case HEARD_DRUM:
          if (g->tia.volume[0] && (px_kit_tia_louder(&g->tia, 0) || g->tia.pitch[0] != g->tia.was_pitch[0]))
          {
-            if (g->own_sound) play_drum(g, s);
-            else              px_sound_rumble(s, 6000, 0, 2);
+            if (g->own_sound)
+               play_drum(g, s);
          }
          break;
       case HEARD_CATCH:
@@ -1699,7 +1753,8 @@ static void sound(void *state, px_sound *s)
          }
          break;
       case HEARD_DROWN:
-         if (heard != g->heard0)
+         /* It comes in steps with silence between: once for all of them. */
+         if (g->s_since_drown > 40)
          {
             if (g->own_sound) play_drown(g, s);
             else              px_sound_rumble(s, 20000, 30000, 30);
@@ -1731,6 +1786,10 @@ static void sound(void *state, px_sound *s)
       g->s_since_tally = 0;
    else if (g->s_since_tally < 1000)
       g->s_since_tally++;
+   if (heard == HEARD_DROWN)
+      g->s_since_drown = 0;
+   else if (g->s_since_drown < 1000)
+      g->s_since_drown++;
 
    /* What the game is silent for. */
    if (g->s_scene == SCENE_RIVER && score > g->s_score && g->s_score >= 0 && score - g->s_score <= 5)
@@ -1738,8 +1797,7 @@ static void sound(void *state, px_sound *s)
       if (g->own_sound) play_croc(g, s);
       else              px_sound_rumble(s, 26000, 30000, 10);
    }
-   if (lives >= 0 && g->s_lives >= 0 && lives < g->s_lives && lives != 0xFF && heard != HEARD_DROWN
-         && g->heard0 != HEARD_DROWN)
+   if (lives >= 0 && g->s_lives >= 0 && lives < g->s_lives && lives != 0xFF && g->s_since_drown > 600)
    {
       if (g->own_sound) play_lost(g, s);
       else              px_sound_rumble(s, 65535, 36000, 36);
@@ -1791,6 +1849,7 @@ static void reset(void *state)
    g->captive_x = g->captive_y = -1;
    g->under = g->hero_under = false;
    g->since_tally = g->s_since_tally = 1000;
+   g->since_drown = g->s_since_drown = 1000;
    g->scroll = g->shown = 0;
    g->bed_known = false;
    g->tune_low = g->tune_high = g->hush = 0;
