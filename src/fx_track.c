@@ -291,16 +291,18 @@ static void match_tracks(px_objects *o, bool ghosts)
       int best_cost = 1 << 30;
       unsigned rows;
 
+      in->who = o->who ? (uint8_t)o->who(o->who_ctx, in) : 0;
+
       for (unsigned t = 0; t < PX_MAX_OBJ_TRACKS; t++)
       {
          px_obj_track *tr = &o->tracks[t];
          int dx, dy, cost;
-         if (!tr->id || tr->matched || tr->last.cls != in->cls)
+         if (!tr->id || tr->matched || tr->last.cls != in->cls || tr->last.who != in->who)
             continue;
          dx = in->x - tr->last.x;
          dy = in->y - tr->last.y;
          /* Far enough for a row of invaders that steps down, near enough to tell rows. */
-         if (iabs(dx) > 10 || iabs(dy) > 12)
+         if (!(in->who & PX_WHO_ANYWHERE) && (iabs(dx) > 10 || iabs(dy) > 12))
             continue;
          cost = iabs(dx) + iabs(dy) + (tr->last.hash != in->hash ? 4 : 0)
                + (tr->last.copy != in->copy ? 2 : 0) + (tr->last.color != in->color ? 2 : 0);
@@ -327,7 +329,8 @@ static void match_tracks(px_objects *o, bool ghosts)
       else
       {
          /* Back after being away, and it had been there before that: flicker. */
-         if (best->missed && best->missed <= 4 && (best->seen & 0x3E))
+         if (best->missed && (in->who ? best->missed <= 8 && (best->seen & 0x3FE)
+               : best->missed <= 4 && (best->seen & 0x3E)))
          {
             best->flickers = true;
             if (best->missed > best->gap)
@@ -340,7 +343,8 @@ static void match_tracks(px_objects *o, bool ghosts)
       best->matched = true;
       best->seen   |= 1;
       best->missed  = 0;
-      if ((best->seen & 0xFF) == 0xFF)
+      /* There without a break for as long as it may be away: it flickers no more. */
+      if (in->who ? best->seen == 0xFFFF : (best->seen & 0xFF) == 0xFF)
       {
          best->flickers = false;
          best->gap      = 0;
@@ -359,7 +363,7 @@ static void match_tracks(px_objects *o, bool ghosts)
       px_obj_track *tr = &o->tracks[t];
       if (!tr->id || tr->matched)
          continue;
-      if (++tr->missed > 8)
+      if (++tr->missed > (tr->last.who ? 16 : 8))
       {
          tr->id = 0;
          continue;

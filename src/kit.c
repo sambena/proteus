@@ -2,6 +2,7 @@
 /* The kit: what game modules have in common (kit.h). */
 #include "kit.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -118,6 +119,66 @@ void px_kit_background(px_scene *s, unsigned from, unsigned to, uint32_t rgb)
    }
 }
 
+unsigned px_kit_small_playfield(const px_scene *s, unsigned from, unsigned to, unsigned rows,
+      uint8_t *small)
+{
+   const uint8_t *tags = s->frame->tags;
+   unsigned marked = 0;
+
+   to = rows_of(s, to);
+   memset(small, 0, (size_t)PXC_W * s->frame->height);
+   for (unsigned x = 0; x < PXC_W; x++)
+      for (unsigned y = from; y < to; )
+      {
+         unsigned end = y;
+         while (end < to && (tags[(size_t)end * PXC_W + x] & (PXC_PF | PXC_BLANK)) == PXC_PF)
+            end++;
+         if (end == y)
+         {
+            y++;
+            continue;
+         }
+         /* What goes on beyond the rows looked at is not small for all that is known. */
+         if (end - y <= rows && y > from && end < to)
+            for (unsigned r = y; r < end; r++, marked++)
+               small[(size_t)r * PXC_W + x] = 1;
+         y = end;
+      }
+   return marked;
+}
+
+void px_kit_outline(px_scene *s, unsigned from, unsigned to, uint32_t edge, uint32_t inside,
+      uint32_t light, const uint8_t *skip)
+{
+   const uint8_t *tags = s->frame->tags;
+   const int h = (int)s->frame->height;
+
+   to = rows_of(s, to);
+   for (unsigned y = from; y < to; y++)
+      for (unsigned x = 0; x < PXC_W; x++)
+      {
+         static const int step[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+         const size_t i = (size_t)y * PXC_W + x;
+         bool within = true;
+         if (!(tags[i] & PXC_PF) || (tags[i] & PXC_BLANK) || (skip && skip[i]))
+            continue;
+         for (unsigned d = 0; d < 4 && within; d++)
+         {
+            const int nx = (int)x + step[d][0], ny = (int)y + step[d][1];
+            size_t n;
+            /* The picture's sides end nothing: a wall goes on beyond them. */
+            if (nx < 0 || nx >= PXC_W || ny < 0 || ny >= h)
+               continue;
+            n = (size_t)ny * PXC_W + (size_t)nx;
+            within = (tags[n] & PXC_BLANK) || ((tags[n] & PXC_PF) && !(skip && skip[n]));
+         }
+         if (PX_KEY_CLS(s->top[i]) == PX_CLS_PF)
+            s->top[i] = PX_KEY(PX_CLS_PF, within ? inside : edge);
+         if (light && !within)
+            s->light[i] = 0xFF000000u | (light & 0xFFFFFFu);
+      }
+}
+
 void px_kit_fill_holes(px_scene *s, const px_instance *in, uint32_t rgb)
 {
    /* The object with a pixel of nothing around it. What of the nothing cannot be reached
@@ -232,6 +293,13 @@ float px_kit_tia_hz(unsigned wave, unsigned pitch)
    };
    const unsigned n = pattern[wave & 15];
    return n ? 31399.5f / (float)(n * ((pitch & 31) + 1)) : 0.0f;
+}
+
+float px_kit_tune(float hz)
+{
+   if (hz <= 0.0f)
+      return 0.0f;
+   return 440.0f * powf(2.0f, roundf(12.0f * log2f(hz / 440.0f)) / 12.0f);
 }
 
 float px_kit_pan(int column)

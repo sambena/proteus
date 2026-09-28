@@ -82,6 +82,9 @@ struct px_fx_video
    px_pool *pool;
 
    /* A game module's. */
+   const px_game *who_game;   /* the module that tells who an object is, while it is asked */
+   void *who_state;
+   px_glance glance;
    uint32_t *backdrop;   /* a picture for where the background is */
    size_t backdrop_cap;
    unsigned backdrop_w, backdrop_h;
@@ -469,6 +472,13 @@ static void classify(px_fx_video *v, const struct pxc_frame *f)
          v->energy[i] = (tags & (PXC_M0 | PXC_M1 | PXC_BL)) != 0;
       }
    }
+}
+
+/* Asks the game module who an object is. */
+static unsigned ask_who(void *ctx, const px_instance *in)
+{
+   px_fx_video *v = (px_fx_video*)ctx;
+   return v->who_game->who(v->who_state, &v->glance, in);
 }
 
 /* Objects that are in turn not to be drawn in this frame, drawn from their tracks. */
@@ -1281,7 +1291,17 @@ const uint32_t *px_fx_video_render(px_fx_video *v, const struct pxc_frame *f,
       {
          /* A frame drawn again has the objects it had. */
          if (advance)
+         {
+            const bool tells = game && extra->game->who;
+            v->who_game        = extra->game;
+            v->who_state       = extra->game_state;
+            v->glance.frame    = f;
+            v->glance.ram      = extra->ram;
+            v->glance.ram_size = extra->ram_size;
+            v->objects.who     = tells ? ask_who : NULL;
+            v->objects.who_ctx = v;
             px_objects_update(&v->objects, f, fuse);
+         }
          if (fuse)
             draw_ghosts(v, f);
       }
