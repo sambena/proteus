@@ -1188,6 +1188,11 @@ static void draw_sparks(px_fx_video *v, const px_fx_config *c, unsigned w, unsig
             if (X + u < w && Y + t < h)
             {
                uint32_t *o = v->out + (size_t)(Y + t) * w + X + u;
+               /* Not on what has no picture, nor on what a game module keeps as the game
+                * drew it (a cockpit): blank. */
+               const size_t at = (size_t)((Y + t) / c->sy) * PXC_W + (X + u) / c->sx;
+               if ((Y + t) / c->sy < v->height && KEY_CLS(v->top[at]) == CLS_BLANK)
+                  continue;
                *o = add_rgb(*o, rgb);
             }
    }
