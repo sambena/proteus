@@ -197,6 +197,8 @@ typedef struct
    px_kit_tia tia;               /* the game's two voices */
    unsigned heard;               /* what voice 0 played in the frame before: SOUND_* */
    bool rising;                  /* of picking up and putting down: which it is */
+   unsigned end_ago;             /* frames since the end was heard */
+   unsigned chimed;              /* the pitch of the end that a chime was played for */
    unsigned wind, drone_low, drone_high, growl;   /* the ambience's voices at the synth */
 } av;
 
@@ -1121,26 +1123,32 @@ static void frame(void *state, px_scene *s)
  *   slain       waveform 4, the pitch from 16 up to 30, three frames each, the volume from
  *               15 down to 1: 45 frames
  *   the end     256 frames, the waveform one less every frame through all sixteen, the
- *               pitch one less every 16 frames from 31 to 16, the volume from 15 down to 1
- *               every 32 frames. What there is of a tune in it are the sixteen pitches,
- *               which rise; of the waveforms that are tones, 4 has them from 491 Hz to
- *               923 Hz.
+ *               pitch one less every 8 frames from 31 to 0, the volume from 15 down to 1
+ *               and then nothing for two frames, every 32 frames. What there is of a tune
+ *               in it are the 32 pitches, which rise; of the waveforms that are tones, 12
+ *               has them from 164 Hz to 5233 Hz.
  *
  * Here each is a sound of several voices where it happens between left and right, and the
- * sixteen pitches of the end are chimes, each at the note it is nearest to. The game's
- * voice is silent while it plays one of these.
+ * pitches of the end are chimes, each at the note it is nearest to. The game's voice is
+ * silent while it plays one of these.
  * ------------------------------------------------------------------------- */
 
 enum { SOUND_NONE = 0, SOUND_HANDS, SOUND_BITE, SOUND_EATEN, SOUND_SLAIN, SOUND_END, SOUND_OTHER };
 
-static unsigned voice0_plays(const px_kit_tia *t, int won)
+#define END_WAVE  12     /* the waveform the chimes take their pitches from */
+#define END_GAP   3      /* frames of silence that are no end of the end */
+#define END_GAP_OVER (END_GAP + 1)
+#define NO_PITCH  0xFFu
+
+/* `ending`: the end was heard no longer ago than it is silent for in between. */
+static unsigned voice0_plays(const px_kit_tia *t, int won, bool ending)
 {
    const unsigned wave = t->wave[0], pitch = t->pitch[0], volume = t->volume[0];
    if (!volume)
       return SOUND_NONE;
    /* The end goes through the waveforms of the others. */
-   if (won == 0xFF || (t->was_volume[0] && ((t->was_wave[0] + 15u) & 15u) == wave))
-      return pitch >= 16 ? SOUND_END : SOUND_OTHER;
+   if (won == 0xFF || ending || (t->was_volume[0] && ((t->was_wave[0] + 15u) & 15u) == wave))
+      return SOUND_END;
    switch (wave)
    {
       case 6:  return volume == 5 && pitch <= 3 ? SOUND_HANDS : volume >= 8 && pitch <= 15 ? SOUND_EATEN : SOUND_OTHER;
@@ -1211,21 +1219,20 @@ static void play_slain(av *g, px_sound *s)
    px_sound_rumble(s, 30000, 52000, 26);
 }
 
-/* One of the sixteen pitches of the end, as loud as the game plays it. */
+/* One of the pitches of the end, as loud as the game plays it. */
 static void play_chime(px_sound *s, unsigned pitch, unsigned volume)
 {
-   const float f = px_kit_tune(px_kit_tia_hz(4, pitch)), loud = 0.35f + 0.65f * (float)volume / 15.0f;
-   px_tone p[3] = {
-      { PX_WAVE_SINE,     0, 0, 0, 0.002f, 0.02f, 0.90f, 0.40f, 0, 0, 5.0f, 0.002f },
-      { PX_WAVE_TRIANGLE, 0, 0, 0, 0.002f, 0.01f, 0.45f, 0.16f, 0, 0, 0, 0 },
-      { PX_WAVE_SINE,     0, 0, 0, 0.004f, 0.05f, 1.20f, 0.22f, 0, 0, 0, 0 }
+   const float f = px_kit_tune(px_kit_tia_hz(END_WAVE, pitch));
+   const float loud = 0.35f + 0.65f * (float)volume / 15.0f;
+   px_tone p[2] = {
+      { PX_WAVE_SINE,     0, 0, 0, 0.002f, 0.02f, 0.60f, 0.46f, 0, 0, 5.0f, 0.002f },
+      { PX_WAVE_TRIANGLE, 0, 0, 0, 0.002f, 0.01f, 0.30f, 0.16f, 0, 0, 0, 0 }
    };
    p[0].freq = f;
    p[1].freq = f * 2.0f;
-   p[2].freq = f * 0.5f;
-   for (unsigned i = 0; i < 3; i++)
+   for (unsigned i = 0; i < 2; i++)
       px_synth_play(s->synth, &p[i], (pitch & 1) ? -0.3f : 0.3f, loud);
-   px_sound_rumble(s, 0, 14000, 4);
+   px_sound_rumble(s, 0, 10000, 3);
 }
 
 /* What is heard where the game is silent: wind, in the dark mazes a drone in its place,
@@ -1238,7 +1245,7 @@ static void play_ambience(av *g, px_sound *s)
    static const px_tone growl = { PX_WAVE_SAW, 43.0f, 0, 0, 0.4f, 0, 0, 1.0f, 170, 0, 6.5f, 0.05f };
    const int room = px_kit_ram(s->ram, s->ram_size, RAM_ROOM);
    /* The room of the game's number is no place. */
-   const bool on = g->ambience && g->own_sound && room != 0 && g->heard != SOUND_END;
+   const bool on = g->ambience && g->own_sound && room != 0 && g->end_ago > END_GAP;
    /* The wind comes and goes. */
    const float gust = 0.6f + 0.4f * (float)px_kit_wave(g->frame / 3u) / 254.0f;
    const float blows = on ? (g->dark ? 0.035f : 0.11f) * gust : 0.0f;
@@ -1285,8 +1292,14 @@ static void sound(void *state, px_sound *s)
    bool began;
 
    px_kit_tia_hear(&g->tia, s->frame);
-   heard = voice0_plays(&g->tia, won);
+   heard = voice0_plays(&g->tia, won, g->end_ago <= END_GAP);
    began = heard != g->heard;
+   if (heard == SOUND_END)
+      g->end_ago = 0;
+   else if (g->end_ago <= END_GAP)
+      g->end_ago++;
+   if (heard != SOUND_END && heard != SOUND_NONE)
+      g->chimed = NO_PITCH;
 
    if (heard == SOUND_HANDS)
    {
@@ -1316,11 +1329,14 @@ static void sound(void *state, px_sound *s)
       if (g->own_sound) play_slain(g, s);
       else              px_sound_rumble(s, 30000, 52000, 26);
    }
-   else if (heard == SOUND_END && (began || g->tia.pitch[0] != g->tia.was_pitch[0]))
+   else if (heard == SOUND_END && g->tia.pitch[0] != g->chimed)
    {
+      g->chimed = g->tia.pitch[0];
       if (g->own_sound) play_chime(s, g->tia.pitch[0], g->tia.volume[0]);
-      else              px_sound_rumble(s, 0, 14000, 4);
+      else              px_sound_rumble(s, 0, 10000, 3);
    }
+   if (g->end_ago > END_GAP)
+      g->chimed = NO_PITCH;
    g->heard = heard;
 
    if (g->own_sound && heard != SOUND_OTHER)
@@ -1344,6 +1360,8 @@ static void reset(void *state)
    g->player_at = g->dragon_at = -1;
    px_kit_tia_reset(&g->tia);
    g->heard  = SOUND_NONE;
+   g->end_ago = END_GAP_OVER;
+   g->chimed  = NO_PITCH;
    g->rising = false;
    g->wind = g->drone_low = g->drone_high = g->growl = 0;
 }

@@ -29,7 +29,7 @@ What this cannot tell:
 |---|---|---|---|---|---|---|
 | 1 | Pitfall! | Activision | 1982 | 18 | 4.0 m | |
 | 2 | Space Invaders | Atari | 1980 | 15 | 6.3 m | **done** |
-| 3 | Adventure | Atari | 1980 | 14 | 1.0 m | |
+| 3 | Adventure | Atari | 1980 | 14 | 1.0 m | **done** |
 | 4 | Combat | Atari | 1977 | 14 | pack-in | |
 | 5 | River Raid | Activision | 1982 | 13 | 1.0 m | |
 | 6 | Asteroids | Atari | 1981 | 13 | 3.8 m | |
