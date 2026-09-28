@@ -14,6 +14,7 @@
    X(yars_revenge) \
    X(pitfall) \
    X(ms_pac_man) \
+   X(adventure) \
    X(river_raid)
 
 #endif
