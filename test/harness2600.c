@@ -9,7 +9,10 @@
  *     --paddles           turn the four paddles to and fro, each at a pace of its own,
  *                         and press their buttons now and then (Warlords, Kaboom!)
  *     --press <frame>:<button>[:<frames>]
- *                         hold x, up, down, left, right, b, a or start from a frame on
+ *                         hold x, up, down, left, right, b, a, start or select from a frame on
+ *     --press2 <frame>:<button>[:<frames>]
+ *                         the same for the second player's joypad (port 1)
+ *     --input2            the second player's joypad follows a script of its own
  *     --key <frame>:<key> press backslash, [, ], -, = or a digit at a frame
  *     --no-set-variable   refuse options the core wants to change
  *     --show-options      print Proteus's options as they are after the last frame
@@ -463,17 +466,19 @@ static void RETRO_CALLCONV poll_cb(void) {}
 
 /* --press <frame>:<button>[:<frames>] and --key <frame>:<key> */
 #define MAX_PRESSES 64
-static struct { unsigned frame, frames, id; } presses[MAX_PRESSES];
+static struct { unsigned frame, frames, id, port; } presses[MAX_PRESSES];
+static bool scripted_input2;  /* --input2 */
 static unsigned press_count;
 static struct { unsigned frame, key; } key_presses[MAX_PRESSES];
 static unsigned key_count;
-static bool add_press(const char *spec)
+static bool add_press(const char *spec, unsigned port)
 {
    static const struct { const char *name; unsigned id; } names[] = {
       { "x", RETRO_DEVICE_ID_JOYPAD_X }, { "up", RETRO_DEVICE_ID_JOYPAD_UP },
       { "down", RETRO_DEVICE_ID_JOYPAD_DOWN }, { "left", RETRO_DEVICE_ID_JOYPAD_LEFT },
       { "right", RETRO_DEVICE_ID_JOYPAD_RIGHT }, { "b", RETRO_DEVICE_ID_JOYPAD_B },
-      { "a", RETRO_DEVICE_ID_JOYPAD_A }, { "start", RETRO_DEVICE_ID_JOYPAD_START }
+      { "a", RETRO_DEVICE_ID_JOYPAD_A }, { "start", RETRO_DEVICE_ID_JOYPAD_START },
+      { "select", RETRO_DEVICE_ID_JOYPAD_SELECT }
    };
    char name[16] = "";
    unsigned frame = 0, frames = 3;
@@ -485,6 +490,7 @@ static bool add_press(const char *spec)
          presses[press_count].frame  = frame;
          presses[press_count].frames = frames;
          presses[press_count].id     = names[i].id;
+         presses[press_count].port   = port;
          press_count++;
          return true;
       }
@@ -573,9 +579,9 @@ static int16_t RETRO_CALLCONV input_cb(unsigned port, unsigned device, unsigned 
             && ((frame_no + port * 37) / 45) % 3 == 0)
          return 1;
    }
-   if (port == 0 && device == RETRO_DEVICE_JOYPAD)
+   if (port < 2 && device == RETRO_DEVICE_JOYPAD)
       for (unsigned i = 0; i < press_count; i++)
-         if (presses[i].id == id && frame_no >= presses[i].frame
+         if (presses[i].port == port && presses[i].id == id && frame_no >= presses[i].frame
                && frame_no < presses[i].frame + presses[i].frames)
             return 1;
    if (roaming && port == 0 && device == RETRO_DEVICE_JOYPAD)
@@ -591,6 +597,21 @@ static int16_t RETRO_CALLCONV input_cb(unsigned port, unsigned device, unsigned 
          case RETRO_DEVICE_ID_JOYPAD_RIGHT: return (r & 3) == 3;
          case RETRO_DEVICE_ID_JOYPAD_B:     return frame_no > 50 && frame_no < 60;
          case RETRO_DEVICE_ID_JOYPAD_START: return frame_no > 30 && frame_no < 40;
+         default:                           return 0;
+      }
+   }
+   if (scripted_input2 && port == 1 && device == RETRO_DEVICE_JOYPAD)
+   {
+      /* --input2: the second player, in four directions and fire, on a script of its own. */
+      r = (frame_no / 16 + 104729u) * 2654435761u;
+      r ^= r >> 15;
+      switch (id)
+      {
+         case RETRO_DEVICE_ID_JOYPAD_UP:    return (r & 7) == 1;
+         case RETRO_DEVICE_ID_JOYPAD_DOWN:  return (r & 7) == 2;
+         case RETRO_DEVICE_ID_JOYPAD_LEFT:  return (r & 7) == 3 || (r & 7) == 5;
+         case RETRO_DEVICE_ID_JOYPAD_RIGHT: return (r & 7) == 4;
+         case RETRO_DEVICE_ID_JOYPAD_B:     return (r >> 3) & 1;
          default:                           return 0;
       }
    }
@@ -962,12 +983,21 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--wav") && i + 1 < argc)    wav_path = argv[++i];
       else if (!strcmp(argv[i], "--press") && i + 1 < argc)
       {
-         if (!add_press(argv[++i]))
+         if (!add_press(argv[++i], 0))
          {
             printf("bad --press %s\n", argv[i]);
             return 2;
          }
       }
+      else if (!strcmp(argv[i], "--press2") && i + 1 < argc)
+      {
+         if (!add_press(argv[++i], 1))
+         {
+            printf("bad --press2 %s\n", argv[i]);
+            return 2;
+         }
+      }
+      else if (!strcmp(argv[i], "--input2")) scripted_input2 = true;
       else if (!strcmp(argv[i], "--key") && i + 1 < argc)
       {
          if (!add_key(argv[++i]))
