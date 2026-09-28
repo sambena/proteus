@@ -229,6 +229,52 @@ void px_kit_texture_noise(px_kit_texture *t, unsigned across, unsigned down, uin
 void px_kit_shades(uint32_t colors[256], uint32_t dark, uint32_t mid, uint32_t light);
 
 /* ---------------------------------------------------------------------------
+ * A road into the distance: the sky, the horizon and the road's edges
+ *
+ * Games of a road that goes to the horizon (Pole Position, Enduro) draw a sky of one
+ * background colour over ground of another, the road's edges with objects, and the time of
+ * day in the sky's colour. All of it is found again in every frame from the picture, so a
+ * backdrop painted from it lines up with the game on every frame, on curves too, and a
+ * screen that is not the road (a title) is told by there being no horizon.
+ * ------------------------------------------------------------------------- */
+
+typedef struct
+{
+   unsigned top;           /* the sky's first row */
+   unsigned horizon;       /* the first row below the sky */
+   unsigned ground;        /* the ground's first row: below the band the game may draw at the
+                            * horizon (distant hills), or the horizon itself */
+   unsigned bottom;        /* the row after the ground's last */
+   uint32_t sky, band, ground_rgb;   /* their background colours */
+} px_kit_horizon;
+
+/* Finds the sky and the ground in rows `from` up to `to` by the background's colour. The sky
+ * is of the colour row `from` has; rows the background changes colour along (a gauge drawn
+ * with it) do not end it. The horizon is where the sky ends for good. False unless there are
+ * 16 rows of each at least: the picture is no road into the distance. */
+bool px_kit_horizon_find(const px_scene *s, unsigned from, unsigned to, px_kit_horizon *h);
+
+/* A sky from the colour a game gives it, whatever the time of day: `colors` from the top (0)
+ * to the horizon (255), deeper above and hazier at the horizon, by as much light as the
+ * colour has. A night sky stays dark; a sky at dusk glows at the horizon. */
+void px_kit_sky_shades(uint32_t colors[256], uint32_t sky);
+
+/* The road's two edges on every row, as the objects that draw them have them. */
+typedef struct
+{
+   int16_t left[PXC_MAX_H];   /* the left edge's last column; below 0 where it is off the picture */
+   int16_t right[PXC_MAX_H];  /* the right edge's first column; 160 and more where it is off */
+   uint8_t edge[PXC_MAX_H];   /* the palette index an edge has on the row (a kerb's stripe) */
+   uint8_t seen[PXC_MAX_H];   /* 1: left, 2: right, 3: both edges are drawn on the row */
+} px_kit_road;
+
+/* Finds the edges in rows `from` up to `to`, drawn by the objects `tags` (PXC_BL | PXC_M0, as
+ * a pxc_frame tags them). Which edge an object draws is found from the rows that show both;
+ * an edge not drawn on a row (off the picture, or at a row the game leaves out) is carried
+ * on from the rows that have it, as straight as they run. False if no edge is drawn. */
+bool px_kit_road_find(px_kit_road *r, const px_scene *s, unsigned from, unsigned to, unsigned tags);
+
+/* ---------------------------------------------------------------------------
  * Sound
  * ------------------------------------------------------------------------- */
 
