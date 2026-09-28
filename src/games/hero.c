@@ -529,6 +529,37 @@ static void objects(hr *g, px_scene *s)
          in->role = PX_ROLE_HUD;
          continue;
       }
+      /* An object the tracker draws from the frames before, where the game drew none: the
+       * game does not show its things in turns, so what is not in the frame is not there (a
+       * wall blown up, a creature shot, a track gone stale). Where the game has the mine,
+       * the mine shows. */
+      if (in->ghost)
+      {
+         for (unsigned r = 0; r < in->h; r++)
+         {
+            const int y = in->y + (int)r;
+            const uint32_t bits = o->bits[in->rows + r];
+            if (y < ROW_CEILING || y >= ROW_PANEL)
+               continue;
+            for (unsigned b = 0; b < 32 && bits >> b; b++)
+            {
+               const int x = in->x + (int)b;
+               size_t i;
+               if (!((bits >> b) & 1) || x < 0 || x >= PXC_W)
+                  continue;
+               i = (size_t)y * PXC_W + (size_t)x;
+               if (PX_KEY_CLS(s->top[i]) != PX_CLS_SPRITE || (s->frame->tags[i] & PXC_SPRITES))
+                  continue;
+               s->top[i]    = (s->frame->tags[i] & PXC_PF)
+                     ? PX_KEY(PX_CLS_PF, palette[s->frame->color[PXC_L_PF][i]])
+                     : PX_KEY(PX_CLS_BK, palette[s->frame->color[PXC_L_BK][i]]);
+               s->bk[i]     = palette[s->frame->color[PXC_L_BK][i]] & 0xFFFFFFu;
+               s->sprite[i] = 0;
+               s->energy[i] = 0;
+            }
+         }
+         continue;
+      }
       switch (in->cls)
       {
          case PXC_L_BL:
@@ -643,30 +674,6 @@ static void objects(hr *g, px_scene *s)
             break;
       }
 
-      /* A wall the tracker draws from the frames before, where the game has none: it was
-       * blown up. It is gone. */
-      if (in->ghost && in->cls == PXC_L_BL)
-         for (unsigned r = 0; r < in->h; r++)
-         {
-            const int y = in->y + (int)r;
-            if (y < ROW_CEILING || y >= ROW_PANEL)
-               continue;
-            for (unsigned b = 0; b < in->w; b++)
-            {
-               const int x = in->x + (int)b;
-               size_t i;
-               if (x < 0 || x >= PXC_W)
-                  continue;
-               i = (size_t)y * PXC_W + (size_t)x;
-               if (PX_KEY_CLS(s->top[i]) == PX_CLS_SPRITE && !(s->frame->tags[i] & PXC_SPRITES))
-               {
-                  s->top[i]    = PX_KEY(PX_CLS_BK, 0);
-                  s->bk[i]     = 0;
-                  s->sprite[i] = 0;
-                  s->energy[i] = 0;
-               }
-            }
-         }
    }
    px_kit_tags_end(&g->known);
 
