@@ -7,7 +7,8 @@
  *     --opt key=value     force a core option
  *     --input             press joypad buttons following a fixed script
  *     --press <frame>:<button>[:<frames>]
- *                         hold x, up, down, left, right, b, a or start from a frame on
+ *                         hold x, up, down, left, right, b, a, start, select, diffa or
+ *                         diffb (the left difficulty switch) from a frame on
  *     --key <frame>:<key> press backslash, [, ], -, = or a digit at a frame
  *     --no-set-variable   refuse options the core wants to change
  *     --show-options      print Proteus's options as they are after the last frame
@@ -470,7 +471,10 @@ static bool add_press(const char *spec)
       { "x", RETRO_DEVICE_ID_JOYPAD_X }, { "up", RETRO_DEVICE_ID_JOYPAD_UP },
       { "down", RETRO_DEVICE_ID_JOYPAD_DOWN }, { "left", RETRO_DEVICE_ID_JOYPAD_LEFT },
       { "right", RETRO_DEVICE_ID_JOYPAD_RIGHT }, { "b", RETRO_DEVICE_ID_JOYPAD_B },
-      { "a", RETRO_DEVICE_ID_JOYPAD_A }, { "start", RETRO_DEVICE_ID_JOYPAD_START }
+      { "a", RETRO_DEVICE_ID_JOYPAD_A }, { "start", RETRO_DEVICE_ID_JOYPAD_START },
+      /* Stella's console switches: Select, and the left difficulty at A and at B. */
+      { "select", RETRO_DEVICE_ID_JOYPAD_SELECT }, { "diffa", RETRO_DEVICE_ID_JOYPAD_L },
+      { "diffb", RETRO_DEVICE_ID_JOYPAD_L2 }
    };
    char name[16] = "";
    unsigned frame = 0, frames = 3;
