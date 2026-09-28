@@ -45,7 +45,7 @@ What this cannot tell:
 | 16 | Dig Dug | Atari | 1983 | 6 | | **done** |
 | 17 | Pole Position | Atari | 1983 | 6 | | **done** |
 | 18 | Solaris | Atari | 1986 | 5 | | **done** |
-| 19 | H.E.R.O. | Activision | 1984 | 5 | | |
+| 19 | H.E.R.O. | Activision | 1984 | 5 | | **done** |
 | 20 | Star Wars: The Empire Strikes Back | Parker Brothers | 1982 | 5 | | |
 | 21 | Stargate (Defender II) | Atari | 1984 | 5 | | two joysticks |
 | 22 | Jungle Hunt | Atari | 1983 | 5 | | **done** |
@@ -102,7 +102,7 @@ need, the first twenty fall into few kinds, and most of what a kind needs is mad
 |---|---|---|---|
 | Rows of enemies over a cannon | Space Invaders, Demon Attack, Megamania, Galaxian, Phoenix | rows told apart, a backdrop, shots and hits | yes: Space Invaders |
 | A maze and what roams it | Pac-Man, Ms. Pac-Man, Berzerk, Wizard of Wor, Dig Dug | things shown in turns told apart, walls recoloured and lit, what is eaten drawn anew | yes: Pac-Man and Ms. Pac-Man, which share `src/games/pac_family.h` |
-| Rooms, one screen at a time | Adventure, Pitfall!, H.E.R.O., Haunted House, Montezuma's Revenge, Raiders of the Lost Ark | the room known from memory, a look for every kind of room, light and dark | no |
+| Rooms, one screen at a time | Adventure, Pitfall!, H.E.R.O., Haunted House, Montezuma's Revenge, Raiders of the Lost Ark | the room known from memory, a look for every kind of room, light and dark | yes: Adventure, Pitfall! and H.E.R.O.; H.E.R.O. for rooms told from the picture in every frame, lit by every lamp in them, and a darkness where only a lamp shows the walls |
 | Land that scrolls | River Raid, Stargate, Defender, The Empire Strikes Back, Jungle Hunt, Moon Patrol | a backdrop that moves with the land, in layers | yes: River Raid |
 | A road into the distance | Pole Position, Enduro | the horizon and the time of day from the game's colours | yes: Pole Position, with the horizon, the sky and the road's edges in the kit for Enduro |
 | Rocks and ships in space | Asteroids, Yars' Revenge, Solaris, Gravitar, Cosmic Ark | many things shown in turns, trails, a backdrop | yes: Asteroids; Solaris for a game of several kinds of screen, each told from the picture in every frame, and a backdrop lit by the game's own colour for it |
