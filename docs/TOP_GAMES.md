@@ -38,7 +38,7 @@ What this cannot tell:
 | 9 | Warlords | Atari | 1981 | 10 | 1.8 m | **done** |
 | 10 | Ms. Pac-Man | Atari | 1983 | 9 | 2.3 m | **done** |
 | 11 | Frogger | Parker Brothers | 1982 | 8 | | **done** |
-| 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | its music is not the TIA's |
+| 12 | Pitfall II: Lost Caverns | Activision | 1984 | 7 | | **done** |
 | 13 | Pac-Man | Atari | 1982 | 7 | 8.1 m | **done** |
 | 14 | Berzerk | Atari | 1982 | 7 | 1.9 m | **done** |
 | 15 | Kaboom! | Activision | 1981 | 6 | 1.0 m | **done** |
@@ -114,8 +114,10 @@ Two things no module has needed yet will be needed soon:
 - **A backdrop that moves with the game.** River Raid and Pitfall! tell in memory how far
   the land has moved. River Raid's module has made it since, with parts in the kit for the
   next game that scrolls.
-- **Sound that is not the TIA's.** Pitfall II has a chip of its own for its music. Proteus
-  hears the mix and cannot take its voices apart.
+- **Sound that is not the TIA's.** Pitfall II has a chip of its own for its music, which
+  gives the TIA the sum of three square waves as a volume on every line. The capture logs
+  every write, so its module takes the three voices apart from the volumes and plays them
+  with instruments of its own.
 
 ## Sources
 

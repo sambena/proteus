@@ -89,12 +89,15 @@
 
 /* The line rate: the TIA's 31399.5 clocks a second, two a line. */
 #define LINE_HZ     15699.75f
+#define MAX_RISES   64     /* of a wave in a frame */
+/* Lines: the lowest note there is, 65 Hz. A rest of a frame is longer. */
+#define MAX_PERIOD  240.0f
 
 /* What an object is: a px_instance's group. */
 enum
 {
    KIND_NONE = 0, KIND_HARRY, KIND_FROG, KIND_SCORPION, KIND_EEL, KIND_BAT, KIND_CONDOR,
-   KIND_CROSS, KIND_GOLD, KIND_RING, KIND_CAT, KIND_LADDER, KIND_SCORE
+   KIND_CROSS, KIND_GOLD, KIND_RING, KIND_CAT, KIND_LADDER, KIND_LEDGE, KIND_SCORE
 };
 
 /* ---------------------------------------------------------------------------
@@ -575,6 +578,9 @@ static unsigned kind_of(const px_scene *s, const px_instance *in)
       return KIND_SCORE;
    if (in->cls == PXC_L_P0)
       return color == 0x12 || has_row(o, in, 0xC8) ? KIND_HARRY : KIND_NONE;
+   /* A player stretched wide is a ledge by the river. */
+   if (in->w > 8)
+      return color == PF_FLOOR || color == PF_EARTH ? KIND_LEDGE : KIND_NONE;
    switch (color)
    {
       case 0x26: return KIND_FROG;
@@ -591,7 +597,8 @@ static unsigned kind_of(const px_scene *s, const px_instance *in)
          if (in->h <= 4 && x >= 0 && x < PXC_W && y >= 0 && y < (int)s->frame->height
                && s->frame->color[PXC_L_BK][(size_t)y * PXC_W + (size_t)x] == BK_RIVER)
             return KIND_EEL;
-         return KIND_SCORPION;
+         /* Something of the same colour flies, eight rows high: not known. */
+         return in->h >= 10 ? KIND_SCORPION : KIND_NONE;
       }
       default:   return KIND_NONE;
    }
@@ -669,6 +676,11 @@ static uint32_t color_of(const p2 *g, const px_instance *in, unsigned row, unsig
          return px_rgb_mix(0xF2B24A, 0xA8641E, down);
       case KIND_LADDER:
          return 0xB88A4C;
+      case KIND_LEDGE:
+         /* Stone as the floors are, earth under it. */
+         if (color == PF_FLOOR)
+            return px_rgb_mix(0xE0C488, 0x94703E, row * 30 > 256 ? 256 : row * 30);
+         return color == PF_EARTH ? px_rgb_mix(0x6A5238, 0x3A2A1A, down) : original;
       case KIND_SCORE:
          return 0xF6EED2;
       default:
@@ -681,7 +693,7 @@ static uint32_t color_of(const p2 *g, const px_instance *in, unsigned row, unsig
 static void paint_object(const p2 *g, px_scene *s, const px_instance *in)
 {
    const px_objects *o = s->objects;
-   const bool scenery = in->group == KIND_LADDER;
+   const bool scenery = in->group == KIND_LADDER || in->group == KIND_LEDGE;
    const bool glows = in->group == KIND_CROSS || in->group == KIND_EEL;
 
    for (unsigned r = 0; r < in->h; r++)
@@ -700,7 +712,8 @@ static void paint_object(const p2 *g, px_scene *s, const px_instance *in)
          if (!((bits >> b) & 1) || x < 0 || x >= PXC_W)
             continue;
          i = (size_t)y * PXC_W + (size_t)x;
-         if (scenery && !(s->frame->tags[i] & (PXC_P0 | PXC_P1)))
+         /* Scenery has no light or shadow, where no other object is. */
+         if (scenery && !(s->frame->tags[i] & (in->group == KIND_LEDGE ? PXC_P0 : PXC_P0 | PXC_P1)))
          {
             s->sprite[i] = 0;
             s->energy[i] = 0;
@@ -930,12 +943,12 @@ static void music_play(p2 *g, px_sound *s, unsigned v, float hz)
 {
    /* wave             freq to glide attack  hold decay gain   cutoff to  vibrato */
    static const px_tone bass[2] = {
-      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.006f, 0, 0, 0.30f, 0,    0, 0, 0 },
-      { PX_WAVE_SAW,      1, 0, 0, 0.006f, 0, 0, 0.10f, 900,  0, 0, 0 }
+      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.006f, 0, 0, 0.24f, 0,    0, 0, 0 },
+      { PX_WAVE_SAW,      1, 0, 0, 0.006f, 0, 0, 0.08f, 900,  0, 0, 0 }
    };
    static const px_tone lead[2] = {
-      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.010f, 0, 0, 0.17f, 0,    0, 5.5f, 0.004f },
-      { PX_WAVE_SQUARE,   1, 0, 0, 0.020f, 0, 0, 0.06f, 2400, 0, 5.5f, 0.004f }
+      { PX_WAVE_TRIANGLE, 1, 0, 0, 0.010f, 0, 0, 0.14f, 0,    0, 5.5f, 0.004f },
+      { PX_WAVE_SQUARE,   1, 0, 0, 0.020f, 0, 0, 0.05f, 2400, 0, 5.5f, 0.004f }
    };
    static const float pan[3] = { -0.30f, 0.0f, 0.30f };
    dpc_voice *m = &g->music[v];
@@ -957,9 +970,9 @@ static void music_play(p2 *g, px_sound *s, unsigned v, float hz)
 static bool hear_music(p2 *g, px_sound *s)
 {
    const struct pxc_frame *f = s->frame;
-   float sum[3] = { 0, 0, 0 };
+   uint16_t lines[3][MAX_RISES];
    unsigned count[3] = { 0, 0, 0 }, writes = 0;
-   bool gap[3] = { false, false, false }, dpc = true;
+   bool dpc = true;
 
    for (uint32_t i = 0; f && i < f->write_count; i++)
    {
@@ -981,18 +994,8 @@ static bool hear_music(p2 *g, px_sound *s)
          const bool high = (waves >> v) & 1;
          if (high && !m->high)
          {
-            if (m->risen)
-            {
-               const float lines = (float)(t - m->rise);
-               /* A wave that stood still for a while: the note before has ended. */
-               if (m->period > 0.0f && lines > m->period * 2.2f)
-                  gap[v] = true;
-               else if (lines >= 4.0f && lines < 600.0f)
-               {
-                  sum[v] += lines;
-                  count[v]++;
-               }
-            }
+            if (m->risen && count[v] < MAX_RISES)
+               lines[v][count[v]++] = (uint16_t)(t - m->rise > 65535u ? 65535u : t - m->rise);
             m->rise  = t;
             m->risen = true;
          }
@@ -1014,21 +1017,45 @@ static bool hear_music(p2 *g, px_sound *s)
    {
       dpc_voice *m = &g->music[v];
       const float since = (float)(g->lines - m->rise);
-      if (count[v])
-         m->period = sum[v] / (float)count[v];
-      if (!m->risen || m->period <= 0.0f || since > (m->period * 2.2f > 60.0f ? m->period * 2.2f : 60.0f))
+      const unsigned n = count[v];
+      float sum = 0.0f, last = n ? (float)lines[v][n - 1] : 0.0f;
+      unsigned same = 0;
+      bool gap = false;
+
+      /* The note the frame ends with: the rises at its end that are as far apart as the
+       * last two. A longer wait before them is a rest, or another note. */
+      if (n && last <= MAX_PERIOD)
+         for (unsigned k = n; k-- > 0; )
+         {
+            const float d = (float)lines[v][k];
+            if (fabsf(d - last) <= last * 0.15f + 1.5f)
+            {
+               sum += d;
+               same++;
+               continue;
+            }
+            gap = d > last * 2.2f;
+            break;
+         }
+      if (same)
+         m->period = sum / (float)same;
+      else if (n)
+         gap = true;   /* it rose after a rest, and once only */
+
+      if (!m->risen || m->period <= 0.0f || (!same && gap)
+            || since > (m->period * 2.2f > 60.0f ? m->period * 2.2f : 60.0f))
       {
          /* The wave stands still: silence. */
          if (m->on)
             music_stop(g, s, v, 0.06f);
          continue;
       }
-      if (!count[v] && !gap[v])
+      if (!same)
          continue;
       if (g->own_sound)
       {
          const float hz = px_kit_tune(LINE_HZ / m->period);
-         if (!m->on || gap[v] || fabsf(hz - m->hz) > m->hz * 0.02f)
+         if (!m->on || gap || fabsf(hz - m->hz) > m->hz * 0.02f)
             music_play(g, s, v, hz);
       }
    }
@@ -1038,7 +1065,7 @@ static bool hear_music(p2 *g, px_sound *s)
 static void play_drum(p2 *g, px_sound *s)
 {
    static const px_tone low[3] = {
-      { PX_WAVE_SINE,  150,  46, 0.12f, 0.001f, 0.01f, 0.26f, 0.60f, 0, 0, 0, 0 },
+      { PX_WAVE_SINE,  150,  46, 0.12f, 0.001f, 0.01f, 0.26f, 0.50f, 0, 0, 0, 0 },
       { PX_WAVE_TRIANGLE, 300, 90, 0.05f, 0.001f, 0,  0.08f, 0.20f, 0, 0, 0, 0 },
       { PX_WAVE_NOISE, 3000,   0, 0,     0,      0,     0.02f, 0.10f, 1800, 400, 0, 0 }
    };
