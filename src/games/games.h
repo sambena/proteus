@@ -17,6 +17,7 @@
    X(adventure) \
    X(river_raid) \
    X(asteroids) \
-   X(kaboom)
+   X(kaboom) \
+   X(frogger)
 
 #endif
