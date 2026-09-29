@@ -241,12 +241,14 @@ $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes
 $(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/nsf_init.cpp studio/nes_tap.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
 
+# The chip-music tests link px_source and every format it knows: the DSP plugin minus its entry points.
+PX_TEST_OBJ := $(filter-out $(OBJ)/src/dsp.o,$(DSP_OBJ))
+
 # RSN soundtracks through px_source, against a real SPC set: make test-rsn [RSN=set.rsn]
 RSN ?= $(TESTDIR)/rips/loz3.rsn
-$(TESTDIR)/test_rsn$(EXE): test/test_rsn.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_play.o $(OBJ)/src/util.o \
-      $(RSN_OBJ) $(GME_OBJ) $(USF_OBJ) | $(TESTDIR)
+$(TESTDIR)/test_rsn$(EXE): test/test_rsn.c $(PX_TEST_OBJ) | $(TESTDIR)
 	$(CC) $(CFLAGS) -c -o $(OBJ)/test_rsn.o $<
-	$(CXX) -static -o $@ $(OBJ)/test_rsn.o $(filter-out $<,$^) $(LDLIBS)
+	$(CXX) -static -o $@ $(OBJ)/test_rsn.o $(filter-out $<,$^) $(LDLIBS) $(DSP_LIBS)
 
 test-rsn: $(TESTDIR)/test_rsn$(EXE)
 	$(TESTDIR)/test_rsn$(EXE) $(RSN)
@@ -254,7 +256,7 @@ test-rsn: $(TESTDIR)/test_rsn$(EXE)
 # and name a song, e.g. make test-gsf GSF_RIP="build/test/rips/gsf/minish/11 Hyrule Field.minigsf"
 GSF_RIP ?= build/test/rips/gsf/minish/11 Hyrule Field.minigsf
 # Linked against the DSP plugin's objects, so every format decoders.c knows comes along.
-GSF_TEST_OBJ := $(OBJ)/test/test_gsf.o $(filter-out $(OBJ)/src/dsp.o,$(DSP_OBJ))
+GSF_TEST_OBJ := $(OBJ)/test/test_gsf.o $(PX_TEST_OBJ)
 
 $(OBJ)/test/test_gsf.o: test/test_gsf.c $(HEADERS)
 	@mkdir -p $(dir $@)
@@ -265,13 +267,13 @@ $(TESTDIR)/test_gsf$(EXE): $(GSF_TEST_OBJ) | $(TESTDIR)
 
 test-gsf: $(TESTDIR)/test_gsf$(EXE)
 	$(TESTDIR)/test_gsf$(EXE) "$(GSF_RIP)"
+
 # Nintendo DS rips through px_source. The rips are not in the repository: unpack Zophar's Domain's
 # Phantom Hourglass 2SF set to $(NDS_RIPS)/ph_2sf and the NCSF site's (cyberbotx.com/NCSF) set of the
 # same game to $(NDS_RIPS)/ph_ncsf.
 NDS_RIPS ?= $(TESTDIR)/rips
-$(TESTDIR)/test_nds$(EXE): test/test_nds.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_play.o $(OBJ)/src/util.o \
-      $(GME_OBJ) $(USF_OBJ) $(NDS_OBJ) | $(TESTDIR)
-	$(CXX) -static -o $@ -x c -std=gnu11 -O2 $(WARN) -Isrc $< -x none $(filter-out $<,$^) $(LDLIBS)
+$(TESTDIR)/test_nds$(EXE): test/test_nds.c $(PX_TEST_OBJ) | $(TESTDIR)
+	$(CXX) -static -o $@ -x c -std=gnu11 -O2 $(WARN) -Isrc $< -x none $(filter-out $<,$^) $(LDLIBS) $(DSP_LIBS)
 
 test-nds: $(TESTDIR)/test_nds$(EXE)
 	$(TESTDIR)/test_nds$(EXE) "$(NDS_RIPS)/ph_2sf/001 Title.mini2sf" \
@@ -291,10 +293,9 @@ test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$
 # Chrono Trigger and Wario's Woods from ftp.modland.com, "Super Nintendo Sound Format".
 SNSF_RIPS ?= $(wildcard $(TESTDIR)/rips/snsf/*/*.minisnsf $(TESTDIR)/rips/snsf/*/*.snsf)
 
-$(TESTDIR)/test_snsf$(EXE): test/test_snsf.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_play.o $(OBJ)/src/util.o \
-                            $(GME_OBJ) $(USF_OBJ) $(SNSF_OBJ) | $(TESTDIR)
+$(TESTDIR)/test_snsf$(EXE): test/test_snsf.c $(PX_TEST_OBJ) | $(TESTDIR)
 	$(CC) $(CFLAGS) -c -o $(OBJ)/test_snsf.o test/test_snsf.c
-	$(CXX) -static -o $@ $(OBJ)/test_snsf.o $(filter %.o,$^) $(LDLIBS)
+	$(CXX) -static -o $@ $(OBJ)/test_snsf.o $(filter %.o,$^) $(LDLIBS) $(DSP_LIBS)
 
 test-snsf: $(TESTDIR)/test_snsf$(EXE)
 	$(TESTDIR)/test_snsf$(EXE) $(SNSF_RIPS)

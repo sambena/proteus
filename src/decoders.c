@@ -35,17 +35,12 @@
 #include "usf_play.h"
 #include "rsn_play.h"
 #include "gsf_play.h"
-
-typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF, SRC_GSF } src_kind;
 #include "twosf_play.h"
 #include "ncsf_play.h"
-
-typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF,
-   SRC_NDS /* DS 2SF and NCSF rips */
-} src_kind;
 #include "snsf_play.h"
 
-typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF, SRC_SNSF } src_kind;
+typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF, SRC_GSF,
+   SRC_NDS /* DS 2SF and NCSF rips */, SRC_SNSF } src_kind;
 
 #define MP3_SEEK_POINTS 256
 
@@ -78,10 +73,14 @@ struct px_source
          uint64_t end;        /* frames before the fade ends when not looping, else 0 */
          uint64_t fade;       /* frames of fade-out before `end` */
       } gsf;
+      struct
+      {
          px_2sf *twosf;       /* one of these two plays */
          px_ncsf *ncsf;
          uint64_t position, end, fade; /* as for USF */
       } nds;
+      struct
+      {
          px_snsf *player;
          uint64_t position, end, fade;   /* as for usf */
       } snsf;
@@ -356,6 +355,10 @@ static bool open_rsn(px_source *s, const char *path, unsigned subtrack, bool loo
    s->u.gme    = emu;
    s->rate     = (unsigned)rate;
    s->channels = 2;
+   return true;
+}
+
+
 /* GBA GSF rips emulate the console as USF rips do: rendered at the output rate (44.1 kHz by
  * default), looping forever, or ending after the tagged length and fade when not looped. */
 static bool open_gsf(px_source *s, const char *path, bool loop, double rate_hint, char *err, size_t errlen)
@@ -372,50 +375,6 @@ static bool open_gsf(px_source *s, const char *path, bool loop, double rate_hint
    {
       s->u.gsf.fade = px_gsf_fade_ms(g) * s->rate / 1000;
       s->u.gsf.end  = (px_gsf_length_ms(g) + px_gsf_fade_ms(g)) * s->rate / 1000;
-/* Nintendo DS rips. 2SF emulates the whole console (vio2sf), at 44.1 kHz only; NCSF plays the
- * game's sequences (SSEQPlayer) at the output rate. Both loop forever; a song not looped ends
- * after its tagged length, fading out over its tagged fade, as USF songs do. */
-static bool open_nds(px_source *s, const char *path, bool loop, double rate_hint, char *err, size_t errlen)
-{
-   uint64_t length, fade;
-   s->kind     = SRC_NDS;
-   s->channels = 2;
-   if (px_2sf_path(path))
-   {
-      if (!(s->u.nds.twosf = px_2sf_open(path, err, errlen)))
-         return false;
-      s->rate = PX_2SF_RATE;
-      length  = px_2sf_length_ms(s->u.nds.twosf);
-      fade    = px_2sf_fade_ms(s->u.nds.twosf);
-   }
-   else
-   {
-      s->rate = rate_hint >= 8000 && rate_hint <= 192000 ? (unsigned)rate_hint : 44100;
-      if (!(s->u.nds.ncsf = px_ncsf_open(path, s->rate, err, errlen)))
-         return false;
-      length = px_ncsf_length_ms(s->u.nds.ncsf);
-      fade   = px_ncsf_fade_ms(s->u.nds.ncsf);
-   }
-   if (!loop && length)
-   {
-      s->u.nds.fade = fade * s->rate / 1000;
-      s->u.nds.end  = (length + fade) * s->rate / 1000;
-/* SNES SNSF rips emulate the whole console like USF rips: rendered at the output rate (44.1 kHz
- * when none is given), resampled from the S-DSP's 32 kHz. They loop forever; a song not looped
- * ends after its tagged length, fading out over its tagged fade. */
-static bool open_snsf(px_source *s, const char *path, bool loop, double rate_hint, char *err, size_t errlen)
-{
-   px_snsf *p = px_snsf_open(path, err, errlen);
-   if (!p)
-      return false;
-   s->kind     = SRC_SNSF;
-   s->channels = 2;
-   s->rate     = rate_hint >= 8000 && rate_hint <= 192000 ? (unsigned)rate_hint : 44100;
-   s->u.snsf.player = p;
-   if (!loop && px_snsf_length_ms(p))
-   {
-      s->u.snsf.fade = px_snsf_fade_ms(p) * s->rate / 1000;
-      s->u.snsf.end  = (px_snsf_length_ms(p) + px_snsf_fade_ms(p)) * s->rate / 1000;
    }
    return true;
 }
@@ -423,18 +382,6 @@ static bool open_snsf(px_source *s, const char *path, bool loop, double rate_hin
 static size_t read_gsf(px_source *s, int16_t *out, size_t frames)
 {
    uint64_t pos = s->u.gsf.position, end = s->u.gsf.end, fade = s->u.gsf.fade;
-static bool render_nds(px_source *s, int16_t *out, size_t frames)
-{
-   return s->u.nds.twosf ? px_2sf_render(s->u.nds.twosf, out, frames)
-                         : px_ncsf_render(s->u.nds.ncsf, out, frames);
-}
-
-static size_t read_nds(px_source *s, int16_t *out, size_t frames)
-{
-   uint64_t pos = s->u.nds.position, end = s->u.nds.end, fade = s->u.nds.fade;
-static size_t read_snsf(px_source *s, int16_t *out, size_t frames)
-{
-   uint64_t pos = s->u.snsf.position, end = s->u.snsf.end, fade = s->u.snsf.fade;
    if (end)
    {
       if (pos >= end)
@@ -443,8 +390,6 @@ static size_t read_snsf(px_source *s, int16_t *out, size_t frames)
          frames = (size_t)(end - pos);
    }
    if (!px_gsf_render(s->u.gsf.player, out, frames))
-   if (!render_nds(s, out, frames))
-   if (!px_snsf_render(s->u.snsf.player, out, frames, s->rate))
       return 0;
    if (end && fade && pos + frames > end - fade)
       for (size_t i = 0; i < frames; i++)
@@ -478,8 +423,73 @@ static bool seek_gsf(px_source *s, uint64_t frame)
       if (!px_gsf_render(s->u.gsf.player, scratch, n))
          return false;
       s->u.gsf.position += n;
+   }
+   return true;
+}
+
+
+/* Nintendo DS rips. 2SF emulates the whole console (vio2sf), at 44.1 kHz only; NCSF plays the
+ * game's sequences (SSEQPlayer) at the output rate. Both loop forever; a song not looped ends
+ * after its tagged length, fading out over its tagged fade, as USF songs do. */
+static bool open_nds(px_source *s, const char *path, bool loop, double rate_hint, char *err, size_t errlen)
+{
+   uint64_t length, fade;
+   s->kind     = SRC_NDS;
+   s->channels = 2;
+   if (px_2sf_path(path))
+   {
+      if (!(s->u.nds.twosf = px_2sf_open(path, err, errlen)))
+         return false;
+      s->rate = PX_2SF_RATE;
+      length  = px_2sf_length_ms(s->u.nds.twosf);
+      fade    = px_2sf_fade_ms(s->u.nds.twosf);
+   }
+   else
+   {
+      s->rate = rate_hint >= 8000 && rate_hint <= 192000 ? (unsigned)rate_hint : 44100;
+      if (!(s->u.nds.ncsf = px_ncsf_open(path, s->rate, err, errlen)))
+         return false;
+      length = px_ncsf_length_ms(s->u.nds.ncsf);
+      fade   = px_ncsf_fade_ms(s->u.nds.ncsf);
+   }
+   if (!loop && length)
+   {
+      s->u.nds.fade = fade * s->rate / 1000;
+      s->u.nds.end  = (length + fade) * s->rate / 1000;
+   }
+   return true;
+}
+
+static bool render_nds(px_source *s, int16_t *out, size_t frames)
+{
+   return s->u.nds.twosf ? px_2sf_render(s->u.nds.twosf, out, frames)
+                         : px_ncsf_render(s->u.nds.ncsf, out, frames);
+}
+
+static size_t read_nds(px_source *s, int16_t *out, size_t frames)
+{
+   uint64_t pos = s->u.nds.position, end = s->u.nds.end, fade = s->u.nds.fade;
+   if (end)
+   {
+      if (pos >= end)
+         return 0;
+      if (frames > end - pos)
+         frames = (size_t)(end - pos);
+   }
+   if (!render_nds(s, out, frames))
+      return 0;
+   if (end && fade && pos + frames > end - fade)
+      for (size_t i = 0; i < frames; i++)
+      {
+         uint64_t at = pos + i;
+         if (at + fade > end)
+         {
+            float g = (float)(end - at) / (float)fade;
+            out[i * 2]     = (int16_t)(out[i * 2] * g);
+            out[i * 2 + 1] = (int16_t)(out[i * 2 + 1] * g);
+         }
+      }
    s->u.nds.position = pos + frames;
-   s->u.snsf.position = pos + frames;
    return frames;
 }
 
@@ -500,6 +510,59 @@ static bool seek_nds(px_source *s, uint64_t frame)
       if (!render_nds(s, scratch, n))
          return false;
       s->u.nds.position += n;
+   }
+   return true;
+}
+
+
+/* SNES SNSF rips emulate the whole console like USF rips: rendered at the output rate (44.1 kHz
+ * when none is given), resampled from the S-DSP's 32 kHz. They loop forever; a song not looped
+ * ends after its tagged length, fading out over its tagged fade. */
+static bool open_snsf(px_source *s, const char *path, bool loop, double rate_hint, char *err, size_t errlen)
+{
+   px_snsf *p = px_snsf_open(path, err, errlen);
+   if (!p)
+      return false;
+   s->kind     = SRC_SNSF;
+   s->channels = 2;
+   s->rate     = rate_hint >= 8000 && rate_hint <= 192000 ? (unsigned)rate_hint : 44100;
+   s->u.snsf.player = p;
+   if (!loop && px_snsf_length_ms(p))
+   {
+      s->u.snsf.fade = px_snsf_fade_ms(p) * s->rate / 1000;
+      s->u.snsf.end  = (px_snsf_length_ms(p) + px_snsf_fade_ms(p)) * s->rate / 1000;
+   }
+   return true;
+}
+
+static size_t read_snsf(px_source *s, int16_t *out, size_t frames)
+{
+   uint64_t pos = s->u.snsf.position, end = s->u.snsf.end, fade = s->u.snsf.fade;
+   if (end)
+   {
+      if (pos >= end)
+         return 0;
+      if (frames > end - pos)
+         frames = (size_t)(end - pos);
+   }
+   if (!px_snsf_render(s->u.snsf.player, out, frames, s->rate))
+      return 0;
+   if (end && fade && pos + frames > end - fade)
+      for (size_t i = 0; i < frames; i++)
+      {
+         uint64_t at = pos + i;
+         if (at + fade > end)
+         {
+            float g = (float)(end - at) / (float)fade;
+            out[i * 2]     = (int16_t)(out[i * 2] * g);
+            out[i * 2 + 1] = (int16_t)(out[i * 2 + 1] * g);
+         }
+      }
+   s->u.snsf.position = pos + frames;
+   return frames;
+}
+
+/* Renders forward to `frame`, from the start when it lies behind. */
 static bool seek_snsf(px_source *s, uint64_t frame)
 {
    int16_t scratch[1024 * 2];
@@ -527,12 +590,8 @@ static bool is_gme_path(const char *path)
 bool px_source_supported(const char *path)
 {
    return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path)
-      || px_rsn_path(path)
-       || px_gsf_path(path)
-      || px_2sf_path(path) || px_ncsf_path(path);
-   if (px_snsf_path(path))
-      return true;
-   return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path);
+      || px_rsn_path(path) || px_gsf_path(path) || px_2sf_path(path) || px_ncsf_path(path)
+      || px_snsf_path(path);
 }
 
 unsigned px_source_song_count(const char *path)
@@ -715,9 +774,11 @@ void px_source_close(px_source *s)
          break;
       case SRC_GSF:
          px_gsf_close(s->u.gsf.player);
+         break;
       case SRC_NDS:
          px_2sf_close(s->u.nds.twosf);
          px_ncsf_close(s->u.nds.ncsf);
+         break;
       case SRC_SNSF:
          px_snsf_close(s->u.snsf.player);
          break;
