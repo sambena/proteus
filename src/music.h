@@ -24,6 +24,11 @@ px_source *px_source_open(const char *path, unsigned subtrack, bool loop, double
 size_t px_source_read(px_source *s, int16_t *out, size_t frames);
 bool px_source_seek(px_source *s, uint64_t frame);
 unsigned px_source_rate(const px_source *s);
+/* The song's whole playing time in milliseconds, fade included: WAV, MP3 and Ogg files' duration;
+ * a tagged rip's length plus fade (USF, GSF, 2SF, NCSF, SNSF, and libgme's formats and RSN, whose
+ * untagged length is the intro plus two loops when known); a vgmstream stream's two loops plus its
+ * fade. 0 when unknown, or when the song was opened looping forever. */
+uint64_t px_source_length_ms(const px_source *s);
 void px_source_close(px_source *s);
 
 /* True for extensions Proteus can play. */

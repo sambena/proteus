@@ -71,6 +71,42 @@ USF_SRC  := ai/ai_controller.c api/callbacks.c debugger/dbg_decoder.c main/main.
 USF_OBJ  := $(USF_SRC:%.c=$(OBJ)/deps/lazyusf2/%.o) $(OBJ)/deps/psflib/psflib.o
 OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
 DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
+# RSN soundtracks (RAR archives of SNES .spc files): dmc_unrar unpacks them for libgme.
+RSN_OBJ  := $(OBJ)/src/rsn_play.o $(OBJ)/deps/dmc_unrar/dmc_unrar.o
+OBJECTS  += $(RSN_OBJ)
+DSP_OBJ  += $(RSN_OBJ)
+# viogsf (GBA GSF rips): VBA-M's GBA interpreter and sound, no video; psflib (in USF_OBJ) reads
+# the files. The player is C++, so it rides in GSF_OBJ rather than SOURCES.
+GSF_SRC  := apu/Blip_Buffer.cpp apu/Gb_Apu.cpp apu/Gb_Oscs.cpp apu/Multi_Buffer.cpp \
+            gba/GBA.cpp gba/GBA-arm.cpp gba/GBA-thumb.cpp gba/Sound.cpp gba/bios.cpp
+GSF_OBJ  := $(GSF_SRC:%.cpp=$(OBJ)/deps/viogsf/vbam/%.o) $(OBJ)/src/gsf_play.o
+OBJECTS  += $(GSF_OBJ)
+DSP_OBJ  += $(GSF_OBJ)
+# Nintendo DS rips. 2SF: vio2sf (DeSmuME's CPU interpreters and SPU). NCSF: SSEQPlayer, which plays
+# the sequences in a game's SDAT directly. psflib reads both.
+NDS_SRC  := armcpu.c arm_instructions.c barray.c bios.c cp15.c FIFO.c GPU.c isqrt.c matrix.c mc.c MMU.c \
+            NDSSystem.c resampler.c state.c thumb_instructions.c SPU.cpp
+SSEQ_SRC := Channel.cpp FATSection.cpp INFOEntry.cpp INFOSection.cpp NDSStdHeader.cpp Player.cpp SBNK.cpp \
+            SDAT.cpp SSEQ.cpp SWAR.cpp SWAV.cpp SYMBSection.cpp Track.cpp
+NDS_OBJ  := $(OBJ)/src/twosf_play.o $(OBJ)/src/ncsf_play.o $(OBJ)/deps/psflib/psflib.o \
+            $(addprefix $(OBJ)/deps/vio2sf/desmume/,$(addsuffix .o,$(basename $(NDS_SRC)))) \
+            $(SSEQ_SRC:%.cpp=$(OBJ)/deps/sseqplayer/%.o)
+OBJECTS  += $(filter-out $(OBJECTS),$(NDS_OBJ))
+DSP_OBJ  += $(filter-out $(DSP_OBJ),$(NDS_OBJ))
+# LakeSnes (SNES SNSF rips): the console without drawing its picture; psflib (above) reads the files.
+SNSF_SRC := apu.c cart.c cpu.c cx4.c dma.c dsp.c input.c ppu.c snes.c spc.c statehandler.c
+SNSF_OBJ := $(OBJ)/src/snsf_play.o $(SNSF_SRC:%.c=$(OBJ)/deps/lakesnes/snes/%.o)
+OBJECTS  += $(SNSF_OBJ)
+DSP_OBJ  += $(SNSF_OBJ)
+# vgmstream (streamed music from the GameCube onward: DSP, BRSTM, BFSTM, ADX...): all of its
+# library, built without its optional external codecs (no VGM_USE_*), so only built-in decoders.
+VGM_DIRS := . base coding coding/libs layout meta util
+VGM_SRC  := $(foreach d,$(VGM_DIRS),$(wildcard deps/vgmstream/src/$(d)/*.c))
+# Its ~650 objects go in an archive, as one command line cannot hold them all on Windows.
+VGM_LIB  := $(OBJ)/deps/vgmstream/libvgmstream.a
+VGM_OBJ  := $(OBJ)/src/vgm_play.o $(VGM_LIB)
+OBJECTS  += $(VGM_OBJ)
+DSP_OBJ  += $(VGM_OBJ)
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -84,6 +120,24 @@ $(DSP): $(DSP_OBJ)
 $(OBJ)/src/%.o: src/%.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+VGM_CFLAGS := -std=gnu11 -O2 -w $(PIC) -Ideps/vgmstream/src
+ifeq ($(OS),Windows_NT)
+  # Opens UTF-8 paths (and a stream's companion files) with _wfopen.
+  VGM_CFLAGS += -DVGM_STDIO_UNICODE
+endif
+
+$(OBJ)/deps/vgmstream/%.o: deps/vgmstream/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(VGM_CFLAGS) -c -o $@ $<
+
+# The object list goes to ar in a response file.
+$(VGM_LIB): $(VGM_SRC:%.c=$(OBJ)/%.o)
+	$(file >$@.rsp,$^)
+	rm -f $@
+	$(AR) qcs $@ @$@.rsp
+
+$(OBJ)/src/vgm_play.o: CFLAGS += -Ideps/vgmstream/src
 
 $(OBJ)/deps/gme/%.o: deps/gme/%.cpp
 	@mkdir -p $(dir $@)
@@ -99,9 +153,45 @@ $(OBJ)/deps/lazyusf2/%.o: deps/lazyusf2/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(USF_CFLAGS) -c -o $@ $<
 
+$(OBJ)/deps/viogsf/%.o: deps/viogsf/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 -O2 -w $(PIC) -c -o $@ $<
+
+$(OBJ)/src/gsf_play.o: src/gsf_play.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 -O2 $(WARN) $(PIC) -Ideps -Isrc -c -o $@ $<
+
 $(OBJ)/deps/psflib/psflib.o: deps/psflib/psflib.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=gnu11 -O2 -w $(PIC) -c -o $@ $<
+
+# Built without stdio or the Win32 API: Proteus hands it the archive in memory.
+$(OBJ)/deps/dmc_unrar/dmc_unrar.o: deps/dmc_unrar/dmc_unrar.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -O2 -w $(PIC) -DDMC_UNRAR_DISABLE_STDIO=1 -DDMC_UNRAR_DISABLE_WIN32=1 -c -o $@ $<
+# vio2sf's symbols are renamed (vio2sf_names.h) so they cannot clash with other cores' resamplers.
+NDS_FLAGS := -O2 -w $(PIC) -include deps/vio2sf/vio2sf_names.h
+# SSEQPlayer defines two std::codecvt ids for old libc++; libstdc++ has them (as its Kodi build notes).
+SSEQ_FLAGS := -std=gnu++11 -O2 -w $(PIC) -D_LIBCPP_VERSION
+
+$(OBJ)/deps/vio2sf/%.o: deps/vio2sf/%.c deps/vio2sf/vio2sf_names.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 $(NDS_FLAGS) -c -o $@ $<
+
+$(OBJ)/deps/vio2sf/%.o: deps/vio2sf/%.cpp deps/vio2sf/vio2sf_names.h
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 $(NDS_FLAGS) -c -o $@ $<
+
+$(OBJ)/deps/sseqplayer/%.o: deps/sseqplayer/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(SSEQ_FLAGS) -c -o $@ $<
+
+$(OBJ)/src/ncsf_play.o: src/ncsf_play.cpp src/ncsf_play.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(SSEQ_FLAGS) -Ideps -Isrc -c -o $@ $<
+$(OBJ)/deps/lakesnes/%.o: deps/lakesnes/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -O2 -w $(PIC) -DLAKESNES_NO_RENDER -c -o $@ $<
 
 $(OBJ)/deps/gme/ext/emu2413.o: deps/gme/ext/emu2413.c
 	@mkdir -p $(dir $@)
@@ -178,6 +268,45 @@ $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes
 $(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/nsf_init.cpp studio/nes_tap.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
 
+# The chip-music tests link px_source and every format it knows: the DSP plugin minus its entry points.
+PX_TEST_OBJ := $(filter-out $(OBJ)/src/dsp.o,$(DSP_OBJ))
+
+# RSN soundtracks through px_source, against a real SPC set: make test-rsn [RSN=set.rsn]
+RSN ?= $(TESTDIR)/rips/loz3.rsn
+$(TESTDIR)/test_rsn$(EXE): test/test_rsn.c $(PX_TEST_OBJ) | $(TESTDIR)
+	$(CC) $(CFLAGS) -c -o $(OBJ)/test_rsn.o $<
+	$(CXX) -static -o $@ $(OBJ)/test_rsn.o $(filter-out $<,$^) $(LDLIBS) $(DSP_LIBS)
+
+test-rsn: $(TESTDIR)/test_rsn$(EXE)
+	$(TESTDIR)/test_rsn$(EXE) $(RSN)
+# GBA GSF through px_source. The rip is not in the repository: download one (with its .gsflib)
+# and name a song, e.g. make test-gsf GSF_RIP="build/test/rips/gsf/minish/11 Hyrule Field.minigsf"
+GSF_RIP ?= build/test/rips/gsf/minish/11 Hyrule Field.minigsf
+# Linked against the DSP plugin's objects, so every format decoders.c knows comes along.
+GSF_TEST_OBJ := $(OBJ)/test/test_gsf.o $(PX_TEST_OBJ)
+
+$(OBJ)/test/test_gsf.o: test/test_gsf.c $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(TESTDIR)/test_gsf$(EXE): $(GSF_TEST_OBJ) | $(TESTDIR)
+	$(CXX) -static -o $@ $(GSF_TEST_OBJ) $(LDLIBS) $(DSP_LIBS)
+
+test-gsf: $(TESTDIR)/test_gsf$(EXE)
+	$(TESTDIR)/test_gsf$(EXE) "$(GSF_RIP)"
+
+# Nintendo DS rips through px_source. The rips are not in the repository: unpack Zophar's Domain's
+# Phantom Hourglass 2SF set to $(NDS_RIPS)/ph_2sf and the NCSF site's (cyberbotx.com/NCSF) set of the
+# same game to $(NDS_RIPS)/ph_ncsf.
+NDS_RIPS ?= $(TESTDIR)/rips
+$(TESTDIR)/test_nds$(EXE): test/test_nds.c $(PX_TEST_OBJ) | $(TESTDIR)
+	$(CXX) -static -o $@ -x c -std=gnu11 -O2 $(WARN) -Isrc $< -x none $(filter-out $<,$^) $(LDLIBS) $(DSP_LIBS)
+
+test-nds: $(TESTDIR)/test_nds$(EXE)
+	$(TESTDIR)/test_nds$(EXE) "$(NDS_RIPS)/ph_2sf/001 Title.mini2sf" \
+	    "$(NDS_RIPS)/ph_2sf/009 Tetra's Pirates.mini2sf" \
+	    "$(NDS_RIPS)/ph_ncsf/001 - Title.minincsf" "$(NDS_RIPS)/ph_ncsf/009 - Tetra's Pirates.minincsf"
+
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
       $(TESTDIR)/test_reference$(EXE)
@@ -186,6 +315,31 @@ test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$
 	$(TESTDIR)/test_reference$(EXE) $(TESTDIR)/reference
 	$(TESTDIR)/harness$(EXE) run $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR) $(TESTDIR)/mixed.wav
 	$(TESTDIR)/harness$(EXE) dsp $(DSP) $(TESTDIR)/testcore_libretro.$(EXT) $(TESTDIR)
+
+# SNSF playback through px_source, on rips downloaded to build/test/rips/snsf (not in the repo):
+# Chrono Trigger and Wario's Woods from ftp.modland.com, "Super Nintendo Sound Format".
+SNSF_RIPS ?= $(wildcard $(TESTDIR)/rips/snsf/*/*.minisnsf $(TESTDIR)/rips/snsf/*/*.snsf)
+
+$(TESTDIR)/test_snsf$(EXE): test/test_snsf.c $(PX_TEST_OBJ) | $(TESTDIR)
+	$(CC) $(CFLAGS) -c -o $(OBJ)/test_snsf.o test/test_snsf.c
+	$(CXX) -static -o $@ $(OBJ)/test_snsf.o $(filter %.o %.a,$^) $(LDLIBS) $(DSP_LIBS)
+
+test-snsf: $(TESTDIR)/test_snsf$(EXE)
+	$(TESTDIR)/test_snsf$(EXE) $(SNSF_RIPS)
+
+# vgmstream streams through px_source. The test writes its own DSP files; the streams are not in
+# the repository: copy a few of Breath of the Wild's (Wii U, content/Sound/Resource/Stream/*.bfstm)
+# to $(TESTDIR)/rips/vgm/botw, and unpack a few _L/_R pairs and bgm_title.dsp from Zophar's Domain's
+# Four Swords Adventures set ("original music files") to $(TESTDIR)/rips/vgm/fsa. A pair's right
+# half is not named: the test checks it through its left.
+VGM_RIPS ?= $(filter-out %_R.dsp,$(wildcard $(TESTDIR)/rips/vgm/*/*.bfstm $(TESTDIR)/rips/vgm/*/*.dsp))
+
+$(TESTDIR)/test_vgm$(EXE): test/test_vgm.c $(PX_TEST_OBJ) | $(TESTDIR)
+	$(CC) $(CFLAGS) -c -o $(OBJ)/test_vgm.o test/test_vgm.c
+	$(CXX) -static -o $@ $(OBJ)/test_vgm.o $(filter %.o %.a,$^) $(LDLIBS) $(DSP_LIBS)
+
+test-vgm: $(TESTDIR)/test_vgm$(EXE)
+	$(TESTDIR)/test_vgm$(EXE) $(TESTDIR) $(VGM_RIPS)
 
 # Atari 2600: Proteus around Stella, checked against Stella itself. STELLA is Stella's
 # libretro core as its authors build it, STELLAPX the build with the capture interface.
@@ -220,4 +374,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli
+.PHONY: all test test2600 lint-games clean studio cli test-rsn test-gsf test-nds test-snsf test-vgm

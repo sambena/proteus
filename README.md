@@ -13,6 +13,13 @@ Proteus works alongside an existing core (Snes9x, Genesis Plus GX, Mesen, ...). 
      NES `.nsf`/`.nsfe`, Genesis/Master System `.vgm`/`.vgz`/`.gym`, Game Boy `.gbs`,
      PC Engine `.hes`, MSX `.kss`, ZX Spectrum `.ay` and Atari `.sap`, or Nintendo 64
      `.usf`/`.miniusf` rips (with their `.usflib`), emulated by lazyusf2.
+   - Nintendo DS rips: `.2sf`/`.mini2sf` (with their `.2sflib`), emulated by vio2sf, and
+     `.ncsf`/`.minincsf` (with their `.ncsflib`), sequences played by SSEQPlayer.
+   - streamed music from the GameCube onward, decoded by vgmstream: GameCube and Wii `.dsp`
+     (a `_L`/`_R` pair plays as one stereo song), `.idsp`, `.mdsp`, `.adp`, `.ast`, `.hps`,
+     `.thp`, `.bns`, `.brstm`, `.brwav`, `.rwar`; 3DS, Wii U and Switch `.bcstm`, `.bcwav`,
+     `.bfstm`, `.bfwav`, `.bwav`; DS `.strm`, `.swav`; CRI `.adx`, `.aax`, `.hca`. Not looped,
+     a stream plays its loop twice and fades out over ten seconds.
 
 Proteus comes in two forms that share profiles and music files:
 
@@ -676,6 +683,9 @@ games of your own.
 | `src/music.c` | resampling mixer with crossfades and loops |
 | `src/decoders.c` | WAV / MP3 / Ogg decoders and libgme sources |
 | `src/usf_play.c` | N64 USF rips through lazyusf2 and psflib |
+| `src/twosf_play.c` | DS 2SF rips through vio2sf and psflib |
+| `src/ncsf_play.cpp` | DS NCSF rips through SSEQPlayer and psflib |
+| `src/vgm_play.c` | streamed music (DSP, BRSTM, BFSTM, ADX...) through vgmstream |
 | `studio/main.cpp` | Proteus Studio's window: the two song lists, replacements, Advanced tabs |
 | `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, finding how songs start, live ripping, song library |
 | `studio/game_db.cpp` | the game database (`games.ini`) |
@@ -711,7 +721,10 @@ Bundled libraries in `deps/` keep their own licenses:
 | `deps/gme` — libgme 0.6.5 | LGPL-2.1-or-later (`deps/gme/LICENSE`); `ext/emu2413` is MIT |
 | `deps/imgui` — Dear ImGui 1.92.x | MIT (`deps/imgui/LICENSE.txt`) |
 | `deps/lazyusf2` — lazyusf2 (modified Mupen64Plus) | GPL-2.0-or-later (`deps/lazyusf2/COPYING`); its RSP interpreter is CC0, `si/n64_cic_nus_6105.c` BSD-2-Clause; see `deps/lazyusf2/PROTEUS.md` |
+| `deps/vio2sf` — vio2sf (cut-down DeSmuME) | GPL-2.0-or-later (`deps/vio2sf/desmume/COPYING`); see `deps/vio2sf/PROTEUS.md` |
+| `deps/sseqplayer` — SSEQPlayer | WTFPL-2.0 (`deps/sseqplayer/LICENSE.TXT`); see `deps/sseqplayer/PROTEUS.md` |
 | `deps/psflib` — psflib | MIT (`deps/psflib/LICENSE`) |
+| `deps/vgmstream` — vgmstream r2117 | ISC-style permissive license (`deps/vgmstream/COPYING`); see `deps/vgmstream/PROTEUS.md` |
 | `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
