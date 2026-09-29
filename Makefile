@@ -193,6 +193,21 @@ $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes
 $(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/nsf_init.cpp studio/nes_tap.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
 
+# GBA GSF through px_source. The rip is not in the repository: download one (with its .gsflib)
+# and name a song, e.g. make test-gsf GSF_RIP="build/test/rips/gsf/minish/11 Hyrule Field.minigsf"
+GSF_RIP ?= build/test/rips/gsf/minish/11 Hyrule Field.minigsf
+# Linked against the DSP plugin's objects, so every format decoders.c knows comes along.
+GSF_TEST_OBJ := $(OBJ)/test/test_gsf.o $(filter-out $(OBJ)/src/dsp.o,$(DSP_OBJ))
+
+$(OBJ)/test/test_gsf.o: test/test_gsf.c $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(TESTDIR)/test_gsf$(EXE): $(GSF_TEST_OBJ) | $(TESTDIR)
+	$(CXX) -static -o $@ $(GSF_TEST_OBJ) $(LDLIBS) $(DSP_LIBS)
+
+test-gsf: $(TESTDIR)/test_gsf$(EXE)
+	$(TESTDIR)/test_gsf$(EXE) "$(GSF_RIP)"
 
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
@@ -236,4 +251,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli
+.PHONY: all test test-gsf test2600 lint-games clean studio cli
