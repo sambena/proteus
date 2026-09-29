@@ -23,10 +23,7 @@ static uint8_t snes_readReg(Snes* snes, uint16_t adr);
 static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
 static uint8_t snes_rread(Snes* snes, uint32_t adr); // wrapped by read, to set open bus
 static int snes_getAccessTime(Snes* snes, uint32_t adr);
-static void build_accesstime(Snes* snes, bool recalc);
-static void free_accesstime();
 
-static uint8_t *access_time;
 
 Snes* snes_init(void) {
   Snes* snes = malloc(sizeof(Snes));
@@ -49,7 +46,6 @@ void snes_free(Snes* snes) {
   cart_free(snes->cart);
   input_free(snes->input1);
   input_free(snes->input2);
-  free_accesstime();
   free(snes);
 }
 
@@ -89,7 +85,6 @@ void snes_reset(Snes* snes, bool hard) {
   snes->fastMem = false;
   snes->openBus = 0;
   snes->nextHoriEvent = 16;
-  build_accesstime(snes, false);
 }
 
 void snes_handleState(Snes* snes, StateHandler* sh) {
@@ -181,7 +176,9 @@ static void snes_runCycle(Snes* snes) {
       case 512: {
         snes->nextHoriEvent = 1104;
         // render the line halfway of the screen for better compatibility
+#ifndef LAKESNES_NO_RENDER
         if(!snes->inVblank && snes->vPos > 0) ppu_runLine(snes->ppu, snes->vPos);
+#endif
       } break;
       case 1104: {
         if(!snes->inVblank) snes->dma->hdmaRunRequested = true;
@@ -459,7 +456,6 @@ static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
     case 0x420d: {
       if (snes->fastMem != (val & 0x1)) {
         snes->fastMem = val & 0x1;
-        build_accesstime(snes, true);
       }
       break;
     }
@@ -541,19 +537,7 @@ static int snes_getAccessTime(Snes* snes, uint32_t adr) {
   return (snes->fastMem && bank >= 0x80) ? 6 : 8; // depends on setting in banks 80+
 }
 
-static void build_accesstime(Snes* snes, bool recalc) {
-  int start = (recalc) ? 0x800000 : 0; // recalc only updates "fastMem" area
-  if (access_time == NULL) {
-	access_time = (uint8_t *)malloc(0x1000000);
-  }
-  for (int i = start; i < 0x1000000; i++) {
-    access_time[i] = snes_getAccessTime(snes, i);
-  }
-}
 
-static void free_accesstime() {
-  free(access_time);
-}
 
 uint8_t snes_read(Snes* snes, uint32_t adr) {
   uint8_t val = snes_rread(snes, adr);
@@ -569,7 +553,7 @@ void snes_cpuIdle(void* mem, bool waiting) {
 
 uint8_t snes_cpuRead(void* mem, uint32_t adr) {
   Snes* snes = (Snes*) mem;
-  const int cycles = access_time[adr] - 4;
+  const int cycles = snes_getAccessTime(snes, adr) - 4;
   dma_handleDma(snes->dma, cycles + 4);
   snes_runCycles(snes, cycles);
   uint8_t rv = snes_read(snes, adr);
@@ -579,7 +563,7 @@ uint8_t snes_cpuRead(void* mem, uint32_t adr) {
 
 void snes_cpuWrite(void* mem, uint32_t adr, uint8_t val) {
   Snes* snes = (Snes*) mem;
-  const int cycles = access_time[adr];
+  const int cycles = snes_getAccessTime(snes, adr);
   dma_handleDma(snes->dma, cycles);
   snes_runCycles(snes, cycles);
   snes_write(snes, adr, val);
