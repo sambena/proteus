@@ -71,6 +71,13 @@ USF_SRC  := ai/ai_controller.c api/callbacks.c debugger/dbg_decoder.c main/main.
 USF_OBJ  := $(USF_SRC:%.c=$(OBJ)/deps/lazyusf2/%.o) $(OBJ)/deps/psflib/psflib.o
 OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
 DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
+# viogsf (GBA GSF rips): VBA-M's GBA interpreter and sound, no video; psflib (in USF_OBJ) reads
+# the files. The player is C++, so it rides in GSF_OBJ rather than SOURCES.
+GSF_SRC  := apu/Blip_Buffer.cpp apu/Gb_Apu.cpp apu/Gb_Oscs.cpp apu/Multi_Buffer.cpp \
+            gba/GBA.cpp gba/GBA-arm.cpp gba/GBA-thumb.cpp gba/Sound.cpp gba/bios.cpp
+GSF_OBJ  := $(GSF_SRC:%.cpp=$(OBJ)/deps/viogsf/vbam/%.o) $(OBJ)/src/gsf_play.o
+OBJECTS  += $(GSF_OBJ)
+DSP_OBJ  += $(GSF_OBJ)
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -98,6 +105,14 @@ endif
 $(OBJ)/deps/lazyusf2/%.o: deps/lazyusf2/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(USF_CFLAGS) -c -o $@ $<
+
+$(OBJ)/deps/viogsf/%.o: deps/viogsf/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 -O2 -w $(PIC) -c -o $@ $<
+
+$(OBJ)/src/gsf_play.o: src/gsf_play.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 -O2 $(WARN) $(PIC) -Ideps -Isrc -c -o $@ $<
 
 $(OBJ)/deps/psflib/psflib.o: deps/psflib/psflib.c
 	@mkdir -p $(dir $@)
@@ -177,6 +192,7 @@ $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes
 
 $(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/nsf_init.cpp studio/nes_tap.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
+
 
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
