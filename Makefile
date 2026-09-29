@@ -93,6 +93,11 @@ NDS_OBJ  := $(OBJ)/src/twosf_play.o $(OBJ)/src/ncsf_play.o $(OBJ)/deps/psflib/ps
             $(SSEQ_SRC:%.cpp=$(OBJ)/deps/sseqplayer/%.o)
 OBJECTS  += $(filter-out $(OBJECTS),$(NDS_OBJ))
 DSP_OBJ  += $(filter-out $(DSP_OBJ),$(NDS_OBJ))
+# LakeSnes (SNES SNSF rips): the console without drawing its picture; psflib (above) reads the files.
+SNSF_SRC := apu.c cart.c cpu.c cx4.c dma.c dsp.c input.c ppu.c snes.c spc.c statehandler.c
+SNSF_OBJ := $(OBJ)/src/snsf_play.o $(SNSF_SRC:%.c=$(OBJ)/deps/lakesnes/snes/%.o)
+OBJECTS  += $(SNSF_OBJ)
+DSP_OBJ  += $(SNSF_OBJ)
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -157,6 +162,9 @@ $(OBJ)/deps/sseqplayer/%.o: deps/sseqplayer/%.cpp
 $(OBJ)/src/ncsf_play.o: src/ncsf_play.cpp src/ncsf_play.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(SSEQ_FLAGS) -Ideps -Isrc -c -o $@ $<
+$(OBJ)/deps/lakesnes/%.o: deps/lakesnes/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -O2 -w $(PIC) -DLAKESNES_NO_RENDER -c -o $@ $<
 
 $(OBJ)/deps/gme/ext/emu2413.o: deps/gme/ext/emu2413.c
 	@mkdir -p $(dir $@)
@@ -279,6 +287,18 @@ test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$
 	$(TESTDIR)/harness$(EXE) run $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR) $(TESTDIR)/mixed.wav
 	$(TESTDIR)/harness$(EXE) dsp $(DSP) $(TESTDIR)/testcore_libretro.$(EXT) $(TESTDIR)
 
+# SNSF playback through px_source, on rips downloaded to build/test/rips/snsf (not in the repo):
+# Chrono Trigger and Wario's Woods from ftp.modland.com, "Super Nintendo Sound Format".
+SNSF_RIPS ?= $(wildcard $(TESTDIR)/rips/snsf/*/*.minisnsf $(TESTDIR)/rips/snsf/*/*.snsf)
+
+$(TESTDIR)/test_snsf$(EXE): test/test_snsf.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_play.o $(OBJ)/src/util.o \
+                            $(GME_OBJ) $(USF_OBJ) $(SNSF_OBJ) | $(TESTDIR)
+	$(CC) $(CFLAGS) -c -o $(OBJ)/test_snsf.o test/test_snsf.c
+	$(CXX) -static -o $@ $(OBJ)/test_snsf.o $(filter %.o,$^) $(LDLIBS)
+
+test-snsf: $(TESTDIR)/test_snsf$(EXE)
+	$(TESTDIR)/test_snsf$(EXE) $(SNSF_RIPS)
+
 # Atari 2600: Proteus around Stella, checked against Stella itself. STELLA is Stella's
 # libretro core as its authors build it, STELLAPX the build with the capture interface.
 TEST2600 := $(BUILD)/test2600
@@ -312,4 +332,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli test-rsn test-gsf test-nds
+.PHONY: all test test2600 lint-games clean studio cli test-rsn test-gsf test-nds test-snsf
