@@ -15,6 +15,11 @@ Proteus works alongside an existing core (Snes9x, Genesis Plus GX, Mesen, ...). 
      `.usf`/`.miniusf` rips (with their `.usflib`), emulated by lazyusf2.
    - Nintendo DS rips: `.2sf`/`.mini2sf` (with their `.2sflib`), emulated by vio2sf, and
      `.ncsf`/`.minincsf` (with their `.ncsflib`), sequences played by SSEQPlayer.
+   - streamed music from the GameCube onward, decoded by vgmstream: GameCube and Wii `.dsp`
+     (a `_L`/`_R` pair plays as one stereo song), `.idsp`, `.mdsp`, `.adp`, `.ast`, `.hps`,
+     `.thp`, `.bns`, `.brstm`, `.brwav`, `.rwar`; 3DS, Wii U and Switch `.bcstm`, `.bcwav`,
+     `.bfstm`, `.bfwav`, `.bwav`; DS `.strm`, `.swav`; CRI `.adx`, `.aax`, `.hca`. Not looped,
+     a stream plays its loop twice and fades out over ten seconds.
 
 Proteus comes in two forms that share profiles and music files:
 
@@ -680,6 +685,7 @@ games of your own.
 | `src/usf_play.c` | N64 USF rips through lazyusf2 and psflib |
 | `src/twosf_play.c` | DS 2SF rips through vio2sf and psflib |
 | `src/ncsf_play.cpp` | DS NCSF rips through SSEQPlayer and psflib |
+| `src/vgm_play.c` | streamed music (DSP, BRSTM, BFSTM, ADX...) through vgmstream |
 | `studio/main.cpp` | Proteus Studio's window: the two song lists, replacements, Advanced tabs |
 | `studio/rom_session.cpp` | one open ROM: its emulator thread, song scans, finding how songs start, live ripping, song library |
 | `studio/game_db.cpp` | the game database (`games.ini`) |
@@ -718,6 +724,7 @@ Bundled libraries in `deps/` keep their own licenses:
 | `deps/vio2sf` — vio2sf (cut-down DeSmuME) | GPL-2.0-or-later (`deps/vio2sf/desmume/COPYING`); see `deps/vio2sf/PROTEUS.md` |
 | `deps/sseqplayer` — SSEQPlayer | WTFPL-2.0 (`deps/sseqplayer/LICENSE.TXT`); see `deps/sseqplayer/PROTEUS.md` |
 | `deps/psflib` — psflib | MIT (`deps/psflib/LICENSE`) |
+| `deps/vgmstream` — vgmstream r2117 | ISC-style permissive license (`deps/vgmstream/COPYING`); see `deps/vgmstream/PROTEUS.md` |
 | `deps/libretro.h`, `deps/libretro_dspfilter.h` | MIT |
 | `deps/dr_wav.h`, `deps/dr_mp3.h` | public domain / MIT-0 |
 | `deps/stb_vorbis.c` | public domain / MIT |
