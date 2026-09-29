@@ -71,6 +71,17 @@ USF_SRC  := ai/ai_controller.c api/callbacks.c debugger/dbg_decoder.c main/main.
 USF_OBJ  := $(USF_SRC:%.c=$(OBJ)/deps/lazyusf2/%.o) $(OBJ)/deps/psflib/psflib.o
 OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
 DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
+# Nintendo DS rips. 2SF: vio2sf (DeSmuME's CPU interpreters and SPU). NCSF: SSEQPlayer, which plays
+# the sequences in a game's SDAT directly. psflib reads both.
+NDS_SRC  := armcpu.c arm_instructions.c barray.c bios.c cp15.c FIFO.c GPU.c isqrt.c matrix.c mc.c MMU.c \
+            NDSSystem.c resampler.c state.c thumb_instructions.c SPU.cpp
+SSEQ_SRC := Channel.cpp FATSection.cpp INFOEntry.cpp INFOSection.cpp NDSStdHeader.cpp Player.cpp SBNK.cpp \
+            SDAT.cpp SSEQ.cpp SWAR.cpp SWAV.cpp SYMBSection.cpp Track.cpp
+NDS_OBJ  := $(OBJ)/src/twosf_play.o $(OBJ)/src/ncsf_play.o $(OBJ)/deps/psflib/psflib.o \
+            $(addprefix $(OBJ)/deps/vio2sf/desmume/,$(addsuffix .o,$(basename $(NDS_SRC)))) \
+            $(SSEQ_SRC:%.cpp=$(OBJ)/deps/sseqplayer/%.o)
+OBJECTS  += $(filter-out $(OBJECTS),$(NDS_OBJ))
+DSP_OBJ  += $(filter-out $(DSP_OBJ),$(NDS_OBJ))
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -102,6 +113,27 @@ $(OBJ)/deps/lazyusf2/%.o: deps/lazyusf2/%.c
 $(OBJ)/deps/psflib/psflib.o: deps/psflib/psflib.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=gnu11 -O2 -w $(PIC) -c -o $@ $<
+
+# vio2sf's symbols are renamed (vio2sf_names.h) so they cannot clash with other cores' resamplers.
+NDS_FLAGS := -O2 -w $(PIC) -include deps/vio2sf/vio2sf_names.h
+# SSEQPlayer defines two std::codecvt ids for old libc++; libstdc++ has them (as its Kodi build notes).
+SSEQ_FLAGS := -std=gnu++11 -O2 -w $(PIC) -D_LIBCPP_VERSION
+
+$(OBJ)/deps/vio2sf/%.o: deps/vio2sf/%.c deps/vio2sf/vio2sf_names.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 $(NDS_FLAGS) -c -o $@ $<
+
+$(OBJ)/deps/vio2sf/%.o: deps/vio2sf/%.cpp deps/vio2sf/vio2sf_names.h
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 $(NDS_FLAGS) -c -o $@ $<
+
+$(OBJ)/deps/sseqplayer/%.o: deps/sseqplayer/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(SSEQ_FLAGS) -c -o $@ $<
+
+$(OBJ)/src/ncsf_play.o: src/ncsf_play.cpp src/ncsf_play.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(SSEQ_FLAGS) -Ideps -Isrc -c -o $@ $<
 
 $(OBJ)/deps/gme/ext/emu2413.o: deps/gme/ext/emu2413.c
 	@mkdir -p $(dir $@)
@@ -178,6 +210,19 @@ $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes
 $(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/nsf_init.cpp studio/nes_tap.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
 
+# Nintendo DS rips through px_source. The rips are not in the repository: unpack Zophar's Domain's
+# Phantom Hourglass 2SF set to $(NDS_RIPS)/ph_2sf and the NCSF site's (cyberbotx.com/NCSF) set of the
+# same game to $(NDS_RIPS)/ph_ncsf.
+NDS_RIPS ?= $(TESTDIR)/rips
+$(TESTDIR)/test_nds$(EXE): test/test_nds.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_play.o $(OBJ)/src/util.o \
+      $(GME_OBJ) $(USF_OBJ) $(NDS_OBJ) | $(TESTDIR)
+	$(CXX) -static -o $@ -x c -std=gnu11 -O2 $(WARN) -Isrc $< -x none $(filter-out $<,$^) $(LDLIBS)
+
+test-nds: $(TESTDIR)/test_nds$(EXE)
+	$(TESTDIR)/test_nds$(EXE) "$(NDS_RIPS)/ph_2sf/001 Title.mini2sf" \
+	    "$(NDS_RIPS)/ph_2sf/009 Tetra's Pirates.mini2sf" \
+	    "$(NDS_RIPS)/ph_ncsf/001 - Title.minincsf" "$(NDS_RIPS)/ph_ncsf/009 - Tetra's Pirates.minincsf"
+
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
       $(TESTDIR)/test_reference$(EXE)
@@ -220,4 +265,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli
+.PHONY: all test test2600 test-nds lint-games clean studio cli

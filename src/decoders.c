@@ -33,8 +33,12 @@
 #endif
 
 #include "usf_play.h"
+#include "twosf_play.h"
+#include "ncsf_play.h"
 
-typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF } src_kind;
+typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF,
+   SRC_NDS /* DS 2SF and NCSF rips */
+} src_kind;
 
 #define MP3_SEEK_POINTS 256
 
@@ -60,6 +64,12 @@ struct px_source
          uint64_t end;        /* frames before the fade ends when not looping, else 0 */
          uint64_t fade;       /* frames of fade-out before `end` */
       } usf;
+      struct
+      {
+         px_2sf *twosf;       /* one of these two plays */
+         px_ncsf *ncsf;
+         uint64_t position, end, fade; /* as for USF */
+      } nds;
    } u;
    int16_t *scratch; /* holds multichannel frames before folding to stereo */
    size_t scratch_frames;
@@ -288,6 +298,92 @@ static bool seek_usf(px_source *s, uint64_t frame)
    return true;
 }
 
+/* Nintendo DS rips. 2SF emulates the whole console (vio2sf), at 44.1 kHz only; NCSF plays the
+ * game's sequences (SSEQPlayer) at the output rate. Both loop forever; a song not looped ends
+ * after its tagged length, fading out over its tagged fade, as USF songs do. */
+static bool open_nds(px_source *s, const char *path, bool loop, double rate_hint, char *err, size_t errlen)
+{
+   uint64_t length, fade;
+   s->kind     = SRC_NDS;
+   s->channels = 2;
+   if (px_2sf_path(path))
+   {
+      if (!(s->u.nds.twosf = px_2sf_open(path, err, errlen)))
+         return false;
+      s->rate = PX_2SF_RATE;
+      length  = px_2sf_length_ms(s->u.nds.twosf);
+      fade    = px_2sf_fade_ms(s->u.nds.twosf);
+   }
+   else
+   {
+      s->rate = rate_hint >= 8000 && rate_hint <= 192000 ? (unsigned)rate_hint : 44100;
+      if (!(s->u.nds.ncsf = px_ncsf_open(path, s->rate, err, errlen)))
+         return false;
+      length = px_ncsf_length_ms(s->u.nds.ncsf);
+      fade   = px_ncsf_fade_ms(s->u.nds.ncsf);
+   }
+   if (!loop && length)
+   {
+      s->u.nds.fade = fade * s->rate / 1000;
+      s->u.nds.end  = (length + fade) * s->rate / 1000;
+   }
+   return true;
+}
+
+static bool render_nds(px_source *s, int16_t *out, size_t frames)
+{
+   return s->u.nds.twosf ? px_2sf_render(s->u.nds.twosf, out, frames)
+                         : px_ncsf_render(s->u.nds.ncsf, out, frames);
+}
+
+static size_t read_nds(px_source *s, int16_t *out, size_t frames)
+{
+   uint64_t pos = s->u.nds.position, end = s->u.nds.end, fade = s->u.nds.fade;
+   if (end)
+   {
+      if (pos >= end)
+         return 0;
+      if (frames > end - pos)
+         frames = (size_t)(end - pos);
+   }
+   if (!render_nds(s, out, frames))
+      return 0;
+   if (end && fade && pos + frames > end - fade)
+      for (size_t i = 0; i < frames; i++)
+      {
+         uint64_t at = pos + i;
+         if (at + fade > end)
+         {
+            float g = (float)(end - at) / (float)fade;
+            out[i * 2]     = (int16_t)(out[i * 2] * g);
+            out[i * 2 + 1] = (int16_t)(out[i * 2 + 1] * g);
+         }
+      }
+   s->u.nds.position = pos + frames;
+   return frames;
+}
+
+/* Renders forward to `frame`, from the start when it lies behind. */
+static bool seek_nds(px_source *s, uint64_t frame)
+{
+   int16_t scratch[1024 * 2];
+   if (frame < s->u.nds.position)
+   {
+      if (!(s->u.nds.twosf ? px_2sf_restart(s->u.nds.twosf) : px_ncsf_restart(s->u.nds.ncsf)))
+         return false;
+      s->u.nds.position = 0;
+   }
+   while (s->u.nds.position < frame)
+   {
+      uint64_t left = frame - s->u.nds.position;
+      size_t n = left > 1024 ? 1024 : (size_t)left;
+      if (!render_nds(s, scratch, n))
+         return false;
+      s->u.nds.position += n;
+   }
+   return true;
+}
+
 static bool is_gme_path(const char *path)
 {
    return gme_identify_extension(path) != NULL;
@@ -295,7 +391,8 @@ static bool is_gme_path(const char *path)
 
 bool px_source_supported(const char *path)
 {
-   return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path);
+   return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path)
+      || px_2sf_path(path) || px_ncsf_path(path);
 }
 
 unsigned px_source_song_count(const char *path)
@@ -343,6 +440,8 @@ px_source *px_source_open(const char *path, unsigned subtrack, bool loop, double
       ok = open_gme(s, path, subtrack, loop, rate_hint, err, errlen);
    else if (px_usf_path(path))
       ok = open_usf(s, path, loop, rate_hint, err, errlen);
+   else if (px_2sf_path(path) || px_ncsf_path(path))
+      ok = open_nds(s, path, loop, rate_hint, err, errlen);
    else
       ok = open_ogg(s, path) || open_mp3(s, path) || open_wav(s, path);
 
@@ -372,6 +471,8 @@ size_t px_source_read(px_source *s, int16_t *out, size_t frames)
    }
    if (s->kind == SRC_USF)
       return read_usf(s, out, frames);
+   if (s->kind == SRC_NDS)
+      return read_nds(s, out, frames);
 
    if (s->channels == 2)
       dst = out;
@@ -424,6 +525,8 @@ bool px_source_seek(px_source *s, uint64_t frame)
          return frame <= 0x3FFFFFFFu && !gme_seek_samples(s->u.gme, (int)(frame * 2));
       case SRC_USF:
          return seek_usf(s, frame);
+      case SRC_NDS:
+         return seek_nds(s, frame);
    }
    return false;
 }
@@ -453,6 +556,10 @@ void px_source_close(px_source *s)
          break;
       case SRC_USF:
          px_usf_close(s->u.usf.player);
+         break;
+      case SRC_NDS:
+         px_2sf_close(s->u.nds.twosf);
+         px_ncsf_close(s->u.nds.ncsf);
          break;
    }
    free(s->scratch);
