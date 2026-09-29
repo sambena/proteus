@@ -75,6 +75,13 @@ DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
 RSN_OBJ  := $(OBJ)/src/rsn_play.o $(OBJ)/deps/dmc_unrar/dmc_unrar.o
 OBJECTS  += $(RSN_OBJ)
 DSP_OBJ  += $(RSN_OBJ)
+# viogsf (GBA GSF rips): VBA-M's GBA interpreter and sound, no video; psflib (in USF_OBJ) reads
+# the files. The player is C++, so it rides in GSF_OBJ rather than SOURCES.
+GSF_SRC  := apu/Blip_Buffer.cpp apu/Gb_Apu.cpp apu/Gb_Oscs.cpp apu/Multi_Buffer.cpp \
+            gba/GBA.cpp gba/GBA-arm.cpp gba/GBA-thumb.cpp gba/Sound.cpp gba/bios.cpp
+GSF_OBJ  := $(GSF_SRC:%.cpp=$(OBJ)/deps/viogsf/vbam/%.o) $(OBJ)/src/gsf_play.o
+OBJECTS  += $(GSF_OBJ)
+DSP_OBJ  += $(GSF_OBJ)
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -102,6 +109,14 @@ endif
 $(OBJ)/deps/lazyusf2/%.o: deps/lazyusf2/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(USF_CFLAGS) -c -o $@ $<
+
+$(OBJ)/deps/viogsf/%.o: deps/viogsf/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 -O2 -w $(PIC) -c -o $@ $<
+
+$(OBJ)/src/gsf_play.o: src/gsf_play.cpp $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) -std=gnu++11 -O2 $(WARN) $(PIC) -Ideps -Isrc -c -o $@ $<
 
 $(OBJ)/deps/psflib/psflib.o: deps/psflib/psflib.c
 	@mkdir -p $(dir $@)
@@ -196,6 +211,21 @@ $(TESTDIR)/test_rsn$(EXE): test/test_rsn.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_
 
 test-rsn: $(TESTDIR)/test_rsn$(EXE)
 	$(TESTDIR)/test_rsn$(EXE) $(RSN)
+# GBA GSF through px_source. The rip is not in the repository: download one (with its .gsflib)
+# and name a song, e.g. make test-gsf GSF_RIP="build/test/rips/gsf/minish/11 Hyrule Field.minigsf"
+GSF_RIP ?= build/test/rips/gsf/minish/11 Hyrule Field.minigsf
+# Linked against the DSP plugin's objects, so every format decoders.c knows comes along.
+GSF_TEST_OBJ := $(OBJ)/test/test_gsf.o $(filter-out $(OBJ)/src/dsp.o,$(DSP_OBJ))
+
+$(OBJ)/test/test_gsf.o: test/test_gsf.c $(HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(TESTDIR)/test_gsf$(EXE): $(GSF_TEST_OBJ) | $(TESTDIR)
+	$(CXX) -static -o $@ $(GSF_TEST_OBJ) $(LDLIBS) $(DSP_LIBS)
+
+test-gsf: $(TESTDIR)/test_gsf$(EXE)
+	$(TESTDIR)/test_gsf$(EXE) "$(GSF_RIP)"
 
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
@@ -239,4 +269,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli test-rsn
+.PHONY: all test test2600 lint-games clean studio cli test-rsn test-gsf
