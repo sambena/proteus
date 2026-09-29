@@ -69,6 +69,7 @@ static void test_rip(const char *path)
       goto done;
    }
    check(px_source_rate(s) == RATE, "output rate", path);
+   check(px_source_length_ms(s) == 0, "no length while looping", path);
 
    start = clock();
    got   = read_all(s, pcm, FRAMES);
@@ -155,8 +156,10 @@ static void test_tags(const char *path)
    pcm = (int16_t*)malloc((want + RATE) * 2 * sizeof(int16_t));
    if ((s = px_source_open(tagged, 0, false, RATE, err, sizeof(err))))
    {
+      check(px_source_length_ms(s) == 4000, "reports 4000 ms (length + fade)", tagged);
       got = read_all(s, pcm, want + RATE);
-      printf("  played %zu frames (want %zu); RMS 2-3 s %.1f, last 0.1 s %.1f\n", got, want,
+      printf("  played %zu frames (want %zu), px_source_length_ms %llu; RMS 2-3 s %.1f, last 0.1 s %.1f\n", got, want,
+         (unsigned long long)px_source_length_ms(s),
          rms(pcm + 2 * RATE * 2, RATE), got >= RATE / 10 ? rms(pcm + (got - RATE / 10) * 2, RATE / 10) : 0);
       check(got == want, "ends after length + fade", tagged);
       check(got == want && rms(pcm + (got - RATE / 10) * 2, RATE / 10) < rms(pcm + 2 * RATE * 2, RATE) / 4,

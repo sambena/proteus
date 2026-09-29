@@ -327,6 +327,20 @@ $(TESTDIR)/test_snsf$(EXE): test/test_snsf.c $(PX_TEST_OBJ) | $(TESTDIR)
 test-snsf: $(TESTDIR)/test_snsf$(EXE)
 	$(TESTDIR)/test_snsf$(EXE) $(SNSF_RIPS)
 
+# vgmstream streams through px_source. The test writes its own DSP files; the streams are not in
+# the repository: copy a few of Breath of the Wild's (Wii U, content/Sound/Resource/Stream/*.bfstm)
+# to $(TESTDIR)/rips/vgm/botw, and unpack a few _L/_R pairs and bgm_title.dsp from Zophar's Domain's
+# Four Swords Adventures set ("original music files") to $(TESTDIR)/rips/vgm/fsa. A pair's right
+# half is not named: the test checks it through its left.
+VGM_RIPS ?= $(filter-out %_R.dsp,$(wildcard $(TESTDIR)/rips/vgm/*/*.bfstm $(TESTDIR)/rips/vgm/*/*.dsp))
+
+$(TESTDIR)/test_vgm$(EXE): test/test_vgm.c $(PX_TEST_OBJ) | $(TESTDIR)
+	$(CC) $(CFLAGS) -c -o $(OBJ)/test_vgm.o test/test_vgm.c
+	$(CXX) -static -o $@ $(OBJ)/test_vgm.o $(filter %.o %.a,$^) $(LDLIBS) $(DSP_LIBS)
+
+test-vgm: $(TESTDIR)/test_vgm$(EXE)
+	$(TESTDIR)/test_vgm$(EXE) $(TESTDIR) $(VGM_RIPS)
+
 # Atari 2600: Proteus around Stella, checked against Stella itself. STELLA is Stella's
 # libretro core as its authors build it, STELLAPX the build with the capture interface.
 TEST2600 := $(BUILD)/test2600
@@ -360,4 +374,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli test-rsn test-gsf test-nds test-snsf
+.PHONY: all test test2600 lint-games clean studio cli test-rsn test-gsf test-nds test-snsf test-vgm

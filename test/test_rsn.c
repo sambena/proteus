@@ -76,6 +76,8 @@ static void test_song(const char *path, unsigned track)
    if (!s || !pcm || !again)
       goto done;
    CHECK(px_source_rate(s) == RATE, "track %u: rate %u", track + 1, px_source_rate(s));
+   CHECK(px_source_length_ms(s) == 0, "track %u: looping, yet a length of %llu ms", track + 1,
+         (unsigned long long)px_source_length_ms(s));
 
    got = render(s, pcm, frames);
    level = rms(pcm, got);
@@ -124,8 +126,14 @@ static void test_ending(const char *path, unsigned track)
       return;
    while (total < limit && (n = px_source_read(s, buf, 4096)))
       total += n;
-   printf("track %2u without looping ends after %.1f s\n", track + 1, (double)total / RATE);
+   printf("track %2u without looping ends after %.2f s; px_source_length_ms %llu\n", track + 1,
+          (double)total / RATE, (unsigned long long)px_source_length_ms(s));
    CHECK(total < limit, "track %u never ended without looping", track + 1);
+   /* libgme ends a fade once it is inaudible, which its fade steps put within a little of its length. */
+   CHECK(px_source_length_ms(s) > 0 && total * 1000 / RATE <= px_source_length_ms(s) + 250
+         && total * 1000 / RATE + 1500 >= px_source_length_ms(s),
+         "track %u: played %llu ms, reported %llu ms", track + 1,
+         (unsigned long long)(total * 1000 / RATE), (unsigned long long)px_source_length_ms(s));
    px_source_close(s);
 }
 

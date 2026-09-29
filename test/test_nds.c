@@ -83,6 +83,7 @@ static void test_song(const char *path)
    }
    rate = px_source_rate(s);
    check(rate >= 8000 && rate <= RATE, "rate in range", path);
+   check(px_source_length_ms(s) == 0, "no length while looping", path);
    if (rate <= RATE)
    {
       ten = 10u * rate;
@@ -125,8 +126,11 @@ static void test_song(const char *path)
       double limit = 15.0 * 60 * rate;
       while ((n = px_source_read(s, buf, CHUNK)) > 0 && total < limit)
          total += n;
-      printf("  unlooped: ends after %.2f s\n", (double)total / rate);
+      printf("  unlooped: ends after %.2f s; px_source_length_ms %llu\n", (double)total / rate,
+             (unsigned long long)px_source_length_ms(s));
       check(total > 0 && total < limit, "ends when not looped", path);
+      check(px_source_length_ms(s) > 0 && total == px_source_length_ms(s) * rate / 1000,
+            "ends at the length it reports", path);
       free(buf);
       px_source_close(s);
    }

@@ -66,6 +66,7 @@ int main(int argc, char **argv)
       return 1;
    }
    check(px_source_rate(s) == RATE, "renders at the requested rate");
+   printf("      not looped: px_source_length_ms %llu\n", (unsigned long long)px_source_length_ms(s));
 
    /* Ten seconds, straight through. */
    {
@@ -108,6 +109,7 @@ int main(int argc, char **argv)
          double r = rms(b, got * 2);
          snprintf(line, sizeof(line), "%u Hz: 2 s, RMS %.1f", rates[i], r);
          check(s && px_source_rate(s) == rates[i] && got == n && r > MIN_RMS, line);
+         check(s && px_source_length_ms(s) == 0, "looping: no length");
          px_source_close(s);
          free(b);
       }
