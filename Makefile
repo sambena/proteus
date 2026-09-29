@@ -98,6 +98,15 @@ SNSF_SRC := apu.c cart.c cpu.c cx4.c dma.c dsp.c input.c ppu.c snes.c spc.c stat
 SNSF_OBJ := $(OBJ)/src/snsf_play.o $(SNSF_SRC:%.c=$(OBJ)/deps/lakesnes/snes/%.o)
 OBJECTS  += $(SNSF_OBJ)
 DSP_OBJ  += $(SNSF_OBJ)
+# vgmstream (streamed music from the GameCube onward: DSP, BRSTM, BFSTM, ADX...): all of its
+# library, built without its optional external codecs (no VGM_USE_*), so only built-in decoders.
+VGM_DIRS := . base coding coding/libs layout meta util
+VGM_SRC  := $(foreach d,$(VGM_DIRS),$(wildcard deps/vgmstream/src/$(d)/*.c))
+# Its ~650 objects go in an archive, as one command line cannot hold them all on Windows.
+VGM_LIB  := $(OBJ)/deps/vgmstream/libvgmstream.a
+VGM_OBJ  := $(OBJ)/src/vgm_play.o $(VGM_LIB)
+OBJECTS  += $(VGM_OBJ)
+DSP_OBJ  += $(VGM_OBJ)
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -111,6 +120,24 @@ $(DSP): $(DSP_OBJ)
 $(OBJ)/src/%.o: src/%.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+VGM_CFLAGS := -std=gnu11 -O2 -w $(PIC) -Ideps/vgmstream/src
+ifeq ($(OS),Windows_NT)
+  # Opens UTF-8 paths (and a stream's companion files) with _wfopen.
+  VGM_CFLAGS += -DVGM_STDIO_UNICODE
+endif
+
+$(OBJ)/deps/vgmstream/%.o: deps/vgmstream/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(VGM_CFLAGS) -c -o $@ $<
+
+# The object list goes to ar in a response file.
+$(VGM_LIB): $(VGM_SRC:%.c=$(OBJ)/%.o)
+	$(file >$@.rsp,$^)
+	rm -f $@
+	$(AR) qcs $@ @$@.rsp
+
+$(OBJ)/src/vgm_play.o: CFLAGS += -Ideps/vgmstream/src
 
 $(OBJ)/deps/gme/%.o: deps/gme/%.cpp
 	@mkdir -p $(dir $@)
@@ -295,7 +322,7 @@ SNSF_RIPS ?= $(wildcard $(TESTDIR)/rips/snsf/*/*.minisnsf $(TESTDIR)/rips/snsf/*
 
 $(TESTDIR)/test_snsf$(EXE): test/test_snsf.c $(PX_TEST_OBJ) | $(TESTDIR)
 	$(CC) $(CFLAGS) -c -o $(OBJ)/test_snsf.o test/test_snsf.c
-	$(CXX) -static -o $@ $(OBJ)/test_snsf.o $(filter %.o,$^) $(LDLIBS) $(DSP_LIBS)
+	$(CXX) -static -o $@ $(OBJ)/test_snsf.o $(filter %.o %.a,$^) $(LDLIBS) $(DSP_LIBS)
 
 test-snsf: $(TESTDIR)/test_snsf$(EXE)
 	$(TESTDIR)/test_snsf$(EXE) $(SNSF_RIPS)
