@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Audio sources: WAV, MP3 and Ogg Vorbis through dr_wav, dr_mp3 and stb_vorbis;
- * SPC, NSF, VGM, GBS and other chip music emulated by libgme. */
+ * SPC, NSF, VGM, GBS and other chip music emulated by libgme; console rips (USF, GSF, 2SF, NCSF,
+ * SNSF, RSN) through their players; streamed music from the GameCube onward through vgmstream. */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -38,9 +39,10 @@
 #include "twosf_play.h"
 #include "ncsf_play.h"
 #include "snsf_play.h"
+#include "vgm_play.h"
 
 typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF, SRC_GSF,
-   SRC_NDS /* DS 2SF and NCSF rips */, SRC_SNSF } src_kind;
+   SRC_NDS /* DS 2SF and NCSF rips */, SRC_SNSF, SRC_VGM } src_kind;
 
 #define MP3_SEEK_POINTS 256
 
@@ -49,6 +51,7 @@ struct px_source
    src_kind kind;
    unsigned rate;
    unsigned channels;
+   uint64_t length_ms; /* for px_source_length_ms(): the whole playing time, 0 = unknown or forever */
    union
    {
       drwav wav;
@@ -84,6 +87,7 @@ struct px_source
          px_snsf *player;
          uint64_t position, end, fade;   /* as for usf */
       } snsf;
+      px_vgm *vgm;
    } u;
    int16_t *scratch; /* holds multichannel frames before folding to stereo */
    size_t scratch_frames;
@@ -112,6 +116,8 @@ static bool open_wav(px_source *s, const char *path)
    s->kind     = SRC_WAV;
    s->rate     = s->u.wav.sampleRate;
    s->channels = s->u.wav.channels;
+   if (s->rate)
+      s->length_ms = s->u.wav.totalPCMFrameCount * 1000 / s->rate;
    return true;
 }
 
@@ -133,6 +139,8 @@ static bool open_mp3(px_source *s, const char *path)
    s->kind     = SRC_MP3;
    s->rate     = s->u.mp3.dec.sampleRate;
    s->channels = s->u.mp3.dec.channels;
+   if (s->rate)
+      s->length_ms = drmp3_get_pcm_frame_count(&s->u.mp3.dec) * 1000 / s->rate;
    return true;
 }
 
@@ -153,6 +161,8 @@ static bool open_ogg(px_source *s, const char *path)
    s->kind     = SRC_OGG;
    s->rate     = info.sample_rate;
    s->channels = 2; /* stb_vorbis folds to the requested channel count */
+   if (s->rate)
+      s->length_ms = (uint64_t)stb_vorbis_stream_length_in_samples(s->u.ogg) * 1000 / s->rate;
    return true;
 }
 
@@ -200,6 +210,27 @@ static Music_Emu *open_gme_emu(const char *path, int rate, char *err, size_t err
    return emu;
 }
 
+/* A song not looped ends after its tagged length (or, untagged, its intro and two loops when the
+ * format knows them), fading out over its tagged fade (8 s when untagged). Returns the whole
+ * playing time in ms, 0 when the song has no known length and so plays on. */
+static uint64_t gme_fade_at_end(Music_Emu *emu, int track)
+{
+   gme_info_t *info;
+   long length = 0, fade;
+   if (gme_track_info(emu, &info, track))
+      return 0;
+   if (info->length > 0)
+      length = info->length;
+   else if (info->loop_length > 0)
+      length = (info->intro_length > 0 ? info->intro_length : 0) + 2L * info->loop_length;
+   fade = info->fade_length > 0 ? info->fade_length : 8000;
+   gme_free_info(info);
+   if (length <= 0)
+      return 0;
+   gme_set_fade_msecs(emu, (int)length, (int)fade);
+   return (uint64_t)length + (uint64_t)fade;
+}
+
 static bool open_gme(px_source *s, const char *path, unsigned subtrack, bool loop,
       double rate_hint, char *err, size_t errlen)
 {
@@ -228,15 +259,7 @@ static bool open_gme(px_source *s, const char *path, unsigned subtrack, bool loo
       return false;
    }
    if (!loop)
-   {
-      gme_info_t *info;
-      if (!gme_track_info(emu, &info, (int)subtrack))
-      {
-         if (info->length > 0)
-            gme_set_fade(emu, info->length);
-         gme_free_info(info);
-      }
-   }
+      s->length_ms = gme_fade_at_end(emu, (int)subtrack);
 
    s->kind     = SRC_GME;
    s->u.gme    = emu;
@@ -261,6 +284,7 @@ static bool open_usf(px_source *s, const char *path, bool loop, double rate_hint
    {
       s->u.usf.fade = px_usf_fade_ms(u) * s->rate / 1000;
       s->u.usf.end  = (px_usf_length_ms(u) + px_usf_fade_ms(u)) * s->rate / 1000;
+      s->length_ms  = px_usf_length_ms(u) + px_usf_fade_ms(u);
    }
    return true;
 }
@@ -342,15 +366,7 @@ static bool open_rsn(px_source *s, const char *path, unsigned subtrack, bool loo
       return false;
    }
    if (!loop)
-   {
-      gme_info_t *info;
-      if (!gme_track_info(emu, &info, 0))
-      {
-         if (info->length > 0)
-            gme_set_fade_msecs(emu, info->length, info->fade_length > 0 ? info->fade_length : 8000);
-         gme_free_info(info);
-      }
-   }
+      s->length_ms = gme_fade_at_end(emu, 0);
    s->kind     = SRC_GME;
    s->u.gme    = emu;
    s->rate     = (unsigned)rate;
@@ -375,6 +391,7 @@ static bool open_gsf(px_source *s, const char *path, bool loop, double rate_hint
    {
       s->u.gsf.fade = px_gsf_fade_ms(g) * s->rate / 1000;
       s->u.gsf.end  = (px_gsf_length_ms(g) + px_gsf_fade_ms(g)) * s->rate / 1000;
+      s->length_ms  = px_gsf_length_ms(g) + px_gsf_fade_ms(g);
    }
    return true;
 }
@@ -456,6 +473,7 @@ static bool open_nds(px_source *s, const char *path, bool loop, double rate_hint
    {
       s->u.nds.fade = fade * s->rate / 1000;
       s->u.nds.end  = (length + fade) * s->rate / 1000;
+      s->length_ms  = length + fade;
    }
    return true;
 }
@@ -531,6 +549,7 @@ static bool open_snsf(px_source *s, const char *path, bool loop, double rate_hin
    {
       s->u.snsf.fade = px_snsf_fade_ms(p) * s->rate / 1000;
       s->u.snsf.end  = (px_snsf_length_ms(p) + px_snsf_fade_ms(p)) * s->rate / 1000;
+      s->length_ms   = px_snsf_length_ms(p) + px_snsf_fade_ms(p);
    }
    return true;
 }
@@ -582,6 +601,21 @@ static bool seek_snsf(px_source *s, uint64_t frame)
    return true;
 }
 
+/* Streams from the GameCube onward (vgmstream) play at their own rate. Song N of a container is
+ * its subsong N+1. Not looped, they play their loop twice and fade out over ten seconds. */
+static bool open_vgm(px_source *s, const char *path, unsigned subtrack, bool loop, char *err, size_t errlen)
+{
+   px_vgm *v = px_vgm_open(path, subtrack, loop, err, errlen);
+   if (!v)
+      return false;
+   s->kind     = SRC_VGM;
+   s->channels = 2;
+   s->rate     = px_vgm_rate(v);
+   s->u.vgm    = v;
+   s->length_ms = px_vgm_length(v) * 1000 / s->rate;
+   return true;
+}
+
 static bool is_gme_path(const char *path)
 {
    return gme_identify_extension(path) != NULL;
@@ -591,7 +625,7 @@ bool px_source_supported(const char *path)
 {
    return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path)
       || px_rsn_path(path) || px_gsf_path(path) || px_2sf_path(path) || px_ncsf_path(path)
-      || px_snsf_path(path);
+      || px_snsf_path(path) || px_vgm_path(path);
 }
 
 unsigned px_source_song_count(const char *path)
@@ -602,6 +636,8 @@ unsigned px_source_song_count(const char *path)
 
    if (px_rsn_path(path))
       return px_rsn_count(path);
+   if (px_vgm_path(path))
+      return px_vgm_count(path);
    if (!is_gme_path(path))
       return px_file_exists(path) ? 1 : 0;
    if (!(emu = open_gme_emu(path, 44100, err, sizeof(err))))
@@ -649,6 +685,8 @@ px_source *px_source_open(const char *path, unsigned subtrack, bool loop, double
       ok = open_nds(s, path, loop, rate_hint, err, errlen);
    else if (px_snsf_path(path))
       ok = open_snsf(s, path, loop, rate_hint, err, errlen);
+   else if (px_vgm_path(path))
+      ok = open_vgm(s, path, subtrack, loop, err, errlen);
    else
       ok = open_ogg(s, path) || open_mp3(s, path) || open_wav(s, path);
 
@@ -684,6 +722,8 @@ size_t px_source_read(px_source *s, int16_t *out, size_t frames)
       return read_nds(s, out, frames);
    if (s->kind == SRC_SNSF)
       return read_snsf(s, out, frames);
+   if (s->kind == SRC_VGM)
+      return px_vgm_render(s->u.vgm, out, frames);
 
    if (s->channels == 2)
       dst = out;
@@ -742,6 +782,8 @@ bool px_source_seek(px_source *s, uint64_t frame)
          return seek_nds(s, frame);
       case SRC_SNSF:
          return seek_snsf(s, frame);
+      case SRC_VGM:
+         return px_vgm_seek(s->u.vgm, frame);
    }
    return false;
 }
@@ -749,6 +791,11 @@ bool px_source_seek(px_source *s, uint64_t frame)
 unsigned px_source_rate(const px_source *s)
 {
    return s->rate;
+}
+
+uint64_t px_source_length_ms(const px_source *s)
+{
+   return s->length_ms;
 }
 
 void px_source_close(px_source *s)
@@ -781,6 +828,9 @@ void px_source_close(px_source *s)
          break;
       case SRC_SNSF:
          px_snsf_close(s->u.snsf.player);
+         break;
+      case SRC_VGM:
+         px_vgm_close(s->u.vgm);
          break;
    }
    free(s->scratch);
