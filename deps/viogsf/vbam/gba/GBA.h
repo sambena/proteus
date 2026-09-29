@@ -330,7 +330,7 @@ struct GBASystem
     float soundFiltering;    // 0.0 = none, 1.0 = max
     long  soundSampleRate;
 
-    u16   soundFinalWave [1600];
+    u16   soundFinalWave [6400]; // Proteus: room for 192 kHz (was 1600, 48 kHz)
     bool  soundPaused;
 
     enum { SOUND_CLOCK_TICKS_ = 167772 }; // 1/100 second
