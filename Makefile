@@ -71,6 +71,10 @@ USF_SRC  := ai/ai_controller.c api/callbacks.c debugger/dbg_decoder.c main/main.
 USF_OBJ  := $(USF_SRC:%.c=$(OBJ)/deps/lazyusf2/%.o) $(OBJ)/deps/psflib/psflib.o
 OBJECTS  := $(SOURCES:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
 DSP_OBJ  := $(DSP_SRC:%.c=$(OBJ)/%.o) $(GME_OBJ) $(USF_OBJ)
+# RSN soundtracks (RAR archives of SNES .spc files): dmc_unrar unpacks them for libgme.
+RSN_OBJ  := $(OBJ)/src/rsn_play.o $(OBJ)/deps/dmc_unrar/dmc_unrar.o
+OBJECTS  += $(RSN_OBJ)
+DSP_OBJ  += $(RSN_OBJ)
 HEADERS  := $(wildcard src/*.h) $(wildcard src/games/*.h)
 
 all: $(CORE) $(DSP)
@@ -102,6 +106,11 @@ $(OBJ)/deps/lazyusf2/%.o: deps/lazyusf2/%.c
 $(OBJ)/deps/psflib/psflib.o: deps/psflib/psflib.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=gnu11 -O2 -w $(PIC) -c -o $@ $<
+
+# Built without stdio or the Win32 API: Proteus hands it the archive in memory.
+$(OBJ)/deps/dmc_unrar/dmc_unrar.o: deps/dmc_unrar/dmc_unrar.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -O2 -w $(PIC) -DDMC_UNRAR_DISABLE_STDIO=1 -DDMC_UNRAR_DISABLE_WIN32=1 -c -o $@ $<
 
 $(OBJ)/deps/gme/ext/emu2413.o: deps/gme/ext/emu2413.c
 	@mkdir -p $(dir $@)
@@ -178,6 +187,16 @@ $(TESTDIR)/test_apu$(EXE): test/test_apu.cpp studio/apu_analyzer.cpp studio/snes
 $(TESTDIR)/test_reference$(EXE): test/test_reference.cpp studio/reference.cpp studio/nsf_init.cpp studio/nes_tap.cpp studio/zip_read.cpp studio/http.cpp studio/snes_rom.cpp studio/md5.cpp studio/platform.cpp src/util.c | $(TESTDIR)
 	$(CXX) -static -std=gnu++17 -O2 -Istudio -Isrc -o $@ $^ -lz -lshell32 -lole32 -lcomdlg32 -lwininet
 
+# RSN soundtracks through px_source, against a real SPC set: make test-rsn [RSN=set.rsn]
+RSN ?= $(TESTDIR)/rips/loz3.rsn
+$(TESTDIR)/test_rsn$(EXE): test/test_rsn.c $(OBJ)/src/decoders.o $(OBJ)/src/usf_play.o $(OBJ)/src/util.o \
+      $(RSN_OBJ) $(GME_OBJ) $(USF_OBJ) | $(TESTDIR)
+	$(CC) $(CFLAGS) -c -o $(OBJ)/test_rsn.o $<
+	$(CXX) -static -o $@ $(OBJ)/test_rsn.o $(filter-out $<,$^) $(LDLIBS)
+
+test-rsn: $(TESTDIR)/test_rsn$(EXE)
+	$(TESTDIR)/test_rsn$(EXE) $(RSN)
+
 test: $(TESTDIR)/proteus_testcore_libretro.$(EXT) $(TESTDIR)/testcore_libretro.$(EXT) \
       $(TESTDIR)/harness$(EXE) $(TESTDIR)/assets.stamp $(DSP) $(TESTDIR)/test_ra$(EXE) $(TESTDIR)/test_apu$(EXE) \
       $(TESTDIR)/test_reference$(EXE)
@@ -220,4 +239,4 @@ test2600: lint-games $(CORE) $(TEST2600)/harness2600$(EXE) $(TEST2600)/pxtest.a2
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all test test2600 lint-games clean studio cli
+.PHONY: all test test2600 lint-games clean studio cli test-rsn

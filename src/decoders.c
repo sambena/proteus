@@ -33,6 +33,7 @@
 #endif
 
 #include "usf_play.h"
+#include "rsn_play.h"
 
 typedef enum { SRC_WAV, SRC_MP3, SRC_OGG, SRC_GME, SRC_USF } src_kind;
 
@@ -288,6 +289,52 @@ static bool seek_usf(px_source *s, uint64_t frame)
    return true;
 }
 
+/* RSN soundtracks (RAR archives of .spc files): song N is the Nth .spc by name, unpacked into
+ * memory and played by libgme like a lone .spc. A song not looped ends after its ID666 length,
+ * fading out over its tagged fade. */
+static bool open_rsn(px_source *s, const char *path, unsigned subtrack, bool loop,
+      double rate_hint, char *err, size_t errlen)
+{
+   int rate = (rate_hint >= 8000.0 && rate_hint <= 192000.0) ? (int)(rate_hint + 0.5) : 44100;
+   size_t size = 0;
+   char name[256];
+   void *spc = px_rsn_extract(path, subtrack, &size, name, sizeof(name), err, errlen);
+   Music_Emu *emu = NULL;
+   gme_err_t e;
+
+   if (!spc)
+      return false;
+   e = gme_open_data(spc, (long)size, &emu, rate);
+   free(spc);
+   if (!e)
+   {
+      gme_set_autoload_playback_limit(emu, 0);
+      gme_ignore_silence(emu, 1);
+      e = gme_start_track(emu, 0);
+   }
+   if (e)
+   {
+      snprintf(err, errlen, "%s: %s: %s", path, name, e);
+      gme_delete(emu);
+      return false;
+   }
+   if (!loop)
+   {
+      gme_info_t *info;
+      if (!gme_track_info(emu, &info, 0))
+      {
+         if (info->length > 0)
+            gme_set_fade_msecs(emu, info->length, info->fade_length > 0 ? info->fade_length : 8000);
+         gme_free_info(info);
+      }
+   }
+   s->kind     = SRC_GME;
+   s->u.gme    = emu;
+   s->rate     = (unsigned)rate;
+   s->channels = 2;
+   return true;
+}
+
 static bool is_gme_path(const char *path)
 {
    return gme_identify_extension(path) != NULL;
@@ -295,7 +342,8 @@ static bool is_gme_path(const char *path)
 
 bool px_source_supported(const char *path)
 {
-   return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path);
+   return ext_is(path, "wav") || ext_is(path, "mp3") || ext_is(path, "ogg") || is_gme_path(path) || px_usf_path(path)
+      || px_rsn_path(path);
 }
 
 unsigned px_source_song_count(const char *path)
@@ -304,6 +352,8 @@ unsigned px_source_song_count(const char *path)
    Music_Emu *emu;
    int count;
 
+   if (px_rsn_path(path))
+      return px_rsn_count(path);
    if (!is_gme_path(path))
       return px_file_exists(path) ? 1 : 0;
    if (!(emu = open_gme_emu(path, 44100, err, sizeof(err))))
@@ -343,6 +393,8 @@ px_source *px_source_open(const char *path, unsigned subtrack, bool loop, double
       ok = open_gme(s, path, subtrack, loop, rate_hint, err, errlen);
    else if (px_usf_path(path))
       ok = open_usf(s, path, loop, rate_hint, err, errlen);
+   else if (px_rsn_path(path))
+      ok = open_rsn(s, path, subtrack, loop, rate_hint, err, errlen);
    else
       ok = open_ogg(s, path) || open_mp3(s, path) || open_wav(s, path);
 
